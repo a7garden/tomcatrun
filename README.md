@@ -116,6 +116,7 @@ SVN 상태는 `.svn/wc.db` 를 읽기 전용(immutable)으로 열어 계산하�
 ## 그 밖에
 
 - 컴파일 오류 줄의 `파일:줄` 을 누르면 편집기가 그 줄에서 열린다.
+- 우클릭하면 그 자리에 맞는 메뉴가 뜬다. 서버 칸은 시작 · 중지 · 열기 · 폴더, 파일이 걸린 줄(반영 기록 · 로그 · 재시작 목록 · 버전 관리 목록 · 차이 보기)은 편집기로 열기 · 탐색기에서 보기 · 경로 복사 · 저장 감시에서 빼기를 고른다. 브라우저 기본 메뉴(새로 고침 등)는 입력칸에서만 뜬다.
 - 톰캣 콘솔 전체가 서버마다 `logs/console.log` 에 남는다. 직전 기동분은 `console.prev.log`.
 - 켜는 중에 20초 넘게 멈춰 있던 톰캣을 중지하면 스레드 상태를 `logs/threads-<시각>.txt` 로 남긴다.
 - 실행기가 비정상으로 끝나도 톰캣이 같이 끝난다 (Windows 작업 개체).
@@ -163,13 +164,17 @@ bash installer/build.sh     # 위를 모두 하고 installer/dist/tomcatrun-setu
 git tag v0.6.0 && git push origin v0.6.0
 ```
 
-## 함께 배포하는 것
+## 라이선스
 
-설치 파일에는 아래를 원래 배포본 그대로 넣는다. 각 라이선스 파일은 설치 폴더의 해당 폴더 안에 있다.
+tomcatrun 의 소스는 [MIT License](LICENSE) 다.
 
-| 무엇 | 라이선스 |
-| - | - |
-| AdoptOpenJDK 8u181-b13 (`bin/jdk8-dcevm`) | GPLv2 + Classpath Exception |
-| DCEVM light 8u181 build2 (`jre/bin/dcevm/jvm.dll`) | GPLv2 |
-| HotswapAgent 1.4.1 | GPLv2 |
-| Apache Maven 3.9.16 | Apache License 2.0 |
+설치 파일에는 아래를 원래 배포본 그대로 넣는다. tomcatrun 은 이것들을 별도 프로세스로 띄울 뿐 한 프로그램으로 묶지 않으므로, 각자 자기 라이선스를 따른다.
+
+| 무엇 | 라이선스 | 소스 |
+| - | - | - |
+| AdoptOpenJDK 8u181-b13 (`bin/jdk8-dcevm`) | GPLv2 + Classpath Exception | 설치 폴더의 `bin/jdk8-dcevm/src.zip` · [openjdk8-binaries](https://github.com/AdoptOpenJDK/openjdk8-binaries/releases/tag/jdk8u181-b13) |
+| DCEVM light 8u181 build2 (`jre/bin/dcevm/jvm.dll`) | GPLv2 | [dcevm/dcevm light-jdk8u181+2](https://github.com/dcevm/dcevm/releases/tag/light-jdk8u181%2B2) |
+| HotswapAgent 1.4.1 (`bin/hotswap-agent.jar`) | GPLv2 | [HotswapProjects/HotswapAgent RELEASE-1.4.1](https://github.com/HotswapProjects/HotswapAgent/tree/RELEASE-1.4.1) |
+| Apache Maven 3.9.16 (`bin/maven`) | Apache License 2.0 | [apache/maven maven-3.9.16](https://github.com/apache/maven/tree/maven-3.9.16) |
+
+JDK · Maven 의 라이선스 문서는 각 폴더 안에 있다.

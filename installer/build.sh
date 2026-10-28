@@ -31,7 +31,7 @@ bash "$root/helper/build.sh"
 rm -rf "$stage"
 mkdir -p "$stage/helper" "$stage/base" "$here/dist"
 
-cp "$root/app/target/release/tomcatrun.exe" "$root/README.md" "$stage/"
+cp "$root/app/target/release/tomcatrun.exe" "$root/README.md" "$root/LICENSE" "$stage/"
 cp "$root/helper/"*.class "$stage/helper/"
 cp -r "$root/overlay" "$stage/"
 cp -r "$root/bin" "$stage/"
