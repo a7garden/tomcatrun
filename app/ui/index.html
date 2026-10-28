@@ -503,6 +503,18 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .dlg li { display: flex; justify-content: space-between; gap: 12px; padding: 4px 0; border-top: 1px solid var(--line-soft); }
 .dlg li span:last-child { color: var(--muted); }
 .dlg .acts { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+
+/* 시작하기 — 처음 켰을 때 (프로젝트를 정한 서버가 하나도 없을 때) 뜬다 */
+.dlg.setup { max-width: 520px; }
+.dlg.setup p { line-height: 1.55; }
+.setup .ws { margin-top: 12px; font: 12px var(--mono); color: var(--muted); }
+.setup ul.pick li { justify-content: flex-start; align-items: center; gap: 10px; padding: 8px 2px; cursor: pointer; }
+.setup ul.pick li.off { cursor: default; opacity: .55; }
+.setup ul.pick li b { font-weight: 600; }
+.setup ul.pick li .meta { color: var(--muted); font-size: 12px; margin-left: auto; text-align: right; }
+.setup .tc { display: flex; align-items: center; gap: 8px; margin-top: 12px; padding: 8px 10px; border-radius: 6px; background: var(--warn-weak); color: var(--text); font-size: 12px; }
+.setup .tc span { flex: 1; }
+.setup .acts .left { margin-right: auto; }
 </style>
 </head>
 <body>
@@ -616,7 +628,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 			<section class="set-sec" id="setServers">
 				<h2>서버</h2>
 				<div class="vcs-cols" id="srvForms"></div>
-				<div class="sec-acts"><button class="btn" id="srvAdd">서버 추가</button><span>더한 서버는 실행기를 다시 열면 보입니다.</span></div>
+				<div class="sec-acts"><button class="btn" id="srvImport">이클립스에서 가져오기</button><button class="btn" id="srvAdd">서버 추가</button><span>더한 서버는 실행기를 다시 열면 보입니다.</span></div>
 			</section>
 
 			<section class="set-sec" id="setPaths">
@@ -699,6 +711,13 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 </footer>
 
 <div class="menu" id="menu" role="menu" hidden></div>
+<div class="scrim" id="setupScrim" hidden>
+	<div class="dlg setup" role="dialog" aria-modal="true" aria-labelledby="setupTitle">
+		<h2 id="setupTitle">시작하기</h2>
+		<div id="setupBody"></div>
+		<div class="acts" id="setupActs"></div>
+	</div>
+</div>
 <div class="scrim" id="quitScrim" hidden>
 	<div class="dlg" role="alertdialog" aria-modal="true" aria-labelledby="quitTitle" aria-describedby="quitText">
 		<h2 id="quitTitle"></h2>
@@ -1117,6 +1136,12 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 		if (errMsg) rows.push({ key: "err", lv: "crit", text: "<b>" + esc(errMsg) + "</b>", close: true });
 		state.servers.forEach(function (sv, i) {
 			var lc = sv.lastCompile;
+			if (!sv.project) {
+				rows.push({ key: "p" + i, lv: "warn", text: "<b>" + esc(sv.name) + " · 프로젝트 폴더를 정하지 않았습니다</b>" +
+					'<span class="sub">이클립스 설정을 가져오거나 폴더 하나만 고르면 됩니다</span>',
+					acts: [["시작하기", "primary", false, function () { openSetup(); }]] });
+				return;
+			}
 			if (lc && !lc.ok && !sv.compiling) {
 				// 첫 오류의 파일:줄 — 누르면 편집기로 연다
 				var first = (lastErrs[i] || [])[0], fm = first && SRC_RE.exec(first);
@@ -1384,6 +1409,120 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 		var first = $("chlog").querySelector("details");
 		if (first) first.open = true;
 	}
+
+	/* ---------- 시작하기 ---------- */
+
+	// 1) 이클립스 작업 공간을 찾으면 서버를 고르고 「가져오기」 한 번 — 프로젝트 · 포트 · 톰캣 폴더 · 의존 jar 까지
+	// 2) 못 찾으면 「프로젝트 폴더 고르기」 한 번 — 의존 jar 는 이클립스 배포본 또는 Maven 으로 알아서
+	var setupAuto = false;   // 처음 켰을 때 한 번만 저절로 띄운다
+	function setupClose() { $("setupScrim").hidden = true; }
+	function setupActs(list) {
+		var box = $("setupActs");
+		box.innerHTML = "";
+		list.forEach(function (a) {
+			var b = document.createElement("button");
+			b.className = "btn " + (a.cls || "");
+			b.textContent = a.label;
+			b.disabled = !!a.disabled;
+			b.onclick = a.run;
+			box.appendChild(b);
+		});
+	}
+	function setupBusy(msg) {
+		$("setupBody").innerHTML = "<p>" + esc(msg) + "</p>";
+		setupActs([]);
+	}
+	function tomcatRow() {
+		var tc = state && state.checks.filter(function (c) { return c.key === "tomcat"; })[0];
+		return tc && !tc.ok ? '<div class="tc"><span>톰캣 8.5 를 찾지 못했습니다 · ' + esc(tc.detail) + '</span><button class="btn sm" data-tc>톰캣 폴더 고르기</button></div>' : "";
+	}
+	function bindTomcat() {
+		var b = $("setupBody").querySelector("[data-tc]");
+		if (!b) return;
+		b.onclick = function () {
+			invoke("pick_dir", { title: "톰캣 8.5 폴더 고르기 (bin/bootstrap.jar 가 있는 곳)" }).then(function (dir) {
+				if (!dir) return;
+				var paths = Object.assign({}, state.paths, { tomcatHome: dir });
+				invoke("set_paths", { paths: paths }).then(function () { showToast("톰캣 폴더를 정했습니다"); setTimeout(openSetup, 300); })
+					.catch(function (e) { showError(String(e)); });
+			});
+		};
+	}
+	function firstEmpty() {
+		var k = state.servers.findIndex(function (sv) { return !sv.project; });
+		return k < 0 ? 0 : k;
+	}
+	function setupFolder() {
+		invoke("pick_project", { start: "" }).then(function (found) {
+			if (!found.length) return;
+			var go1 = function (dir) {
+				setupBusy("프로젝트를 정하고 의존 jar 를 준비하는 중...");
+				invoke("quick_project", { srv: firstEmpty(), project: dir }).then(function (msg) { setupClose(); showToast(msg); })
+					.catch(function (e) { setupClose(); showError(String(e)); });
+			};
+			if (found.length === 1) return go1(found[0]);
+			$("setupBody").innerHTML = "<p>이 폴더 아래에 프로젝트가 여럿 있습니다. 하나를 고르세요.</p><ul class=\"pick\">" +
+				found.map(function (d, k) { return '<li data-k="' + k + '"><b>' + esc(baseName(d)) + '</b><span class="meta">' + esc(d) + "</span></li>"; }).join("") + "</ul>";
+			[].forEach.call($("setupBody").querySelectorAll("li"), function (li) { li.onclick = function () { go1(found[+li.getAttribute("data-k")]); }; });
+			setupActs([{ label: "뒤로", run: openSetup }]);
+		}).catch(function (e) { showError(String(e)); });
+	}
+	function setupWorkspace() {
+		invoke("pick_dir", { title: "이클립스 작업 공간 고르기 (.metadata 가 있는 폴더)" }).then(function (dir) {
+			if (!dir) return;
+			invoke("eclipse_scan", { dir: dir }).then(setupShow).catch(function (e) { showError(String(e)); });
+		});
+	}
+	function setupShow(list) {
+		var servers = [];
+		list.forEach(function (w) { w.servers.forEach(function (sv) { servers.push({ ws: w.path, sv: sv }); }); });
+		if (!servers.length) {
+			$("setupBody").innerHTML = "<p>이클립스 작업 공간을 찾지 못했습니다.<br>프로젝트 폴더(<code>src/main/webapp</code> 이 있는 폴더)를 고르면 의존 jar 까지 알아서 준비합니다.</p>" + tomcatRow();
+			bindTomcat();
+			setupActs([
+				{ label: "이클립스 작업 공간 고르기", cls: "ghost left", run: setupWorkspace },
+				{ label: "나중에", run: setupClose },
+				{ label: "프로젝트 폴더 고르기", cls: "primary", run: setupFolder }
+			]);
+			return;
+		}
+		var html = "<p>이클립스에서 쓰던 톰캣 서버를 찾았습니다. 고른 서버의 프로젝트 · 포트 · 톰캣 폴더 · 의존 jar 를 그대로 가져옵니다. 이클립스 설정은 바꾸지 않습니다.</p>";
+		var lastWs = "";
+		servers.forEach(function (x, k) {
+			if (x.ws !== lastWs) { html += (lastWs ? "</ul>" : "") + '<div class="ws">' + esc(x.ws) + '</div><ul class="pick">'; lastWs = x.ws; }
+			var ok = !!x.sv.project;
+			html += '<li class="' + (ok ? "" : "off") + '"><input type="checkbox" data-k="' + k + '"' + (ok ? " checked" : " disabled") + "><b>" + esc(x.sv.name) + "</b>" +
+				'<span class="meta">' + (ok ? esc(baseName(x.sv.project)) + " · " + x.sv.httpPort + (x.sv.jars ? " · jar " + x.sv.jars + "개" : " · jar 없음 (Maven 으로 받기)") : "프로젝트 폴더를 찾지 못함") + "</span></li>";
+		});
+		html += "</ul>" + tomcatRow();
+		$("setupBody").innerHTML = html;
+		bindTomcat();
+		[].forEach.call($("setupBody").querySelectorAll("ul.pick li:not(.off)"), function (li) {
+			li.onclick = function (e) { if (e.target.tagName !== "INPUT") { var c = li.querySelector("input"); c.checked = !c.checked; } };
+		});
+		setupActs([
+			{ label: "폴더 직접 고르기", cls: "ghost left", run: setupFolder },
+			{ label: "나중에", run: setupClose },
+			{ label: "가져오기", cls: "primary", run: function () {
+				var picked = [].filter.call($("setupBody").querySelectorAll("input[data-k]"), function (c) { return c.checked; }).map(function (c) { return servers[+c.getAttribute("data-k")]; });
+				if (!picked.length) return;
+				// 작업 공간이 여럿이면 처음 고른 서버의 작업 공간에서 가져온다
+				var ws = picked[0].ws;
+				var ids = picked.filter(function (x) { return x.ws === ws; }).map(function (x) { return x.sv.id; });
+				setupBusy("가져오는 중... 의존 jar 를 옮기고 있습니다. 서버가 늘면 실행기가 다시 열립니다.");
+				invoke("eclipse_import", { ws: ws, ids: ids }).then(function (msg) { setupClose(); showToast(msg); })
+					.catch(function (e) { setupClose(); showError(String(e)); });
+			} }
+		]);
+	}
+	function openSetup() {
+		closeMenu();
+		$("setupScrim").hidden = false;
+		setupBusy("이클립스 설정을 찾는 중...");
+		invoke("eclipse_scan", { dir: null }).then(setupShow).catch(function () { setupShow([]); });
+	}
+	$("setupScrim").addEventListener("keydown", function (e) { if (e.key === "Escape") setupClose(); });
+	$("srvImport").onclick = function () { openSetup(); };
 
 	function openOpt(id) {
 		go("settings");
@@ -2612,6 +2751,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 	listen("error", function (e) { showError(String(e.payload)); });
 	invoke("get_state").then(function (s) {
 		render(s);
+		if (!setupAuto && s.servers.every(function (sv) { return !sv.project; })) { setupAuto = true; openSetup(); }
 		if (early.length) { var x = early; early = []; onLogs(x); }
 	});
 	setInterval(renderMeta, 1000);

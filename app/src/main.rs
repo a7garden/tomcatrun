@@ -20,6 +20,7 @@
 // 개발에서만 바꾸는 앱 설정은 overlay/ 의 별도 파일로 덧붙이고(tomcatrun.DevTweaks), 쓰는 것은 모두 이 폴더 안이다.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod eclipse;
 mod git;
 mod svn;
 mod svnweb;
@@ -2533,12 +2534,23 @@ fn refresh_deps(app: AppHandle, srv: usize) -> Result<(), String> {
     if r.inner.lock().unwrap().status != Status::Stopped {
         return Err(format!("{name} 톰캣을 끈 뒤에 받으세요. 실행 중에는 jar 가 잠겨 바꿀 수 없습니다."));
     }
+    let sv = cfgs(&app, srv).1;
+    if sv.project.trim().is_empty() {
+        return Err(format!("{name} 프로젝트 폴더를 먼저 정하세요 (「시작하기」 또는 설정 › 서버)."));
+    }
+    if !Path::new(&sv.project).join("pom.xml").is_file() {
+        return Err(format!("{name} 프로젝트에 pom.xml 이 없어 Maven 으로 받을 수 없습니다: {}", sv.project));
+    }
     if r.deps_busy.swap(true, Ordering::SeqCst) {
         return Err("이미 받는 중입니다.".into());
     }
     emit_state(&app);
     thread::spawn(move || {
-        refresh_deps_blocking(&app, srv);
+        if !refresh_deps_blocking(&app, srv) {
+            let _ = app.emit("error", format!(
+                "{name} 의존 jar 를 받지 못했습니다. Maven 로그는 빌드 탭에 있습니다. 이클립스로 배포해 둔 적이 있으면 「시작하기 › 이클립스에서 가져오기」로 채울 수 있습니다."
+            ));
+        }
         rt(&app, srv).deps_busy.store(false, Ordering::SeqCst);
         emit_state(&app);
     });
@@ -2735,6 +2747,159 @@ async fn pick_project(app: AppHandle, start: String) -> Result<Vec<String>, Stri
         }
         Ok(found)
     }).await.map_err(|e| e.to_string())?
+}
+
+/* ---------- 시작하기 (이클립스에서 가져오기 · 프로젝트 폴더 하나) ---------- */
+
+// dir 이 있으면 그 작업 공간만, 없으면 흔한 자리와 지금 프로젝트들의 부모 폴더에서 찾는다
+#[tauri::command]
+async fn eclipse_scan(app: AppHandle, dir: Option<String>) -> Result<Vec<eclipse::Workspace>, String> {
+    let projects: Vec<PathBuf> = shared(&app).cfg.lock().unwrap().servers.iter()
+        .filter(|s| !s.project.is_empty())
+        .filter_map(|s| Path::new(&s.project).parent().map(Path::to_path_buf))
+        .collect();
+    tauri::async_runtime::spawn_blocking(move || match dir {
+        Some(d) => {
+            let d = PathBuf::from(d.trim());
+            if !eclipse::is_workspace(&d) {
+                return Err(format!("이클립스 작업 공간이 아닙니다 (.metadata 의 서버 설정이 없습니다): {}", p(&d)));
+            }
+            Ok(vec![eclipse::read_workspace(&d)])
+        }
+        None => Ok(eclipse::find_workspaces(&projects).iter().map(|w| eclipse::read_workspace(w)).filter(|w| !w.servers.is_empty()).collect()),
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+// 고른 이클립스 서버를 실행기 서버로 — 같은 프로젝트를 쓰는 서버가 있으면 그것을, 프로젝트가 빈 서버가 있으면 그것을 채우고, 없으면 더한다.
+// 의존 jar 는 이클립스 배포본에서 옮긴다. 서버 수가 바뀌면 실행기를 다시 연다 (서버마다 감시 · 컴파일 줄을 켤 때 만든다).
+#[tauri::command]
+async fn eclipse_import(app: AppHandle, ws: String, ids: Vec<String>) -> Result<String, String> {
+    let picked: Vec<eclipse::EServer> = {
+        let w = PathBuf::from(&ws);
+        tauri::async_runtime::spawn_blocking(move || eclipse::read_workspace(&w)).await.map_err(|e| e.to_string())?
+            .servers.into_iter().filter(|s| ids.contains(&s.id) && !s.project.is_empty()).collect()
+    };
+    if picked.is_empty() {
+        return Err("가져올 서버가 없습니다 (프로젝트 폴더를 찾지 못했습니다).".into());
+    }
+    for (i, r) in shared(&app).rts.iter().enumerate() {
+        if r.inner.lock().unwrap().status != Status::Stopped {
+            return Err(format!("{} 톰캣을 끈 뒤에 가져오세요.", cfgs(&app, i).1.name));
+        }
+    }
+    let before = shared(&app).rts.len();
+    let mut c = shared(&app).cfg.lock().unwrap().clone();
+    let mut jobs = Vec::new();
+    for es in &picked {
+        let same = |a: &str| a.trim_end_matches('/').eq_ignore_ascii_case(es.project.trim_end_matches('/'));
+        let k = match c.servers.iter().position(|s| same(&s.project)).or_else(|| c.servers.iter().position(|s| s.project.trim().is_empty())) {
+            Some(k) => k,
+            None => {
+                let n = c.servers.len();
+                let id = (n + 1..).map(|k| format!("app{k}")).find(|id| c.servers.iter().all(|s| &s.id != id)).unwrap_or_default();
+                c.servers.push(new_server(&home_dir(), &id, &es.name, n as u16));
+                n
+            }
+        };
+        let sv = &mut c.servers[k];
+        sv.name = es.name.clone();
+        sv.project = es.project.clone();
+        if es.http_port > 0 { sv.http_port = es.http_port; }
+        if es.ajp_port > 0 { sv.ajp_port = es.ajp_port; }
+        if es.shutdown_port > 0 { sv.shutdown_port = es.shutdown_port; }
+        for a in &es.jvm_args {
+            if !sv.jvm_args.contains(a) { sv.jvm_args.push(a.clone()); }
+        }
+        if !es.tomcat_home.is_empty() { c.tomcat_home = es.tomcat_home.clone(); }
+        if !es.lib_dir.is_empty() { jobs.push((sv.name.clone(), es.lib_dir.clone(), es.project.clone(), PathBuf::from(&sv.deps_dir))); }
+    }
+    save_config(&c).map_err(|e| format!("설정을 저장하지 못했습니다: {e}"))?;
+    let restart = c.servers.len() != before;
+    *shared(&app).cfg.lock().unwrap() = c;
+    let mut notes = Vec::new();
+    for (name, lib, project, deps) in jobs {
+        let r = tauri::async_runtime::spawn_blocking(move || eclipse::copy_deps(&lib, &project, &deps)).await.map_err(|e| e.to_string())?;
+        match r {
+            Ok(n) => {
+                log(&app, None, "app", "ok", format!("{name} 의존 jar {n}개를 이클립스 배포본에서 옮겼습니다."));
+                notes.push(format!("{name} jar {n}개"));
+            }
+            Err(e) => {
+                log(&app, None, "app", "err", format!("{name} {e}"));
+                notes.push(format!("{name} jar 못 옮김"));
+            }
+        }
+    }
+    // 옮긴 jar 의 시각을 남겨 「의존 jar 낡음」 이 뜨지 않게 한다
+    for sv in shared(&app).cfg.lock().unwrap().servers.iter() {
+        if Path::new(&sv.deps_dir).is_dir() && read_stamp(&sv.deps_dir) == 0 {
+            let _ = fs::write(Path::new(&sv.deps_dir).join(STAMP_FILE), now_ms().to_string());
+        }
+    }
+    stop_daemon(&app, "");
+    let msg = format!("이클립스에서 서버 {}개를 가져왔습니다 · {}", picked.len(), notes.join(" · "));
+    log(&app, None, "app", "ok", msg.clone());
+    if restart {
+        // 서버 수가 바뀌었다 — 새 설정으로 다시 연다
+        app.restart();
+    }
+    emit_state(&app);
+    Ok(msg)
+}
+
+// 「시작하기 › 프로젝트 폴더 고르기」 — 그 서버의 프로젝트를 정하고, 의존 jar 는 이클립스 배포본이 있으면 옮기고 없으면 Maven 으로 받는다
+#[tauri::command]
+async fn quick_project(app: AppHandle, srv: usize, project: String) -> Result<String, String> {
+    check_srv(&app, srv)?;
+    let project = project.trim().replace('\\', "/").trim_end_matches('/').to_string();
+    if !Path::new(&project).join("src/main/webapp").is_dir() {
+        return Err(format!("src/main/webapp 이 있는 프로젝트 폴더를 고르세요: {project}"));
+    }
+    let (name, deps) = {
+        let mut c = shared(&app).cfg.lock().unwrap();
+        let sv = &mut c.servers[srv];
+        sv.project = project.clone();
+        // 기본 이름(「앱」 · 「앱 2」)이면 폴더 이름으로
+        if sv.name.starts_with("앱") {
+            sv.name = Path::new(&project).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        }
+        let out = (sv.name.clone(), PathBuf::from(&sv.deps_dir));
+        save_config(&c).map_err(|e| format!("설정을 저장하지 못했습니다: {e}"))?;
+        out
+    };
+    emit_state(&app);
+    // 이 프로젝트를 배포한 이클립스 서버가 있으면 그 jar 를 쓴다
+    let proj = project.clone();
+    let found = tauri::async_runtime::spawn_blocking(move || {
+        let parent = Path::new(&proj).parent().map(Path::to_path_buf).into_iter().collect::<Vec<_>>();
+        eclipse::find_workspaces(&parent).iter().flat_map(|w| eclipse::read_workspace(w).servers)
+            .find(|s| s.project.eq_ignore_ascii_case(&proj) && !s.lib_dir.is_empty())
+    }).await.map_err(|e| e.to_string())?;
+    if let Some(es) = found {
+        let n = tauri::async_runtime::spawn_blocking(move || eclipse::copy_deps(&es.lib_dir, &es.project, &deps)).await.map_err(|e| e.to_string())??;
+        let _ = fs::write(Path::new(&cfgs(&app, srv).1.deps_dir).join(STAMP_FILE), now_ms().to_string());
+        stop_daemon(&app, "");
+        emit_state(&app);
+        return Ok(format!("{name} · 의존 jar {n}개를 이클립스 배포본에서 옮겼습니다. 시작을 누르세요."));
+    }
+    if Path::new(&project).join("pom.xml").is_file() {
+        refresh_deps(app.clone(), srv)?;
+        return Ok(format!("{name} · 의존 jar 를 Maven 으로 받는 중입니다 (빌드 탭). 끝나면 시작을 누르세요."));
+    }
+    Ok(format!("{name} · 프로젝트를 정했습니다. 의존 jar 는 src/main/webapp/WEB-INF/lib 의 것만 씁니다."))
+}
+
+// 폴더 고르기 창 — 이클립스 작업 공간 · 톰캣 폴더를 고를 때
+#[tauri::command]
+async fn pick_dir(app: AppHandle, title: String) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    tauri::async_runtime::spawn_blocking(move || {
+        Ok(app.dialog().file().set_title(title).blocking_pick_folder().and_then(|f| f.into_path().ok()).map(|d| p(&d)))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /* ---------- 업데이트 ---------- */
@@ -3251,7 +3416,7 @@ fn main() {
             get_state, start, stop, restart, quit, compile, refresh_deps, set_option, set_heap, set_compiler, set_ignore, open, reveal, open_source,
             svn_status, svn_diff, svn_account, svn_login, svn_logout, svn_incoming, svn_log, svn_rev_diff,
             git_status, git_diff, git_incoming, git_log, git_rev_diff, set_vcs, set_paths, set_server, add_server, pick_project,
-            update_check, update_install, changelog
+            update_check, update_install, changelog, eclipse_scan, eclipse_import, quick_project, pick_dir
         ])
         .run(tauri::generate_context!())
         .expect("실행기를 띄우지 못했습니다");
