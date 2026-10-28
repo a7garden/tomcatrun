@@ -55,16 +55,20 @@ jobs:
         run: cargo test --release
 
       - name: 설치 파일 만들기
-        run: bash installer/build.sh
+        run: |
+          bash installer/build.sh
+          # 실행기의 자동 업데이트가 받은 파일을 대조한다 (GitHub 가 주는 digest 가 없을 때 쓰는 것)
+          cd installer/dist
+          for f in tomcatrun-setup-*.exe; do sha256sum "$f" | cut -d' ' -f1 > "$f.sha256"; done
 
       - uses: actions/upload-artifact@v4
         with:
           name: tomcatrun-setup
-          path: installer/dist/*.exe
+          path: installer/dist/tomcatrun-setup-*
 
       - name: 릴리스
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: installer/dist/*.exe
+          files: installer/dist/tomcatrun-setup-*
           generate_release_notes: true

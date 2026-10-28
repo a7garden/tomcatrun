@@ -23,6 +23,7 @@
 mod git;
 mod svn;
 mod svnweb;
+mod update;
 
 use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
@@ -134,6 +135,7 @@ struct Config {
     lazy_init: bool,      // 빈을 처음 쓸 때 만든다 (실험)
     mapper_hotswap: bool, // 바뀐 매퍼 하나만 다시 읽는다 (실험 · HotswapAgent MyBatis 플러그인)
     keep_session: bool,   // 재시작해도 로그인 유지 (톰캣 기본값과 같다)
+    update_check: bool,   // 켤 때 · 6시간마다 GitHub 릴리스에서 새 판을 확인한다
     tld_scan: String,     // TLD 를 찾을 jar (쉼표로 · 비우면 모든 jar) — server.xml 의 JarScanFilter
     ignore: Vec<String>,  // 저장 감시에서 뺄 파일 · 폴더 · 모든 서버 공통 · 프로젝트 기준 (「폴더/」 · 「*.sql」 · 「src/**/tmp」 꼴 · ignored() 참고)
     servers: Vec<ServerCfg>,
@@ -228,6 +230,7 @@ impl Default for Config {
             lazy_init: false,
             mapper_hotswap: false,
             keep_session: true,
+            update_check: true,
             tld_scan: String::new(),
             ignore: vec![],
             // 처음에는 빈 서버 하나 — 프로젝트 폴더 · 포트 · 접속 주소는 사용자가 「설정 › 서버」에서 정한다
@@ -254,8 +257,26 @@ fn new_server(h: &Path, id: &str, name: &str, n: u16) -> ServerCfg {
         debug_port: 8000 + n,
         jvm_args: vec![],
         vcs: VcsCfg::default(),
-        links: vec![link(&http.to_string(), &format!("http://localhost:{http}/"))],
+        // 2026-10-28 : 「http://localhost:8080/」 대신 「/」. 「/」로 시작하는 주소는 화면이 열 때 그 서버의 HTTP 포트를 붙이므로
+        // 포트를 바꿔도 열기 단추가 따라간다 (서버를 더할 때 포트를 올려도 링크를 다시 만들 필요가 없다)
+        links: vec![link("HTTP", "/")],
     }
+}
+
+/// 이 폴더에서 src/main/webapp 이 있는 프로젝트 폴더를 찾는다 — 그 폴더 자신, 없으면 바로 아래 한 단계.
+/// 저장소 맨 위(trunk 등)를 고르는 일이 흔해서 한 단계까지 내려가 본다. 더 깊이는 보지 않는다 (큰 폴더에서 오래 걸린다).
+fn webapp_roots(dir: &Path) -> Vec<String> {
+    let is_root = |d: &Path| d.join("src/main/webapp").is_dir();
+    if is_root(dir) {
+        return vec![p(dir)];
+    }
+    let mut v: Vec<String> = fs::read_dir(dir).into_iter().flatten().flatten()
+        .map(|e| e.path())
+        .filter(|d| d.is_dir() && is_root(d.as_path()))
+        .map(|d| p(&d))
+        .collect();
+    v.sort();
+    v
 }
 
 const CONFIG_FILE: &str = "tomcatrun.json";
@@ -333,7 +354,7 @@ fn load_config() -> (Config, Option<String>) {
         Err(_) => {
             let c = Config::default();
             let _ = save_config(&c);
-            (c, Some("처음 실행입니다. 「설정 › 서버」에서 프로젝트 폴더와 포트를 정하세요.".into()))
+            (c, Some("처음 실행입니다. 「설정 › 서버」에서 서버 이름 · 프로젝트 폴더 · 포트 · 열기 단추를 정하세요. 이 PC 에 맞는 값은 실행기가 알아내지 않습니다.".into()))
         }
     }
 }
@@ -447,6 +468,19 @@ struct Shared {
     svn_creds: Mutex<std::collections::HashMap<String, (String, String)>>, // 이번 실행에서만 쓰는 SVN 계정 (호스트별 · 저장 안 함을 고른 경우)
     job: isize, // 실행기가 죽어도 톰캣이 남지 않게 묶는 작업 개체
     quitting: AtomicBool, // 닫기를 확인해 톰캣을 끄는 중 — 그 사이 닫기를 또 눌러도 다시 묻지 않는다
+    update: Mutex<UpdateState>,
+}
+
+/// 업데이트 — 화면 위 알림 줄 · 설정 › 업데이트가 그린다
+#[derive(Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateState {
+    release: Option<update::Release>, // 이 판보다 새 판이 있으면
+    installable: bool,                // 설치본이라 실행기 안에서 설치까지 할 수 있다
+    checking: bool,
+    checked_at_ms: Option<u64>,
+    downloading: Option<u64>,         // 받은 바이트
+    error: Option<String>,
 }
 
 /// 상주 컴파일러 (helper/TomcatrunCompiler) — 띄워 둔 채 저장마다 일을 준다
@@ -561,6 +595,8 @@ struct Snapshot {
     keep_session: bool,
     ignore: Vec<String>,
     paths: Paths,
+    update_check: bool,
+    update: UpdateState,
     daemon: bool,
     daemon_kind: String,
     daemon_mem: Mem,
@@ -728,6 +764,8 @@ fn snapshot(app: &AppHandle) -> Snapshot {
             editor: c.editor.clone(),
             tld_scan: c.tld_scan.clone(),
         },
+        update_check: c.update_check,
+        update: sh.update.lock().unwrap().clone(),
         daemon:sh.daemon_alive.load(Ordering::Relaxed),
         daemon_kind: sh.daemon_kind.lock().unwrap().clone(),
         daemon_mem: *sh.daemon_mem.lock().unwrap(),
@@ -2438,6 +2476,11 @@ fn running_names(app: &AppHandle) -> Vec<String> {
 // 실행기가 갑자기 죽는 경우는 작업 개체가 톰캣을 함께 끈다.
 #[tauri::command]
 fn quit(app: AppHandle) {
+    quit_then(app, |_| {});
+}
+
+// 켜진 톰캣을 모두 정상 종료한 뒤 after 를 부르고 실행기를 끝낸다 (닫기 · 업데이트 설치)
+fn quit_then(app: AppHandle, after: impl FnOnce(&AppHandle) + Send + 'static) {
     if shared(&app).quitting.swap(true, Ordering::Relaxed) {
         return;
     }
@@ -2457,6 +2500,7 @@ fn quit(app: AppHandle) {
         for h in hs {
             let _ = h.join();
         }
+        after(&app);
         app.exit(0);
     });
 }
@@ -2521,6 +2565,7 @@ fn set_option(app: AppHandle, key: String, value: bool) -> Result<(), String> {
             "lazyInit" => c.lazy_init = value,
             "mapperHotswap" => c.mapper_hotswap = value,
             "keepSession" => c.keep_session = value,
+            "updateCheck" => c.update_check = value,
             _ => return Err(format!("모르는 옵션: {key}")),
         }
         save_config(&c).map_err(|e| format!("설정을 저장하지 못했습니다: {e}"))?;
@@ -2656,16 +2701,134 @@ fn add_server(app: AppHandle) -> Result<(), String> {
     let n = c.servers.len();
     let id = (n + 1..).map(|k| format!("app{k}")).find(|id| c.servers.iter().all(|s| &s.id != id)).unwrap_or_default();
     let mut sv = new_server(&home_dir(), &id, &format!("앱 {}", n + 1), n as u16);
-    // 기본 포트가 이미 쓰이면 비어 있는 자리까지 올린다
+    // 기본 포트가 이미 쓰이면 비어 있는 자리까지 올린다 — 다른 서버의 설정뿐 아니라 지금 이 PC 에서 듣고 있는 포트(IDE 톰캣 등)도 건너뛴다.
+    // 열기 단추는 「/」라 포트를 따라가므로 다시 만들지 않는다.
     let used: HashSet<u16> = c.servers.iter().flat_map(|s| [s.http_port, s.ajp_port, s.shutdown_port, s.debug_port]).collect();
     let mut k = n as u16;
-    while [sv.http_port, sv.ajp_port, sv.shutdown_port, sv.debug_port].iter().any(|x| used.contains(x)) {
+    while [sv.http_port, sv.ajp_port, sv.shutdown_port, sv.debug_port].iter().any(|&x| used.contains(&x) || port_busy(x)) {
         k += 1;
         let t = new_server(&home_dir(), &id, &sv.name, k);
-        (sv.http_port, sv.ajp_port, sv.shutdown_port, sv.debug_port, sv.links) = (t.http_port, t.ajp_port, t.shutdown_port, t.debug_port, t.links);
+        (sv.http_port, sv.ajp_port, sv.shutdown_port, sv.debug_port) = (t.http_port, t.ajp_port, t.shutdown_port, t.debug_port);
     }
     c.servers.push(sv);
     save_config(&c).map_err(|e| format!("설정을 저장하지 못했습니다: {e}"))
+}
+
+// 「설정 › 서버 › 프로젝트 폴더 › 고르기」 — Windows 폴더 고르기 창. 고른 폴더나 그 바로 아래에서 src/main/webapp 이 있는 폴더를 돌려준다.
+// 빈 목록이면 취소, 둘 이상이면 화면이 하나를 고르게 한다. 저장은 하지 않는다 (칸에 넣고 「저장」은 사용자가 누른다).
+// 창이 떠 있는 동안 막히므로 화면 스레드가 아닌 곳에서 띄운다.
+#[tauri::command]
+async fn pick_project(app: AppHandle, start: String) -> Result<Vec<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut dlg = app.dialog().file().set_title("프로젝트 폴더 고르기 (src/main/webapp 이 있는 폴더)");
+        let start = start.trim();
+        if !start.is_empty() && Path::new(start).is_dir() {
+            dlg = dlg.set_directory(start);
+        }
+        let Some(dir) = dlg.blocking_pick_folder().and_then(|f| f.into_path().ok()) else {
+            return Ok(vec![]);
+        };
+        let found = webapp_roots(&dir);
+        if found.is_empty() {
+            return Err(format!("src/main/webapp 이 있는 프로젝트 폴더를 고르세요: {}", p(&dir)));
+        }
+        Ok(found)
+    }).await.map_err(|e| e.to_string())?
+}
+
+/* ---------- 업데이트 ---------- */
+
+// 확인은 조용히 한다 — 회사망에서 GitHub 에 닿지 않을 수 있으므로 실패는 설정 › 업데이트에만 보이고 알림 줄에 올리지 않는다
+fn check_update(app: &AppHandle) {
+    {
+        let mut u = shared(app).update.lock().unwrap();
+        if u.checking || u.downloading.is_some() {
+            return;
+        }
+        u.checking = true;
+        u.error = None;
+    }
+    emit_state(app);
+    let r = update::check();
+    {
+        let mut u = shared(app).update.lock().unwrap();
+        u.checking = false;
+        u.checked_at_ms = Some(now_ms());
+        u.installable = update::installable(&home_dir());
+        match r {
+            Ok(rel) => {
+                if let Some(x) = &rel {
+                    log(app, None, "app", "", format!("새 판이 있습니다: {} (지금 {})", x.version, env!("CARGO_PKG_VERSION")));
+                }
+                u.release = rel;
+            }
+            Err(e) => u.error = Some(e),
+        }
+    }
+    emit_state(app);
+}
+
+// 켠 뒤 30초, 그 뒤 6시간마다 (설정에서 끌 수 있다)
+fn update_loop(app: AppHandle) {
+    thread::sleep(Duration::from_secs(30));
+    loop {
+        if app.state::<Shared>().cfg.lock().unwrap().update_check {
+            check_update(&app);
+        }
+        thread::sleep(Duration::from_secs(6 * 3600));
+    }
+}
+
+#[tauri::command]
+fn update_check(app: AppHandle) {
+    thread::spawn(move || check_update(&app));
+}
+
+// 받아서 해시를 대조한 뒤, 톰캣을 끄고 설치 파일을 조용히 돌리고 실행기를 닫는다. 설치 파일이 끝나면 실행기를 다시 띄운다.
+#[tauri::command]
+fn update_install(app: AppHandle) -> Result<(), String> {
+    let rel = {
+        let mut u = shared(&app).update.lock().unwrap();
+        if u.downloading.is_some() {
+            return Err("이미 받는 중입니다.".into());
+        }
+        let Some(rel) = u.release.clone() else { return Err("새 판이 없습니다.".into()) };
+        if !update::installable(&home_dir()) {
+            return Err("설치본이 아니라 여기서 설치할 수 없습니다. 릴리스 페이지에서 받으세요.".into());
+        }
+        u.downloading = Some(0);
+        u.error = None;
+        rel
+    };
+    emit_state(&app);
+    thread::spawn(move || {
+        log(&app, None, "app", "", format!("업데이트 {} 를 받습니다: {}", rel.version, rel.asset));
+        let a = app.clone();
+        let r = update::download(&rel, move |got| {
+            shared(&a).update.lock().unwrap().downloading = Some(got);
+            emit_state(&a);
+        });
+        match r {
+            Ok(setup) => {
+                log(&app, None, "app", "", format!("받았습니다 (해시 일치). 톰캣을 끄고 {} 를 설치합니다.", rel.version));
+                quit_then(app, move |app| {
+                    if let Err(e) = update::run_installer(&setup, &home_dir()) {
+                        log(app, None, "app", "err", e);
+                    }
+                });
+            }
+            Err(e) => {
+                log(&app, None, "app", "err", e.clone());
+                let mut u = shared(&app).update.lock().unwrap();
+                u.downloading = None;
+                u.error = Some(e);
+                drop(u);
+                emit_state(&app);
+            }
+        }
+    });
+    Ok(())
 }
 
 #[tauri::command]
@@ -3012,6 +3175,7 @@ fn main() {
         svn_creds: Mutex::new(std::collections::HashMap::new()),
         job: make_job(),
         quitting: AtomicBool::new(false),
+        update: Mutex::new(UpdateState::default()),
     };
 
     tauri::Builder::default()
@@ -3022,6 +3186,8 @@ fn main() {
                 let _ = w.set_focus();
             }
         }))
+        // 폴더 고르기 창 — 실행기 쪽(pick_project)에서만 부르므로 화면 권한(capabilities)은 더하지 않는다
+        .plugin(tauri_plugin_dialog::init())
         .manage(shared)
         .setup(move |app| {
             let h = app.handle().clone();
@@ -3040,6 +3206,8 @@ fn main() {
             start_watchers(&h);
             let h5 = h.clone();
             thread::spawn(move || warm_daemon(&h5));
+            let h7 = h.clone();
+            thread::spawn(move || update_loop(h7));
             let h6 = h.clone();
             thread::spawn(move || monitor(h6));
             Ok(())
@@ -3063,7 +3231,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             get_state, start, stop, restart, quit, compile, refresh_deps, set_option, set_heap, set_compiler, set_ignore, open, open_source,
             svn_status, svn_diff, svn_account, svn_login, svn_logout, svn_incoming, svn_log, svn_rev_diff,
-            git_status, git_diff, git_incoming, git_log, git_rev_diff, set_vcs, set_paths, set_server, add_server
+            git_status, git_diff, git_incoming, git_log, git_rev_diff, set_vcs, set_paths, set_server, add_server, pick_project,
+            update_check, update_install
         ])
         .run(tauri::generate_context!())
         .expect("실행기를 띄우지 못했습니다");
@@ -3206,7 +3375,8 @@ mod tests {
         let def = Config::default();
         assert_eq!(def.servers.len(), 1);
         assert!(def.servers[0].project.is_empty());
-        assert_eq!(def.servers[0].links[0].url, "http://localhost:8080/");
+        // 열기 단추는 「/」 하나 — 화면이 그 서버의 HTTP 포트를 붙여 연다
+        assert_eq!(def.servers[0].links[0].url, "/");
         // 2026-10-28 에 지운 「SVN 로그인 안내」(vcs.accountNote)가 남은 파일도 읽히고, 다시 쓰면 빠진다
         let c = parse_config(r#"{"servers":[{"vcs":{"kind":"svn","accountNote":"x"}}]}"#).unwrap();
         assert_eq!(c.servers[0].vcs.kind, "svn");
@@ -3223,6 +3393,21 @@ mod tests {
         let pa = [a.http_port, a.ajp_port, a.shutdown_port, a.debug_port];
         let pb = [b.http_port, b.ajp_port, b.shutdown_port, b.debug_port];
         assert!(pb.iter().all(|x| !pa.contains(x)), "{pa:?} {pb:?}");
+    }
+
+    #[test]
+    fn 고른_폴더나_한_단계_아래에서_프로젝트를_찾는다() {
+        let t = std::env::temp_dir().join(format!("tomcatrun-pick-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&t);
+        for d in ["a/src/main/webapp", "b/src/main/webapp", "c/x", "d/e/src/main/webapp"] {
+            fs::create_dir_all(t.join(d)).unwrap();
+        }
+        // 그 폴더 자신이면 그것 하나
+        assert_eq!(webapp_roots(&t.join("a")), [p(&t.join("a"))]);
+        // 바로 아래 한 단계만 본다 — d/e 는 두 단계라 찾지 않는다
+        assert_eq!(webapp_roots(&t), [p(&t.join("a")), p(&t.join("b"))]);
+        assert!(webapp_roots(&t.join("c")).is_empty());
+        let _ = fs::remove_dir_all(&t);
     }
 
     #[test]

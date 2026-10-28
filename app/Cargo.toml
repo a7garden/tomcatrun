@@ -1,6 +1,6 @@
 [package]
 name = "tomcatrun"
-version = "0.6.0"   # 버전은 여기 한 곳 — tauri.conf.json · 설치 파일 · 화면이 이 값을 따른다 (CHANGELOG.md)
+version = "0.7.0"   # 버전은 여기 한 곳 — tauri.conf.json · 설치 파일 · 화면이 이 값을 따른다 (CHANGELOG.md)
 edition = "2021"
 description = "tomcatrun — 로컬 톰캣 개발 실행기 (컴파일 · 핫리로드 · 읽기 전용 SVN/Git)"
 
@@ -14,13 +14,18 @@ serde_json = "1"
 notify = "8"
 encoding_rs = "0.8"
 tauri-plugin-single-instance = "2"
+# 「설정 › 서버 › 프로젝트 폴더」의 Windows 폴더 고르기 창
+tauri-plugin-dialog = "2"
 # 작업 개체(Job Object) — 실행기가 죽으면 톰캣도 함께 끝나게 한다. 버전은 tauri 가 이미 쓰는 것에 맞췄다.
 # 읽기 전용 SVN — wc.db 를 읽기 전용 · immutable 로 연다 (svn 명령을 쓰지 않는다) · 기준본과의 차이
 rusqlite = { version = "0.32", features = ["bundled"] }
 sha1_smol = "1"
 similar = "2"
-# 읽기 전용 저장소 조회 (OPTIONS · REPORT · GET) — 저장소가 http 라 TLS 는 빼고 작게 쓴다
-ureq = { version = "2", default-features = false }
+# 읽기 전용 저장소 조회 (OPTIONS · REPORT · GET) · 업데이트 확인 (GitHub 릴리스)
+# TLS 는 Windows 인증서 저장소(SChannel)를 쓰는 native-tls — 사내 프록시 인증서도 Windows 가 믿으면 통한다
+ureq = { version = "2", default-features = false, features = ["native-tls", "proxy-from-env"] }
+native-tls = "0.2"
+sha2 = "0.10"
 base64 = "0.22"
 roxmltree = "0.20"
 # 메모리 표시 — ProcessStatus(프로세스 메모리) · ToolHelp(실행기 아래 화면 엔진 프로세스 찾기)
