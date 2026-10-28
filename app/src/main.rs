@@ -259,7 +259,7 @@ fn new_server(h: &Path, id: &str, name: &str, n: u16) -> ServerCfg {
         jvm_args: vec![],
         vcs: VcsCfg::default(),
         // 2026-10-28 : 「http://localhost:8080/」 대신 「/」. 「/」로 시작하는 주소는 화면이 열 때 그 서버의 HTTP 포트를 붙이므로
-        // 포트를 바꿔도 열기 단추가 따라간다 (서버를 더할 때 포트를 올려도 링크를 다시 만들 필요가 없다)
+        // 포트를 바꿔도 바로가기가 따라간다 (서버를 더할 때 포트를 올려도 링크를 다시 만들 필요가 없다)
         links: vec![link("HTTP", "/")],
     }
 }
@@ -355,7 +355,7 @@ fn load_config() -> (Config, Option<String>) {
         Err(_) => {
             let c = Config::default();
             let _ = save_config(&c);
-            (c, Some("처음 실행입니다. 「설정 › 서버」에서 서버 이름 · 프로젝트 폴더 · 포트 · 열기 단추를 정하세요. 이 PC 에 맞는 값은 실행기가 알아내지 않습니다.".into()))
+            (c, Some("처음 실행입니다. 「설정 › 서버」에서 서버 이름 · 프로젝트 폴더 · 포트 · 바로가기를 정하세요. 이 PC 에 맞는 값은 실행기가 알아내지 않습니다.".into()))
         }
     }
 }
@@ -565,7 +565,7 @@ struct Paths {
     tld_scan: String,
 }
 
-/// 「설정 › 서버」 한 칸 — 서버 하나의 이름 · 프로젝트 · 포트 · 열기 단추 · JVM 인자
+/// 「설정 › 서버」 한 칸 — 서버 하나의 이름 · 프로젝트 · 포트 · 바로가기 · JVM 인자
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ServerEdit {
@@ -2698,7 +2698,7 @@ fn set_paths(app: AppHandle, paths: Paths) -> Result<(), String> {
     Ok(())
 }
 
-// 「설정 › 서버」 — 포트 · 이름 · 열기 단추는 다음 기동부터, 프로젝트 폴더의 저장 감시는 실행기를 다시 열면 따라간다
+// 「설정 › 서버」 — 포트 · 이름 · 바로가기는 다음 기동부터, 프로젝트 폴더의 저장 감시는 실행기를 다시 열면 따라간다
 #[tauri::command]
 fn set_server(app: AppHandle, srv: usize, edit: ServerEdit) -> Result<bool, String> {
     check_srv(&app, srv)?;
@@ -2758,7 +2758,7 @@ fn add_server(app: AppHandle) -> Result<(), String> {
     let id = (n + 1..).map(|k| format!("app{k}")).find(|id| c.servers.iter().all(|s| &s.id != id)).unwrap_or_default();
     let mut sv = new_server(&home_dir(), &id, &format!("앱 {}", n + 1), n as u16);
     // 기본 포트가 이미 쓰이면 비어 있는 자리까지 올린다 — 다른 서버의 설정뿐 아니라 지금 이 PC 에서 듣고 있는 포트(IDE 톰캣 등)도 건너뛴다.
-    // 열기 단추는 「/」라 포트를 따라가므로 다시 만들지 않는다.
+    // 바로가기는 「/」라 포트를 따라가므로 다시 만들지 않는다.
     let used: HashSet<u16> = c.servers.iter().flat_map(|s| [s.http_port, s.ajp_port, s.shutdown_port, s.debug_port]).collect();
     let mut k = n as u16;
     while [sv.http_port, sv.ajp_port, sv.shutdown_port, sv.debug_port].iter().any(|&x| used.contains(&x) || port_busy(x)) {
@@ -3676,7 +3676,7 @@ mod tests {
         let def = Config::default();
         assert_eq!(def.servers.len(), 1);
         assert!(def.servers[0].project.is_empty());
-        // 열기 단추는 「/」 하나 — 화면이 그 서버의 HTTP 포트를 붙여 연다
+        // 바로가기는 「/」 하나 — 화면이 그 서버의 HTTP 포트를 붙여 연다
         assert_eq!(def.servers[0].links[0].url, "/");
         // 2026-10-28 에 지운 「SVN 로그인 안내」(vcs.accountNote)가 남은 파일도 읽히고, 다시 쓰면 빠진다
         let c = parse_config(r#"{"servers":[{"vcs":{"kind":"svn","accountNote":"x"}}]}"#).unwrap();

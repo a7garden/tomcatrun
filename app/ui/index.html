@@ -269,13 +269,42 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .page-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 12px; max-width: 1400px; padding: 16px 20px 40px; }
 .card { min-width: 0; padding: 12px 16px 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
 .card.span { grid-column: 1 / -1; }
-.card h2, .set-sec h2 { font-size: 14px; font-weight: 600; margin: 0 0 6px; }
+.card h2 { font-size: 14px; font-weight: 600; margin: 0 0 6px; }
 .note { padding: 8px 12px; border: 1px solid var(--warn-line); background: var(--warn-weak); color: var(--warn); border-radius: 6px; margin-bottom: 16px; }
 
-/* 2026-10-28 : 왼쪽 구획 목록을 걷고 한 기둥으로. 설명을 걷어 한두 화면에 다 들어온다. */
-.set-wrap { max-width: 880px; padding: 20px 24px 48px; }
-.set-sec { margin-bottom: 24px; }
-.set-sec h2 { margin-bottom: 8px; }
+/* 설정 — 2026-10-28 : 탭 한 쪽의 한 기둥 → 모달. 왼쪽 구획 목록에서 고른 구획 하나만 오른쪽에 보인다.
+   한 기둥으로 늘어놓으니 넓은 창에서 오른쪽이 비고, 구획이 여덟 개라 스크롤로 찾기 어려웠다. */
+.scrim.set-scrim { z-index: 15; padding: 24px; }
+.dlg.settings {
+	display: grid; grid-template-columns: 200px minmax(0, 1fr); max-width: 1040px; height: min(720px, 100%);
+	padding: 0; overflow: hidden; background: var(--bg);
+}
+.set-nav { display: flex; flex-direction: column; gap: 1px; padding: 16px 8px; background: var(--side); border-right: 1px solid var(--line); overflow: auto; }
+.set-nav h2 { margin: 0 0 6px; padding: 0 10px; font-size: 14px; font-weight: 600; }
+.set-nav .grp { margin: 14px 0 4px; padding: 0 10px; font-size: 11px; font-weight: 600; color: var(--faint); }
+.set-nav button {
+	display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 10px; flex: none;
+	border: 0; border-radius: 6px; background: none; color: var(--muted); font: 500 13px var(--ui); text-align: left; cursor: pointer;
+}
+.set-nav button .ic { color: var(--faint); }
+.set-nav button:hover { background: var(--panel-2); color: var(--text); }
+.set-nav button.on { background: var(--panel); color: var(--text); font-weight: 600; box-shadow: inset 0 0 0 1px var(--line); }
+.set-nav button.on .ic { color: var(--text); }
+.set-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.set-head { display: flex; align-items: center; gap: 8px; flex: none; height: 52px; padding: 0 10px 0 28px; background: var(--panel); border-bottom: 1px solid var(--line); }
+.set-head h3 { flex: 1; margin: 0; font-size: 14px; font-weight: 600; }
+.set-head .btn { width: 28px; padding: 0; justify-content: center; }
+.set-body { flex: 1; min-height: 0; overflow: auto; padding: 20px 28px 32px; }
+.set-body .note { margin-bottom: 14px; }
+.set-err { margin-bottom: 14px; padding: 8px 12px; border: 1px solid var(--crit-line); background: var(--crit-weak); color: var(--crit); border-radius: 6px; cursor: pointer; overflow-wrap: anywhere; }
+.set-sec h3 { margin: 20px 0 8px; font-size: 12.5px; font-weight: 600; color: var(--muted); }
+.set-sec h3:first-child { margin-top: 0; }
+@media (max-width: 720px) {
+	.scrim.set-scrim { padding: 8px; }
+	.dlg.settings { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); height: 100%; }
+	.set-nav { flex-direction: row; padding: 8px; border-right: 0; border-bottom: 1px solid var(--line); }
+	.set-nav h2, .set-nav .grp { display: none; }
+}
 
 /* 옵션 줄 — 2026-10-28 : 설명을 단 카드 격자 → 이름 · 조작 한 줄의 목록. 설명은 줄의 title 로 옮겼다.
    딸린 옵션(.sub)은 부모 아래 들여 써서 「무엇에 딸렸는지」를 글 대신 자리로 보인다. */
@@ -425,7 +454,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .vcs-srv .field textarea { width: 100%; min-height: 54px; resize: vertical; font: 12px/1.5 var(--mono); }
 .vcs-srv .field.top { align-items: start; }
 .vcs-srv .field.top > span { padding-top: 4px; }
-/* 열기 단추 줄 (이름 · 주소 · 빼기) · 프로젝트 폴더 칸 옆 「고르기」 */
+/* 바로가기 줄 (이름 · 주소 · 빼기) · 프로젝트 폴더 칸 옆 「고르기」 */
 .vcs-srv .links { display: grid; gap: 4px; }
 .vcs-srv .link-row, .vcs-srv .pick { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr) auto; gap: 4px; align-items: center; }
 .vcs-srv .pick { grid-template-columns: minmax(0, 1fr) auto; }
@@ -471,7 +500,8 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 #sbMem b:last-child { margin-right: 0; }
 /* 떠 있는 것(메뉴 · 알림 조각 · 대화상자)만 그림자를 단다 — docket .pop. 바닥에 붙은 판은 선으로만 나눈다. */
 .menu {
-	position: fixed; z-index: 10; min-width: 240px; max-width: 520px; max-height: calc(100vh - 16px); overflow: auto; padding: 4px; background: var(--panel);
+	position: fixed; z-index: 25;   /* 설정 모달(15) · 시작하기(20) 안에서도 연다 */
+	 min-width: 240px; max-width: 520px; max-height: calc(100vh - 16px); overflow: auto; padding: 4px; background: var(--panel);
 	border: 1px solid var(--line-strong); border-radius: 8px; box-shadow: var(--shadow-pop);
 }
 .menu button { display: block; width: 100%; text-align: left; border: 0; background: none; padding: 6px 10px; border-radius: 5px; font: 13px var(--ui); color: var(--text); cursor: pointer; }
@@ -481,7 +511,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .menu hr { border: 0; border-top: 1px solid var(--line-soft); margin: 4px 2px; }
 .menu small { display: block; color: var(--muted); font-family: var(--mono); font-size: 11.5px; overflow-wrap: anywhere; }
 .toast {
-	position: fixed; right: 16px; bottom: 40px; z-index: 11; display: flex; align-items: center; gap: 8px;
+	position: fixed; right: 16px; bottom: 40px; z-index: 26; display: flex; align-items: center; gap: 8px;
 	padding: 8px 14px; background: var(--panel); color: var(--text); border-radius: 6px;
 	border: 1px solid var(--line-strong); box-shadow: var(--shadow-pop); font-size: 12.5px;
 	opacity: 0; transform: translateY(6px); transition: opacity .18s ease-out, transform .18s ease-out; pointer-events: none;
@@ -533,6 +563,12 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 	<symbol id="i-x" viewBox="0 0 24 24"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></symbol>
 	<symbol id="i-folder" viewBox="0 0 24 24"><path d="M4 7a1.5 1.5 0 0 1 1.5-1.5h4l2 2h7A1.5 1.5 0 0 1 20 9v8.5a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 17.5z"/></symbol>
 	<symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="10.5" height="10.5" rx="1.5"/><path d="M15 9V6a1.5 1.5 0 0 0-1.5-1.5h-7.5A1.5 1.5 0 0 0 4.5 6v7.5A1.5 1.5 0 0 0 6 15h3"/></symbol>
+	<symbol id="i-server" viewBox="0 0 24 24"><rect x="4.5" y="4.5" width="15" height="6" rx="1.5"/><rect x="4.5" y="13.5" width="15" height="6" rx="1.5"/><path d="M8 7.5h.01M8 16.5h.01"/></symbol>
+	<symbol id="i-branch" viewBox="0 0 24 24"><circle cx="7" cy="6" r="2"/><circle cx="7" cy="18" r="2"/><circle cx="17" cy="8" r="2"/><path d="M7 8v8M17 10c0 4-10 2-10 6"/></symbol>
+	<symbol id="i-bolt" viewBox="0 0 24 24"><path d="M13 3.5L5.5 13.5h6l-1 7 7.5-10h-6z"/></symbol>
+	<symbol id="i-gauge" viewBox="0 0 24 24"><path d="M4.5 16.5a7.5 7.5 0 1 1 15 0"/><path d="M12 16.5l3.5-5"/></symbol>
+	<symbol id="i-eye-off" viewBox="0 0 24 24"><path d="M3.5 12s3-5.5 8.5-5.5S20.5 12 20.5 12s-3 5.5-8.5 5.5S3.5 12 3.5 12z"/><circle cx="12" cy="12" r="2.5"/><path d="M4.5 4.5l15 15"/></symbol>
+	<symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4.5v10.5M7.5 10.5l4.5 4.5 4.5-4.5"/><path d="M5 19.5h14"/></symbol>
 	<symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8.5" r="3.5"/><path d="M5 19.5c1-3.3 3.8-5 7-5s6 1.7 7 5"/></symbol>
 </svg>
 
@@ -617,92 +653,6 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 		</div>
 	</section>
 
-	<!-- 설정 : 한 번 정하면 거의 바꾸지 않는 것
-	     2026-10-28 : 구획 목록 · 설명 카드 → 한 기둥의 목록 줄. 화면에는 이름과 값만 두고 설명은 줄의 title 에 둔다.
-	     딸린 옵션은 부모 아래 들여 쓴다 (매퍼 하나만 → 핫리로드 · 컴파일러 → 저장하면 컴파일). -->
-	<section class="pane page" id="paneSettings" hidden>
-		<div class="set-wrap">
-			<div class="note" id="optNote" hidden>재시작해야 적용됩니다.</div>
-
-			<!-- 프로젝트 폴더 · 포트 · 접속 주소처럼 쓰는 곳마다 다른 값은 실행기에 들어 있지 않다. 여기서 정하면 tomcatrun.json 에 저장된다. -->
-			<section class="set-sec" id="setServers">
-				<h2>서버</h2>
-				<div class="vcs-cols" id="srvForms"></div>
-				<div class="sec-acts"><button class="btn" id="srvImport">이클립스에서 가져오기</button><button class="btn" id="srvAdd">서버 추가</button><span>더한 서버는 실행기를 다시 열면 보입니다.</span></div>
-			</section>
-
-			<section class="set-sec" id="setPaths">
-				<h2>경로</h2>
-				<div class="vcs-cols"><div class="vcs-srv" id="pathForm"></div></div>
-			</section>
-
-			<section class="set-sec" id="setLive">
-				<h2>고쳐서 바로 보기</h2>
-				<div class="opts">
-					<label class="opt" title="DCEVM JDK 와 HotswapAgent 로 띄웁니다. 메서드 · 필드 추가와 새 빈까지 재시작 없이 들어갑니다."><input type="checkbox" id="optHot"><span>자바 핫리로드</span></label>
-					<label class="opt sub" id="rowMapper" title="매퍼 XML 을 저장하면 그 파일만 다시 읽습니다 (HotswapAgent MyBatis 플러그인). 핫리로드일 때만 동작하고, 반응이 없으면 알려 줍니다."><input type="checkbox" id="optMapper"><span>매퍼 하나만 다시 읽기<span class="tag">실험</span></span></label>
-					<label class="opt" title="각 프로젝트의 src/main/java 를 지켜보다가 바뀐 파일만 컴파일합니다. 다른 도구로 고쳐도 잡힙니다."><input type="checkbox" id="optAuto"><span>저장하면 컴파일</span></label>
-					<div class="opt field sub" title="어느 쪽이든 상주해 있어서 저장할 때마다 JVM 을 새로 띄우지 않습니다."><span>컴파일러</span>
-						<select id="selCompiler"><option value="ecj">ECJ (이클립스 컴파일러)</option><option value="javac">javac</option></select></div>
-					<label class="opt" title="IDE 에서 원격 디버그로 붙습니다."><input type="checkbox" id="optDebug"><span>디버거 연결 허용</span><span class="val num" id="debugHint"></span></label>
-				</div>
-			</section>
-
-			<section class="set-sec" id="setBoot">
-				<h2>기동 · 메모리</h2>
-				<div class="opts">
-					<div class="opt field" title="상한을 두면 메모리가 그 안에서 돕니다."><span>톰캣 힙 상한</span>
-						<select id="selHeap"><option value="1024">1GB</option><option value="1536">1.5GB</option><option value="2048">2GB</option><option value="3072">3GB</option><option value="0">상한 없음 (JVM 기본값)</option></select></div>
-					<label class="opt" title="C1 컴파일러만 쓰고 바이트코드 검증을 건너뜁니다. 기동이 빨라지는 대신 오래 돌 때 최고 속도는 낮습니다."><input type="checkbox" id="optFast"><span>빠른 기동 JVM 옵션</span></label>
-					<label class="opt" title="톰캣이 기동마다 모든 클래스에서 서블릿 애너테이션을 찾지 않게 합니다. 애너테이션으로 등록한 서블릿 · 필터가 없는 앱에서만 켭니다. 원본 web.xml 은 그대로 두고 사본에 표시만 더합니다."><input type="checkbox" id="optSkipScan"><span>클래스 전체 탐색 건너뛰기</span></label>
-					<label class="opt" title="함께 뜨면 CPU 를 나눠 써 서로 느려집니다. 먼저 누른 서버가 다 뜬 뒤 다음 서버를 띄웁니다."><input type="checkbox" id="optStagger"><span>서버를 차례로 띄우기</span></label>
-				</div>
-			</section>
-
-			<section class="set-sec" id="setApp">
-				<h2>개발 전용 앱 설정</h2>
-				<div class="opts">
-					<label class="opt" title="데이터소스마다 처음에 여는 연결을 20개에서 1개로 줄입니다. 재시작 뒤 첫 화면이 빨라집니다. 프로젝트 소스는 그대로 둡니다."><input type="checkbox" id="optPool"><span>DB 연결 미리 열기 1개</span></label>
-					<label class="opt" title="@Scheduled 로 등록한 예약 작업을 돌리지 않습니다."><input type="checkbox" id="optSchedule"><span>예약 작업 멈추기</span></label>
-					<label class="opt" title="빈을 처음 쓸 때 만듭니다. 기동이 짧아지는 대신 처음 여는 화면이 그만큼 느리고, 설정 오류가 그때 드러납니다. 예약 작업도 그 화면을 열 때까지 돌지 않습니다."><input type="checkbox" id="optLazy"><span>지연 초기화<span class="tag">실험</span></span></label>
-					<label class="opt" title="정상 종료 때 세션을 저장했다가 되살립니다 (톰캣 기본 동작)."><input type="checkbox" id="optSession"><span>재시작해도 로그인 유지</span></label>
-				</div>
-			</section>
-
-			<!-- 「기본」 줄은 app/src/main.rs 의 늘 빼는 규칙(편집기 임시 파일 · resources-* · java/ · webapp/ 사본)을 그대로 적은 것이다. 그쪽을 바꾸면 renderIgnore 의 IGNORE_BUILTIN 도 고친다. -->
-			<section class="set-sec" id="setIgnore">
-				<h2>저장 감시 제외</h2>
-				<ul class="ign" id="ignList"></ul>
-				<div class="ign-add">
-					<input type="text" id="ignInput" spellcheck="false" placeholder="예) a.sql · *.sql · src/main/resources/db/deploy/"
-						title="여기 걸린 파일은 저장해도 반영 기록 · 재시작 알림 · 자동 컴파일에 넣지 않습니다. 버전 관리 「내 변경」 목록에는 그대로 나옵니다.&#10;탐색기에서 복사한 전체 경로도 프로젝트 기준으로 바뀌고, 여러 줄을 붙여 넣으면 줄마다 하나씩 들어갑니다.&#10;「/」 가 없으면 이름으로 맞춥니다. 같은 이름의 폴더가 있으면 그 아래도 빠집니다.">
-					<button class="btn" id="ignAdd">추가</button>
-				</div>
-				<dl class="pat" title="누르면 입력칸에 넣습니다">
-					<dt><button type="button" class="ex">a.sql</button></dt><dd>어느 폴더에서나 이 이름의 파일</dd>
-					<dt><button type="button" class="ex">*.sql</button></dt><dd>어느 폴더에서나 이 확장자</dd>
-					<dt><button type="button" class="ex">src/main/a.sql</button></dt><dd>그 파일 하나만</dd>
-					<dt><button type="button" class="ex">src/main/resources/</button></dt><dd>그 폴더 아래 전부</dd>
-					<dt><button type="button" class="ex">deploy/</button></dt><dd>어디에 있든 이 이름의 폴더</dd>
-					<dt><button type="button" class="ex">src/**/tmp/</button></dt><dd>중간 폴더가 몇 단이든</dd>
-				</dl>
-			</section>
-
-			<section class="set-sec" id="setVcs">
-				<h2>버전 관리</h2>
-				<div class="vcs-cols" id="vcsForms"></div>
-			</section>
-
-			<section class="set-sec" id="setUpdate">
-				<h2>업데이트</h2>
-				<div class="opts">
-					<label class="opt" title="켤 때와 6시간마다 GitHub 릴리스에서 새 판을 확인합니다. 새 판이 있으면 위 알림 줄에 「업데이트」 단추가 뜹니다."><input type="checkbox" id="optUpdate"><span>새 판 자동 확인</span></label>
-				</div>
-				<div class="sec-acts"><button class="btn" id="updNow">지금 확인</button><button class="btn primary" id="updGo" hidden>업데이트</button><span id="updState"></span></div>
-				<div class="chlog" id="chlog"></div>
-			</section>
-		</div>
-	</section>
 </main>
 
 <footer class="statusbar">
@@ -711,6 +661,105 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 </footer>
 
 <div class="menu" id="menu" role="menu" hidden></div>
+<!-- 설정 : 한 번 정하면 거의 바꾸지 않는 것
+     2026-10-28 : 구획 목록 · 설명 카드 → 한 기둥의 목록 줄. 화면에는 이름과 값만 두고 설명은 줄의 title 에 둔다.
+     딸린 옵션은 부모 아래 들여 쓴다 (매퍼 하나만 → 핫리로드 · 컴파일러 → 저장하면 컴파일).
+     2026-10-28 : 탭 → 모달. 왼쪽 목록에서 고른 구획 하나만 보인다 (data-sec 가 구획 id). 구획을 더하면 목록에도 한 줄 더한다. -->
+<div class="scrim set-scrim" id="setScrim" hidden>
+	<div class="dlg settings" role="dialog" aria-modal="true" aria-labelledby="setTitle">
+		<nav class="set-nav" id="setNav">
+			<h2 id="setTitle">설정</h2>
+			<div class="grp">서버</div>
+			<button data-sec="setServers"><svg class="ic"><use href="#i-server"/></svg>서버</button>
+			<button data-sec="setPaths"><svg class="ic"><use href="#i-folder"/></svg>경로</button>
+			<button data-sec="setVcs"><svg class="ic"><use href="#i-branch"/></svg>버전 관리</button>
+			<div class="grp">동작</div>
+			<button data-sec="setLive"><svg class="ic"><use href="#i-bolt"/></svg>고쳐서 바로 보기</button>
+			<button data-sec="setBoot"><svg class="ic"><use href="#i-gauge"/></svg>기동 · 메모리</button>
+			<button data-sec="setApp"><svg class="ic"><use href="#i-sliders"/></svg>개발 전용 앱 설정</button>
+			<button data-sec="setIgnore"><svg class="ic"><use href="#i-eye-off"/></svg>저장 감시 제외</button>
+			<div class="grp">앱</div>
+			<button data-sec="setUpdate"><svg class="ic"><use href="#i-download"/></svg>업데이트</button>
+		</nav>
+		<div class="set-main">
+			<header class="set-head"><h3 id="setSecTitle"></h3><button class="btn ghost" id="setClose" aria-label="닫기" title="닫기 (Esc)"><svg class="ic"><use href="#i-x"/></svg></button></header>
+			<div class="set-body" id="setBody">
+				<div class="set-err" id="setErr" title="누르면 닫습니다" hidden></div>
+				<div class="note" id="optNote" hidden>재시작해야 적용됩니다.</div>
+
+				<!-- 프로젝트 폴더 · 포트 · 접속 주소처럼 쓰는 곳마다 다른 값은 실행기에 들어 있지 않다. 여기서 정하면 tomcatrun.json 에 저장된다. -->
+				<section class="set-sec" id="setServers">
+					<div class="vcs-cols" id="srvForms"></div>
+					<div class="sec-acts"><button class="btn" id="srvImport">이클립스에서 가져오기</button><button class="btn" id="srvAdd">서버 추가</button><span>더한 서버는 실행기를 다시 열면 보입니다.</span></div>
+				</section>
+
+				<section class="set-sec" id="setPaths">
+					<div class="vcs-cols"><div class="vcs-srv" id="pathForm"></div></div>
+				</section>
+
+				<section class="set-sec" id="setLive">
+					<div class="opts">
+						<label class="opt" title="DCEVM JDK 와 HotswapAgent 로 띄웁니다. 메서드 · 필드 추가와 새 빈까지 재시작 없이 들어갑니다."><input type="checkbox" id="optHot"><span>자바 핫리로드</span></label>
+						<label class="opt sub" id="rowMapper" title="매퍼 XML 을 저장하면 그 파일만 다시 읽습니다 (HotswapAgent MyBatis 플러그인). 핫리로드일 때만 동작하고, 반응이 없으면 알려 줍니다."><input type="checkbox" id="optMapper"><span>매퍼 하나만 다시 읽기<span class="tag">실험</span></span></label>
+						<label class="opt" title="각 프로젝트의 src/main/java 를 지켜보다가 바뀐 파일만 컴파일합니다. 다른 도구로 고쳐도 잡힙니다."><input type="checkbox" id="optAuto"><span>저장하면 컴파일</span></label>
+						<div class="opt field sub" title="어느 쪽이든 상주해 있어서 저장할 때마다 JVM 을 새로 띄우지 않습니다."><span>컴파일러</span>
+							<select id="selCompiler"><option value="ecj">ECJ (이클립스 컴파일러)</option><option value="javac">javac</option></select></div>
+						<label class="opt" title="IDE 에서 원격 디버그로 붙습니다."><input type="checkbox" id="optDebug"><span>디버거 연결 허용</span><span class="val num" id="debugHint"></span></label>
+					</div>
+				</section>
+
+				<section class="set-sec" id="setBoot">
+					<div class="opts">
+						<div class="opt field" title="상한을 두면 메모리가 그 안에서 돕니다."><span>톰캣 힙 상한</span>
+							<select id="selHeap"><option value="1024">1GB</option><option value="1536">1.5GB</option><option value="2048">2GB</option><option value="3072">3GB</option><option value="0">상한 없음 (JVM 기본값)</option></select></div>
+						<label class="opt" title="C1 컴파일러만 쓰고 바이트코드 검증을 건너뜁니다. 기동이 빨라지는 대신 오래 돌 때 최고 속도는 낮습니다."><input type="checkbox" id="optFast"><span>빠른 기동 JVM 옵션</span></label>
+						<label class="opt" title="톰캣이 기동마다 모든 클래스에서 서블릿 애너테이션을 찾지 않게 합니다. 애너테이션으로 등록한 서블릿 · 필터가 없는 앱에서만 켭니다. 원본 web.xml 은 그대로 두고 사본에 표시만 더합니다."><input type="checkbox" id="optSkipScan"><span>클래스 전체 탐색 건너뛰기</span></label>
+						<label class="opt" title="함께 뜨면 CPU 를 나눠 써 서로 느려집니다. 먼저 누른 서버가 다 뜬 뒤 다음 서버를 띄웁니다."><input type="checkbox" id="optStagger"><span>서버를 차례로 띄우기</span></label>
+					</div>
+				</section>
+
+				<section class="set-sec" id="setApp">
+					<div class="opts">
+						<label class="opt" title="데이터소스마다 처음에 여는 연결을 20개에서 1개로 줄입니다. 재시작 뒤 첫 화면이 빨라집니다. 프로젝트 소스는 그대로 둡니다."><input type="checkbox" id="optPool"><span>DB 연결 미리 열기 1개</span></label>
+						<label class="opt" title="@Scheduled 로 등록한 예약 작업을 돌리지 않습니다."><input type="checkbox" id="optSchedule"><span>예약 작업 멈추기</span></label>
+						<label class="opt" title="빈을 처음 쓸 때 만듭니다. 기동이 짧아지는 대신 처음 여는 화면이 그만큼 느리고, 설정 오류가 그때 드러납니다. 예약 작업도 그 화면을 열 때까지 돌지 않습니다."><input type="checkbox" id="optLazy"><span>지연 초기화<span class="tag">실험</span></span></label>
+						<label class="opt" title="정상 종료 때 세션을 저장했다가 되살립니다 (톰캣 기본 동작)."><input type="checkbox" id="optSession"><span>재시작해도 로그인 유지</span></label>
+					</div>
+				</section>
+
+				<!-- 「기본」 줄은 app/src/main.rs 의 늘 빼는 규칙(편집기 임시 파일 · resources-* · java/ · webapp/ 사본)을 그대로 적은 것이다. 그쪽을 바꾸면 renderIgnore 의 IGNORE_BUILTIN 도 고친다. -->
+				<section class="set-sec" id="setIgnore">
+					<ul class="ign" id="ignList"></ul>
+					<div class="ign-add">
+						<input type="text" id="ignInput" spellcheck="false" placeholder="예) a.sql · *.sql · src/main/resources/db/deploy/"
+							title="여기 걸린 파일은 저장해도 반영 기록 · 재시작 알림 · 자동 컴파일에 넣지 않습니다. 버전 관리 「내 변경」 목록에는 그대로 나옵니다.&#10;탐색기에서 복사한 전체 경로도 프로젝트 기준으로 바뀌고, 여러 줄을 붙여 넣으면 줄마다 하나씩 들어갑니다.&#10;「/」 가 없으면 이름으로 맞춥니다. 같은 이름의 폴더가 있으면 그 아래도 빠집니다.">
+						<button class="btn" id="ignAdd">추가</button>
+					</div>
+					<dl class="pat" title="누르면 입력칸에 넣습니다">
+						<dt><button type="button" class="ex">a.sql</button></dt><dd>어느 폴더에서나 이 이름의 파일</dd>
+						<dt><button type="button" class="ex">*.sql</button></dt><dd>어느 폴더에서나 이 확장자</dd>
+						<dt><button type="button" class="ex">src/main/a.sql</button></dt><dd>그 파일 하나만</dd>
+						<dt><button type="button" class="ex">src/main/resources/</button></dt><dd>그 폴더 아래 전부</dd>
+						<dt><button type="button" class="ex">deploy/</button></dt><dd>어디에 있든 이 이름의 폴더</dd>
+						<dt><button type="button" class="ex">src/**/tmp/</button></dt><dd>중간 폴더가 몇 단이든</dd>
+					</dl>
+				</section>
+
+				<section class="set-sec" id="setVcs">
+					<div class="vcs-cols" id="vcsForms"></div>
+				</section>
+
+				<section class="set-sec" id="setUpdate">
+					<div class="opts">
+						<label class="opt" title="켤 때와 6시간마다 GitHub 릴리스에서 새 판을 확인합니다. 새 판이 있으면 위 알림 줄에 「업데이트」 단추가 뜹니다."><input type="checkbox" id="optUpdate"><span>새 판 자동 확인</span></label>
+					</div>
+					<div class="sec-acts"><button class="btn" id="updNow">지금 확인</button><button class="btn primary" id="updGo" hidden>업데이트</button><span id="updState"></span></div>
+					<div class="chlog" id="chlog"></div>
+				</section>
+			</div>
+		</div>
+	</div>
+</div>
 <div class="scrim" id="setupScrim" hidden>
 	<div class="dlg setup" role="dialog" aria-modal="true" aria-labelledby="setupTitle">
 		<h2 id="setupTitle">시작하기</h2>
@@ -809,10 +858,10 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 
 	/* ---------- 뼈대 (서버 수만큼) ---------- */
 
-	// 서버 「열기」 메뉴 · 서버 칸 우클릭 메뉴가 같이 쓴다
+	// 서버 「바로가기」 메뉴 · 서버 칸 우클릭 메뉴가 같이 쓴다
 	function linkItems(i) {
 		var sv = state.servers[i];
-		if (!sv.links.length) return [{ label: "설정에서 열기 단추 추가", sub: sv.name + " · 설정 › 서버", run: function () { openSrvForm(i); } }];
+		if (!sv.links.length) return [{ label: "설정에서 바로가기 추가", sub: sv.name + " · 설정 › 서버", run: function () { openSrvForm(i); } }];
 		return sv.links.map(function (l) {
 			var url = linkUrl(sv, l.url);
 			return { label: l.label, sub: url, run: function () { invoke("open", { target: url }); } };
@@ -836,7 +885,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 					'<button class="btn primary" data-k="start">' + ic("play") + "시작</button>" +
 					'<button class="btn" data-k="restart">' + ic("restart") + '<span data-k="rl">재시작</span></button>' +
 					'<button class="btn" data-k="stop">' + ic("stop") + "중지</button>" +
-					'<button class="btn" data-k="open" aria-haspopup="menu" title="브라우저로 열기">' + ic("external") + "열기" + ic("chev", "chev") + "</button>" +
+					'<button class="btn" data-k="open" aria-haspopup="menu" title="브라우저로 엽니다">' + ic("external") + "바로가기" + ic("chev", "chev") + "</button>" +
 				"</div>";
 			$("servers").appendChild(card);
 			var q = function (k) { return card.querySelector('[data-k="' + k + '"]'); };
@@ -883,8 +932,13 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 		});
 		addTab("build", "빌드");
 		addTab("svn", "버전 관리");
-		addTab("status", "상태", true);
+		addTab("status", "상태");
+		// 설정은 탭이 아니라 모달이다 — 탭 줄 오른쪽 끝에 여는 단추만 둔다
 		addTab("settings", "설정", true, "sliders");
+		var setBtn = $("tabs").lastChild;
+		setBtn.setAttribute("role", "button");
+		setBtn.title = "설정 (Ctrl+,)";
+		setBtn.onclick = function () { openSettings(); };
 
 		var all = document.createElement("button");
 		all.textContent = "모두";
@@ -911,7 +965,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 		redraw();
 	}
 
-	// right : 탭 줄 오른쪽 끝에 둔다 (상태 · 설정)
+	// right : 탭 줄 오른쪽 끝에 둔다 (설정 단추)
 	function addTab(name, label, right, icon) {
 		var isLog = name === "events" || name === "build" || /^srv/.test(name);
 		if (isLog) { store[name] = []; unread[name] = 0; unreadErr[name] = false; }
@@ -1406,9 +1460,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 		});
 	}
 	function openChangelog() {
-		go("settings");
-		var sec = $("setUpdate");
-		sec.scrollIntoView({ block: "start" });
+		openSettings("setUpdate");
 		var first = $("chlog").querySelector("details");
 		if (first) first.open = true;
 	}
@@ -1527,9 +1579,49 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 	$("setupScrim").addEventListener("keydown", function (e) { if (e.key === "Escape") setupClose(); });
 	$("srvImport").onclick = function () { openSetup(); };
 
+	/* ---------- 설정 (모달) ---------- */
+
+	var setSec = "setServers";   // 마지막에 본 구획 — 다시 열면 그 자리
+	function openSettings(id) {
+		closeMenu();
+		showSetSec(id || setSec);
+		renderSetErr();
+		$("setScrim").hidden = false;
+		$("setNav").querySelector(".on").focus();
+	}
+	function closeSettings() { $("setScrim").hidden = true; }
+	function showSetSec(id) {
+		setSec = id;
+		[].forEach.call(document.querySelectorAll(".set-sec"), function (s) { s.hidden = s.id !== id; });
+		[].forEach.call($("setNav").querySelectorAll("[data-sec]"), function (b) {
+			var on = b.getAttribute("data-sec") === id;
+			b.classList.toggle("on", on);
+			if (on) $("setSecTitle").textContent = b.textContent;
+		});
+		$("setBody").scrollTop = 0;
+	}
+	// 모달 뒤의 알림 줄은 가려지므로 저장 실패 같은 오류는 모달 안에도 띄운다
+	function renderSetErr() {
+		$("setErr").textContent = errMsg;
+		$("setErr").hidden = !errMsg;
+	}
+	$("setErr").onclick = function () { hideError(); };
+	$("setNav").onclick = function (e) {
+		var b = e.target.closest("[data-sec]");
+		if (b) showSetSec(b.getAttribute("data-sec"));
+	};
+	$("setClose").onclick = closeSettings;
+	// 입력칸에서 끌다가 바깥에서 놓아도 닫히지 않게 — 누르기 시작한 곳이 바깥일 때만 닫는다
+	$("setScrim").onmousedown = function (e) { this._out = e.target === this; };
+	$("setScrim").onclick = function (e) { if (e.target === this && this._out) closeSettings(); };
+	$("setScrim").addEventListener("keydown", function (e) {
+		// 모달 안에서 연 메뉴가 떠 있으면 Esc 는 메뉴만 닫는다
+		if (e.key === "Escape" && menu.hidden) closeSettings();
+	});
+
 	function openOpt(id) {
-		go("settings");
 		var box = $(id).closest(".opt");
+		openSettings(box.closest(".set-sec").id);
 		box.scrollIntoView({ block: "center" });
 		box.classList.add("flash");
 		setTimeout(function () { box.classList.remove("flash"); }, 1200);
@@ -1696,7 +1788,6 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 		$("paneLog").hidden = !logLike;
 		$("paneSvn").hidden = tab !== "svn";
 		$("paneStatus").hidden = tab !== "status";
-		$("paneSettings").hidden = tab !== "settings";
 		$("evSrv").hidden = tab !== "events";
 		$("evHead").hidden = tab !== "events";
 		$("buildCtl").hidden = tab !== "build";
@@ -1791,7 +1882,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 		if (compiled) renderAlerts();
 	}
 
-	/* ---------- 작은 메뉴 (서버 「열기」 · 재시작 목록 「무시…」 · 우클릭) ---------- */
+	/* ---------- 작은 메뉴 (서버 「바로가기」 · 재시작 목록 「무시…」 · 우클릭) ---------- */
 
 	var menu = $("menu");
 	var menuAt = null;   // 마지막으로 연 자리 — 우클릭 메뉴의 「…」 항목이 같은 자리에 다음 메뉴를 연다
@@ -1838,8 +1929,13 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 			items[k].focus();
 			e.preventDefault();
 		}
+		// Ctrl+, : 설정
+		if (e.ctrlKey && e.key === "," && $("quitScrim").hidden) {
+			openSettings();
+			e.preventDefault();
+		}
 		// Ctrl+F : 로그 탭에서 찾기 칸으로
-		if (e.ctrlKey && (e.key === "f" || e.key === "F") && store[tab]) {
+		if (e.ctrlKey && (e.key === "f" || e.key === "F") && store[tab] && $("setScrim").hidden) {
 			$("filter").focus();
 			$("filter").select();
 			e.preventDefault();
@@ -1879,8 +1975,8 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 		if (st === "stopped") out.push({ label: "시작", disabled: sv.depsBusy, run: function () { hideError(); call("start", { srv: i }); } });
 		else out.push({ label: "재시작", disabled: st === "stopping", run: function () { hideError(); call("restart", { srv: i }); } },
 			{ label: "중지", disabled: st === "stopping", run: function () { call("stop", { srv: i }); } });
-		// 열기 단추가 없으면 아래 「설정에서 이 서버」 가 같은 곳으로 데려간다
-		if (sv.links.length) out = out.concat([{ sep: true }], linkItems(i).map(function (it) { return { label: "열기 · " + it.label, sub: it.sub, run: it.run }; }));
+		// 바로가기가 없으면 아래 「설정에서 이 서버」 가 같은 곳으로 데려간다
+		if (sv.links.length) out = out.concat([{ sep: true }], linkItems(i).map(function (it) { return { label: "바로가기 · " + it.label, sub: it.sub, run: it.run }; }));
 		return out.concat([{ sep: true },
 			{ label: sv.name + " 로그 보기", run: function () { go("srv" + i); } },
 			{ label: "톰캣 로그 폴더 열기", run: function () { invoke("open", { target: sv.catalinaBase + "/logs" }); } },
@@ -2078,7 +2174,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 			? "이 서버는 버전 관리를 쓰지 않도록 설정했습니다."
 			: esc(sv.vcsRoot) + " 에서 .svn 이나 .git 을 찾지 못했습니다.") +
 			' <a href="#" id="svnToSettings">설정 › 버전 관리</a>에서 종류나 작업 폴더를 정합니다.</div>';
-		$("svnToSettings").onclick = function (ev) { ev.preventDefault(); go("settings"); };
+		$("svnToSettings").onclick = function (ev) { ev.preventDefault(); openSettings("setVcs"); };
 	}
 	// force : 서버 · 보기 · 종류를 바꾼 때 — 조회를 다시 한다
 	function svnActivate(force) {
@@ -2470,15 +2566,15 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 		["ajpPort", "AJP 포트", "같은 PC 의 Apache(mod_jk) 등이 넘겨 주는 포트입니다. 127.0.0.1 에만 열립니다.", "number"],
 		["shutdownPort", "종료 포트", "톰캣을 정상 종료할 때 씁니다.", "number"],
 		["debugPort", "디버거 포트", "「디버거 연결 허용」을 켜면 IDE 가 이 포트로 붙습니다.", "number"],
-		["links", "열기 단추", "서버 줄 「열기」 메뉴입니다. 「/」로 시작하는 주소는 이 서버의 HTTP 포트로 엽니다 (/ → http://localhost:<HTTP 포트>/). 앞단(Apache) 경유처럼 다른 포트는 http:// 부터 적습니다. 이름을 비우면 주소가 이름입니다.", "links"],
+		["links", "바로가기", "서버 줄 「바로가기」 메뉴입니다. 「/」로 시작하는 주소는 이 서버의 HTTP 포트로 엽니다 (/ → http://localhost:<HTTP 포트>/). 앞단(Apache) 경유처럼 다른 포트는 http:// 부터 적습니다. 이름을 비우면 주소가 이름입니다.", "links"],
 		["jvmArgs", "JVM 인자", "이 서버에만 더할 인자입니다. 한 줄에 하나. 회사 · 팀 전용 시스템 속성(-D…)은 여기 둡니다.", "lines"]
 	];
 	function srvField(f) {
 		var span = '<span title="' + esc(f[2]) + '">' + f[1] + "</span>";
-		// 열기 단추 · 프로젝트 폴더는 칸 안에 단추가 있어 label 로 감싸지 않는다 (label 은 첫 입력 칸 하나만 가리킨다)
+		// 바로가기 · 프로젝트 폴더는 칸 안에 단추가 있어 label 로 감싸지 않는다 (label 은 첫 입력 칸 하나만 가리킨다)
 		if (f[3] === "links") {
 			return '<div class="field top">' + span + '<div><div class="links"></div>' +
-				'<button class="btn sm" data-k="linkAdd">열기 단추 추가</button></div></div>';
+				'<button class="btn sm" data-k="linkAdd">바로가기 추가</button></div></div>';
 		}
 		if (f[3] === "dir") {
 			return '<div class="field">' + span + '<div class="pick"><input type="text" data-k="' + f[0] + '" spellcheck="false" title="' + esc(f[2]) + '">' +
@@ -2489,7 +2585,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 			: '<input type="' + f[3] + '" data-k="' + f[0] + '" spellcheck="false" title="' + esc(f[2]) + '"' + (f[3] === "number" ? ' min="1" max="65535"' : "") + ">";
 		return '<label class="field' + (f[3] === "lines" ? " top" : "") + '">' + span + input + "</label>";
 	}
-	// 「/」로 시작하는 열기 주소는 그 서버의 HTTP 포트로 — 포트를 바꿔도 단추를 고치지 않아도 된다
+	// 「/」로 시작하는 바로가기 주소는 그 서버의 HTTP 포트로 — 포트를 바꿔도 단추를 고치지 않아도 된다
 	function linkUrl(sv, url) {
 		return url.charAt(0) === "/" ? "http://localhost:" + sv.httpPort + url : url;
 	}
@@ -2497,7 +2593,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 		return '<div class="link-row">' +
 			'<input type="text" data-l="label" spellcheck="false" placeholder="이름" value="' + esc(l.label === l.url ? "" : l.label) + '">' +
 			'<input type="text" data-l="url" spellcheck="false" placeholder="/경로 또는 http://주소" value="' + esc(l.url) + '">' +
-			'<button class="btn ghost sm" data-l="del" title="이 단추를 뺍니다">빼기</button></div>';
+			'<button class="btn ghost sm" data-l="del" title="이 바로가기를 뺍니다">빼기</button></div>';
 	}
 	function srvLinksRead(box) {
 		return [].map.call(box.querySelectorAll(".link-row"), function (r) {
@@ -2505,9 +2601,9 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 			return url ? { label: label || url, url: url } : null;
 		}).filter(Boolean);
 	}
-	// 서버 줄 「열기」 메뉴가 비어 있을 때 → 설정의 그 서버 칸을 보여 주고 잠깐 테두리를 띄운다
+	// 서버 줄 「바로가기」 메뉴가 비어 있을 때 → 설정의 그 서버 칸을 보여 주고 잠깐 테두리를 띄운다
 	function openSrvForm(i) {
-		go("settings");
+		openSettings("setServers");
 		var box = $("srv" + i);
 		box.scrollIntoView({ block: "center" });
 		box.classList.add("flash");
@@ -2670,8 +2766,8 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 		// 긴 알림(자동으로 채운 결과 등)은 읽을 만큼 더 둔다
 		showToast.t = setTimeout(function () { $("toast").classList.remove("show"); }, Math.max(2500, String(msg).length * 70));
 	}
-	function showError(msg) { errMsg = msg; renderAlerts(); }
-	function hideError() { if (errMsg) { errMsg = ""; renderAlerts(); } }
+	function showError(msg) { errMsg = msg; renderAlerts(); renderSetErr(); }
+	function hideError() { if (errMsg) { errMsg = ""; renderAlerts(); renderSetErr(); } }
 	function call(cmd, args) {
 		return invoke(cmd, args || {}).catch(function (e) { showError(String(e)); });
 	}
@@ -2701,7 +2797,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 	};
 	$("sbOpts").onclick = function (e) {
 		var b = e.target.closest(".sb-item");
-		if (b) openOpt(b.getAttribute("data-opt")); else go("settings");
+		if (b) openOpt(b.getAttribute("data-opt")); else openSettings();
 	};
 	$("sbOpts").title = "누르면 설정의 그 칸으로 갑니다";
 	$("sbMem").onclick = function () { go("status"); };
