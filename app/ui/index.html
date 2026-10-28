@@ -1164,7 +1164,10 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 				var stopped = sv.status === "stopped";
 				rows.push({ key: "d" + i, lv: "warn", text: "<b>" + esc(sv.name) + " · 의존 jar " + esc(deps.detail) + "</b>" +
 					(stopped ? "" : '<span class="sub">서버를 끈 뒤에 받을 수 있습니다</span>'),
-					acts: [["다시 받기", "", !stopped, function () { hideError(); call("refresh_deps", { srv: i }); }]] });
+					acts: [["자동으로 채우기", "primary", !stopped, function () {
+						hideError();
+						invoke("auto_deps", { srv: i }).then(function (m) { showToast(m); }).catch(function (e) { showError(String(e)); });
+					}]] });
 			}
 		});
 		var up = state.update, rel = up.release;
@@ -2664,7 +2667,8 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 		$("toastText").textContent = msg;
 		$("toast").classList.add("show");
 		clearTimeout(showToast.t);
-		showToast.t = setTimeout(function () { $("toast").classList.remove("show"); }, 2500);
+		// 긴 알림(자동으로 채운 결과 등)은 읽을 만큼 더 둔다
+		showToast.t = setTimeout(function () { $("toast").classList.remove("show"); }, Math.max(2500, String(msg).length * 70));
 	}
 	function showError(msg) { errMsg = msg; renderAlerts(); }
 	function hideError() { if (errMsg) { errMsg = ""; renderAlerts(); } }
@@ -2749,9 +2753,11 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 	listen("mem", function (e) { memSnap = e.payload; renderMems(); renderMeta(); });
 	listen("logs", function (e) { onLogs(e.payload); });
 	listen("error", function (e) { showError(String(e.payload)); });
+	listen("toast", function (e) { showToast(String(e.payload)); });
+	// 켤 때 이클립스 설정을 찾지 못했다 — 폴더 하나만 고르면 되는 「시작하기」를 띄운다 (찾았으면 실행기가 알아서 가져온다)
+	listen("setup-needed", function () { if (!setupAuto) { setupAuto = true; openSetup(); } });
 	invoke("get_state").then(function (s) {
 		render(s);
-		if (!setupAuto && s.servers.every(function (sv) { return !sv.project; })) { setupAuto = true; openSetup(); }
 		if (early.length) { var x = early; early = []; onLogs(x); }
 	});
 	setInterval(renderMeta, 1000);
