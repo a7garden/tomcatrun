@@ -2780,6 +2780,12 @@ fn update_loop(app: AppHandle) {
     }
 }
 
+// 이 실행 파일과 함께 만든 CHANGELOG.md — 설정 › 업데이트의 「변경 기록」이 그린다 (GitHub 에 닿지 않아도 보인다)
+#[tauri::command]
+fn changelog() -> &'static str {
+    include_str!("../../CHANGELOG.md")
+}
+
 #[tauri::command]
 fn update_check(app: AppHandle) {
     thread::spawn(move || check_update(&app));
@@ -2836,6 +2842,19 @@ fn open(target: String) {
     // 주소든 폴더든 탐색기에 맡기면 기본 브라우저 · 탐색기로 열린다
     let arg = if target.starts_with("http") { target } else { target.replace('/', "\\") };
     let _ = Command::new("explorer").arg(arg).spawn();
+}
+
+#[tauri::command]
+fn reveal(path: String) {
+    // 파일을 고른 채 그 폴더를 연다 (우클릭 「탐색기에서 보기」). 지운 파일처럼 없으면 남아 있는 가장 가까운 부모 폴더를 연다
+    let win = path.replace('/', "\\");
+    let p = Path::new(&win);
+    if p.exists() {
+        // 「/select,"경로"」 는 한 덩어리로 넘긴다. arg 로 넘기면 공백 든 경로를 통째로 따옴표로 감싸 explorer 가 /select 를 읽지 못하고 문서 폴더를 연다
+        let _ = Command::new("explorer").raw_arg(format!("/select,\"{win}\"")).spawn();
+    } else if let Some(dir) = p.ancestors().skip(1).find(|d| d.is_dir()) {
+        let _ = Command::new("explorer").arg(dir).spawn();
+    }
 }
 
 // 읽기 전용 SVN — 상태 · 차이. 1~2초 걸리므로 화면 스레드가 아니라 따로 돌린다.
@@ -3229,10 +3248,10 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
-            get_state, start, stop, restart, quit, compile, refresh_deps, set_option, set_heap, set_compiler, set_ignore, open, open_source,
+            get_state, start, stop, restart, quit, compile, refresh_deps, set_option, set_heap, set_compiler, set_ignore, open, reveal, open_source,
             svn_status, svn_diff, svn_account, svn_login, svn_logout, svn_incoming, svn_log, svn_rev_diff,
             git_status, git_diff, git_incoming, git_log, git_rev_diff, set_vcs, set_paths, set_server, add_server, pick_project,
-            update_check, update_install
+            update_check, update_install, changelog
         ])
         .run(tauri::generate_context!())
         .expect("실행기를 띄우지 못했습니다");

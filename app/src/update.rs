@@ -26,7 +26,7 @@ pub const REPO: &str = "a7garden/tomcatrun";
 pub struct Release {
     pub version: String,   // 0.7.0
     pub page: String,      // 릴리스 페이지
-    pub notes: String,     // 릴리스 본문 (앞부분만)
+    pub notes: String,     // 릴리스 본문 — CHANGELOG.md 의 그 판 절 (release.yml 이 옮긴다)
     pub asset: String,     // 설치 파일 주소
     pub asset_name: String,
     pub size: u64,
@@ -95,7 +95,7 @@ fn parse_latest(text: &str) -> Result<Option<Release>, String> {
         .find(|a| name_of(a).eq_ignore_ascii_case(&format!("{asset_name}.sha256")))
         .and_then(|a| a["browser_download_url"].as_str())
         .map(String::from);
-    let notes: String = v["body"].as_str().unwrap_or("").chars().take(2000).collect();
+    let notes: String = v["body"].as_str().unwrap_or("").chars().take(20000).collect();
     Ok(Some(Release {
         version: tag.trim_start_matches('v').to_string(),
         page: v["html_url"].as_str().unwrap_or("").to_string(),

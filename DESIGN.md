@@ -321,7 +321,7 @@ docket 의 단추와 같은 결의 Windows 도구 단추다.
 ### Navigation
 - **Tabs:** 높이 38px 줄에 글자 탭. 쉬는 탭은 `ink-muted` 500, hover 에 `ink`, 고른 탭은 `ink` 600 과 2px `ink` 밑줄(docket TabsList `line`). 수 배지는 18px 알약, 평소 `panel-raised`, 새 줄은 `ink` 바탕에 `panel` 글자, 오류는 꽉 찬 빨강.
 - **Status bar:** 높이 28px, 12px `ink-muted`. 안의 단추는 테두리 없이, hover 에 `panel-raised` 와 `ink`.
-- **Menu:** `panel` 바탕, 1px `line-strong`, 8px 모서리, 4px 여백, 최소 폭 240px, `shadow-pop`. 항목 hover · 초점은 `panel-raised`.
+- **Menu:** `panel` 바탕, 1px `line-strong`, 8px 모서리, 4px 여백, 최소 폭 240px(최대 520px), `shadow-pop`. 항목 hover · 초점은 `panel-raised`. 단추 메뉴(「열기」 · 「무시…」)는 단추 아래 오른쪽 끝에, 우클릭 메뉴는 마우스 자리에 뜨고 모자라면 왼쪽 · 위로 편다. 묶음 사이는 `line-soft` 1px 구분선, 지금 할 수 없는 항목은 `ink-faint` 로 남긴다(숨기지 않는다). 우클릭 메뉴는 이 판 하나만 쓰고 브라우저 기본 메뉴는 입력칸에서만 뜬다.
 - **Toast:** `panel` 바탕, 1px `line-strong`, 6px 모서리, `shadow-pop`.
 
 ### 서버 칸 (Signature Component)
