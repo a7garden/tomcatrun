@@ -1,0 +1,70 @@
+# Windows 설치 파일을 만든다 — v<버전> 태그를 올리면 릴리스까지, 그 밖에는 빌드 결과를 Actions 산출물로만 남긴다.
+# 실행 환경(JDK · DCEVM · HotswapAgent · Maven)은 installer/fetch.sh 가 공개 배포처에서 받아 해시를 대조한다.
+name: release
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 태그와 Cargo.toml 버전이 같은지 본다
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          want="${GITHUB_REF_NAME#v}"
+          have="$(sed -n 's/^version = "\([^"]*\)".*/\1/p' app/Cargo.toml | head -1)"
+          if [ "$want" != "$have" ]; then
+            echo "::error::태그 $GITHUB_REF_NAME 와 app/Cargo.toml 의 version $have 가 다릅니다."
+            exit 1
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app
+
+      - name: 실행 환경 캐시
+        uses: actions/cache@v4
+        with:
+          path: bin
+          key: runtime-${{ hashFiles('installer/fetch.sh') }}
+
+      - name: NSIS
+        run: |
+          if [ ! -f "/c/Program Files (x86)/NSIS/makensis.exe" ]; then
+            choco install nsis -y --no-progress
+          fi
+          echo "MAKENSIS=C:/Program Files (x86)/NSIS/makensis.exe" >> "$GITHUB_ENV"
+
+      - name: 시험
+        working-directory: app
+        run: cargo test --release
+
+      - name: 설치 파일 만들기
+        run: bash installer/build.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tomcatrun-setup
+          path: installer/dist/*.exe
+
+      - name: 릴리스
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: installer/dist/*.exe
+          generate_release_notes: true

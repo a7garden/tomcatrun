@@ -1,0 +1,2275 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tomcatrun</title>
+<style>
+/* 2026-10-28 : 전체 리디자인. 왼쪽 옵션 기둥을 걷고 서버 줄 · 알림 줄 · 탭 · 상태 표시줄의 흔한 개발 도구 구조로 바꿨다.
+   옵션은 「설정」 탭, 메모리 · 준비 상태 · 폴더는 「상태」 탭, 컴파일 단추는 「빌드」 탭으로 옮겼다.
+   2026-10-28 : 색 · 글꼴 · 모양을 docket(_tools/docket/src/index.css)의 체계로 바꿨다.
+   바탕은 무채색 회색 단계와 1px 선이고, 색은 뜻이 있을 때만 쓴다.
+     --warn (호박)  사용자가 손댈 것 — 재시작 필요 · 의존 jar
+     --crit (빨강)  실패 · 충돌 · 뺀 줄
+     --ok   (초록)  서버 실행 중 · 점검 통과 · 더한 줄
+   주요 단추는 색이 아니라 흑백 반전으로 띄운다. 파랑 강조는 없다.
+   docket 은 「실행 중」도 무채색이지만, 여기서는 창을 열자마자 두 서버가 떠 있는지 보이도록 초록으로 남긴다.
+   변수 이름은 그대로 두고 값만 docket 에서 가져왔다 — 아래 규칙들이 값을 따라 바뀐다. */
+@font-face {
+	/* docket 과 같은 Pretendard 를 ui/fonts 에 동봉한다 (exe 에 묻힌다 · CDN 을 쓰지 않는다).
+	   파일이 없으면 시스템에 깔린 Pretendard, 그것도 없으면 --ui 의 다음 글꼴로 내려간다. */
+	font-family: "Pretendard Variable";
+	src: local("Pretendard Variable"), url("fonts/PretendardVariable.woff2") format("woff2-variations"), url("fonts/PretendardVariable.woff2") format("woff2");
+	font-weight: 45 920; font-style: normal; font-display: block;
+}
+:root {
+	--bg: oklch(0.975 0 0); --side: oklch(0.955 0 0); --panel: oklch(1 0 0); --panel-2: oklch(0.935 0 0);
+	--line: oklch(0.885 0 0); --line-soft: oklch(0.95 0 0); --line-strong: oklch(0.78 0 0);
+	--text: oklch(0.21 0 0); --muted: oklch(0.42 0 0); --faint: oklch(0.52 0 0);
+	--brand: oklch(0.8 0.15 78); --brand-ink: oklch(0.24 0.04 70); --brand-text: oklch(0.5 0.12 62);
+	--ok: oklch(0.5 0.13 150);
+	--crit: oklch(0.54 0.2 27); --crit-solid: oklch(0.54 0.2 27);
+	--ring: oklch(0.42 0 0 / 0.55); --sel: oklch(0.6 0 0 / 0.28);
+	--shadow-pop: 0 10px 28px oklch(0 0 0 / 0.12), 0 1px 3px oklch(0 0 0 / 0.08);
+	--close: oklch(0.58 0.21 25);    /* 제목 줄 닫기 hover — docket 창 단추와 같은 빨강 (두 테마 공통) */
+	--ui: "Pretendard Variable", Pretendard, "Segoe UI", "Malgun Gothic", sans-serif;
+	--mono: "Cascadia Code", "D2Coding", Consolas, "Malgun Gothic", monospace;
+	color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+	:root {
+		--bg: oklch(0.2 0 0); --side: oklch(0.215 0 0); --panel: oklch(0.235 0 0); --panel-2: oklch(0.275 0 0);
+		--line: oklch(0.305 0 0); --line-soft: oklch(0.255 0 0); --line-strong: oklch(0.4 0 0);
+		--text: oklch(0.93 0 0); --muted: oklch(0.77 0 0); --faint: oklch(0.65 0 0);
+		--brand: oklch(0.82 0.14 80); --brand-ink: oklch(0.22 0.03 75); --brand-text: oklch(0.84 0.13 82);
+		--ok: oklch(0.77 0.14 152);
+		--crit: oklch(0.71 0.17 25); --crit-solid: oklch(0.56 0.2 27);   /* 꽉 찬 바탕은 흰 글자가 읽히도록 어둡게 */
+		--ring: oklch(0.75 0 0 / 0.5); --sel: oklch(0.6 0 0 / 0.35);
+		--shadow-pop: 0 14px 36px oklch(0 0 0 / 0.5), 0 1px 3px oklch(0 0 0 / 0.35);
+		color-scheme: dark;
+	}
+}
+:root {
+	/* 옅은 바탕 · 선은 상태 색에서 만든다 (docket 의 bg-brand/12 · border-danger/25 꼴). 두 테마가 같은 식을 쓴다. */
+	--warn: var(--brand-text); --on-warn: var(--brand-ink); --warn-solid: var(--brand);
+	--warn-weak: color-mix(in oklch, var(--brand) 14%, transparent);
+	--warn-line: color-mix(in oklch, var(--brand) 55%, transparent);
+	--ok-weak: color-mix(in oklch, var(--ok) 12%, transparent);
+	--crit-weak: color-mix(in oklch, var(--crit) 12%, transparent);
+	--crit-line: color-mix(in oklch, var(--crit) 30%, transparent);
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { height: 100%; margin: 0; }
+body {
+	background: var(--bg); color: var(--text);
+	font: 13px/1.55 var(--ui);
+	-webkit-font-smoothing: antialiased;
+	display: flex; flex-direction: column; overflow: hidden;
+}
+::selection { background: var(--sel); }
+:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: 999px; border: 3px solid transparent; background-clip: padding-box; }
+::-webkit-scrollbar-thumb:hover { background-color: var(--faint); }
+.num, .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.ic { width: 14px; height: 14px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
+
+/* ---------- 단추 · 입력 ---------- */
+.btn {
+	display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px;
+	font: 500 12.5px var(--ui); color: var(--text); background: var(--panel);
+	border: 1px solid var(--line); border-radius: 6px; cursor: pointer; white-space: nowrap;
+}
+.btn:hover:not(:disabled) { background: var(--panel-2); }
+.btn:active:not(:disabled) { background: var(--line-soft); }
+.btn:disabled { opacity: .5; cursor: default; }
+/* 주요 단추는 흑백 반전 — 색을 쓰면 「재시작 필요」 같은 상태 표시와 같은 말을 하게 된다 (docket) */
+.btn.primary { background: var(--text); border-color: var(--text); color: var(--panel); }
+.btn.primary:hover:not(:disabled) { background: var(--text); opacity: .85; }
+.btn.warn { background: var(--warn-weak); border-color: var(--warn-line); color: var(--warn); font-weight: 600; }
+.btn.warn:hover:not(:disabled) { background: color-mix(in oklch, var(--brand) 22%, transparent); }
+.btn.danger { color: var(--crit); background: var(--crit-weak); border-color: var(--crit-line); }
+.btn.danger:hover:not(:disabled) { background: color-mix(in oklch, var(--crit) 20%, transparent); }
+.btn.ghost { background: transparent; border-color: transparent; color: var(--muted); }
+.btn.ghost:hover:not(:disabled) { background: var(--panel-2); color: var(--text); }
+.btn.sm { height: 24px; padding: 0 8px; font-size: 12px; }
+.btn .ic { width: 14px; height: 14px; }
+.btn .chev { width: 12px; height: 12px; margin: 0 -2px 0 -2px; }
+input[type=text], input[type=password], input[type=search], select {
+	height: 28px; font: 12.5px var(--ui); color: var(--text); background: var(--panel);
+	border: 1px solid var(--line-strong); border-radius: 6px; padding: 0 8px;
+}
+input::placeholder { color: var(--faint); }
+input[type=checkbox] { accent-color: var(--text); width: 14px; height: 14px; margin: 0; }
+.chk { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); cursor: pointer; white-space: nowrap; font-size: 12.5px; }
+.search { position: relative; display: inline-flex; }
+.search .ic { position: absolute; left: 8px; top: 7px; color: var(--faint); }
+.search input { padding-left: 28px; width: 200px; }
+.seg { display: inline-flex; padding: 2px; gap: 2px; background: var(--line-soft); border: 1px solid var(--line); border-radius: 6px; }
+.seg button {
+	height: 22px; padding: 0 10px; border: 0; border-radius: 4px; background: transparent;
+	font: 500 12px var(--ui); color: var(--muted); cursor: pointer; white-space: nowrap;
+}
+.seg button:hover { color: var(--text); }
+.seg button.on { background: var(--panel); color: var(--text); font-weight: 600; box-shadow: inset 0 0 0 1px var(--line); }
+
+/* ---------- 제목 줄 ----------
+   2026-10-28 : Windows 기본 제목 줄을 끄고(tauri.conf.json decorations:false) 화면과 같은 판으로 그린다.
+   끌기 · 두 번 눌러 최대화는 Tauri 의 data-tauri-drag-region, 가장자리 크기 조절은 Tauri 가 창 쪽에서 맡는다.
+   지금 문제는 바로 아래 알림 줄에 있으므로 여기에는 이름만 둔다 (작업 표시줄 제목에는 그대로 붙는다). */
+/* 2026-10-28 : docket 제목 줄에 맞춘다 — 36px · 한 단 낮은 판(--side) · 이름 12.5px 600 · 창 단추 44px. */
+.titlebar { display: flex; align-items: stretch; flex: none; height: 36px; background: var(--side); border-bottom: 1px solid var(--line); user-select: none; }
+.tb-drag { flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; padding-left: 14px; }
+.tb-icon { width: 16px; height: 16px; flex: none; }
+.tb-title { font-size: 12.5px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tb-ver { margin-left: 6px; color: var(--faint); font-size: 11.5px; font-weight: 400; }
+.tb-btn { width: 44px; flex: none; display: grid; place-items: center; border: 0; padding: 0; background: none; color: var(--muted); transition: background-color .12s, color .12s; }
+.tb-btn svg { width: 10px; height: 10px; fill: none; stroke: currentColor; stroke-width: 1.1; stroke-linecap: round; }
+.tb-btn:hover { background: var(--panel-2); color: var(--text); }
+.tb-btn:active { background: var(--line); }
+.tb-btn.close:hover, .tb-btn.close:active { background: var(--close); color: #fff; }
+body.blur .tb-title, body.blur .tb-btn:not(:hover) { color: var(--faint); }
+body.blur .tb-icon { opacity: .5; }
+
+/* ---------- 서버 줄 ---------- */
+.servers { display: grid; grid-template-columns: 1fr 1fr; background: var(--panel); border-bottom: 1px solid var(--line); }
+.srv {
+	display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 12px; align-items: center;
+	padding: 10px 14px 10px 16px; min-width: 0;
+}
+.srv + .srv { border-left: 1px solid var(--line); }
+.srv-head { display: flex; align-items: baseline; gap: 8px; min-width: 0; white-space: nowrap; }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--faint); flex: none; align-self: center; }
+.srv[data-st=running] .dot { background: var(--ok); }
+/* 기동 · 중지 중은 무채색 점이 깜빡인다 (docket run-dot). 실행 중 초록은 docket 원칙의 예외다 — 맨 위 주석 참조. */
+.srv[data-st=starting] .dot, .srv[data-st=stopping] .dot { background: var(--muted); animation: pulse 1.4s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .3; } }
+@media (prefers-reduced-motion: reduce) { .srv .dot { animation: none !important; } }
+.srv-name { font-size: 14px; font-weight: 600; }
+.srv-port { color: var(--muted); font-size: 12px; }
+.srv-state { color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+.srv[data-st=running] .srv-state { color: var(--ok); }
+.srv[data-st=starting] .srv-state, .srv[data-st=stopping] .srv-state { color: var(--text); }
+.srv-meta { grid-column: 1; color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-left: 17px; }
+.srv-meta b { color: var(--text); font-weight: 600; }
+.srv-meta .sep { color: var(--faint); margin: 0 6px; }
+.srv-acts { grid-column: 2; grid-row: 1 / 3; display: flex; gap: 6px; }
+@media (max-width: 1000px) {
+	.servers { grid-template-columns: 1fr; }
+	.srv + .srv { border-left: none; border-top: 1px solid var(--line); }
+}
+
+/* ---------- 알림 줄 (문제가 있을 때만) ---------- */
+.alert {
+	display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 0 10px; align-items: center;
+	padding: 7px 14px 7px 16px; border-bottom: 1px solid var(--line);
+}
+.alert.warn { background: var(--warn-weak); color: var(--warn); }
+.alert.crit { background: var(--crit-weak); color: var(--crit); }
+.alert.ok { background: var(--ok-weak); color: var(--ok); }
+.alert-text { min-width: 0; color: var(--text); }
+.alert-text b { font-weight: 600; }
+.alert-text .sub { color: var(--muted); margin-left: 8px; }
+.alert-text a.src { margin-left: 8px; font-family: var(--mono); font-size: 12px; color: var(--text); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.alert-acts { display: flex; gap: 6px; }
+.alert-items { grid-column: 2 / -1; margin: 6px 0 2px; padding: 0; list-style: none; max-height: 112px; overflow: auto; color: var(--text); }
+.alert-items li { display: flex; align-items: center; gap: 0 8px; padding: 1px 0; font-size: 12px; }
+.alert-items li .mono { overflow-wrap: anywhere; min-width: 0; }
+.alert-items li .btn { margin-left: auto; height: 20px; flex: none; }
+.alert-items .mono { font-size: 12px; }
+.alert-items small { color: var(--muted); margin-left: 8px; }
+
+/* ---------- 탭 ---------- */
+.tabs { display: flex; align-items: stretch; height: 38px; padding: 0 8px; background: var(--panel); border-bottom: 1px solid var(--line); }
+.tabs .gap { flex: 1; }
+.tab {
+	display: inline-flex; align-items: center; gap: 6px; padding: 0 12px; margin-bottom: -1px;
+	border: 0; border-bottom: 2px solid transparent; background: none; cursor: pointer;
+	font: 500 13px var(--ui); color: var(--muted); white-space: nowrap;
+}
+.tab:hover { color: var(--text); }
+.tab.on { color: var(--text); font-weight: 600; border-bottom-color: var(--text); }
+.tab .n { font: 600 11px var(--ui); min-width: 18px; height: 18px; line-height: 18px; padding: 0 5px; border-radius: 9px; text-align: center; background: var(--panel-2); color: var(--muted); }
+.tab .n:empty { display: none; }
+.tab .n.new { background: var(--text); color: var(--panel); }
+.tab .n.bad { background: var(--crit-solid); color: #fff; }
+
+/* ---------- 본문 ---------- */
+main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.pane { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.toolbar {
+	display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-height: 44px; padding: 8px 14px;
+	background: var(--panel); border-bottom: 1px solid var(--line);
+}
+.toolbar .end { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+.bctl { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 8px 14px; background: var(--panel); border-bottom: 1px solid var(--line-soft); }
+.bctl b { width: 64px; font-weight: 600; }
+.bres { color: var(--muted); font-size: 12px; margin-left: 6px; }
+.bres.ok b { color: var(--ok); }
+.bres.fail b { color: var(--crit); }
+
+#log { flex: 1; overflow: auto; scrollbar-gutter: stable; background: var(--panel); padding: 4px 0 12px; }
+#log.lines { font: 12px/1.55 var(--mono); white-space: pre-wrap; word-break: break-all; background: var(--bg); }
+#log.lines > div { padding: 0 14px; }
+#log.lines .err { color: var(--crit); background: var(--crit-weak); }
+#log.lines .warn { color: var(--warn); }
+#log.lines .ok { color: var(--ok); font-weight: 600; }
+#log.lines .hot { color: var(--text); background: var(--panel-2); }
+#log.lines .live { color: var(--text); font-weight: 600; }
+#log.lines .app { color: var(--muted); }
+#log.lines .who { color: var(--muted); font-weight: 600; margin-right: 8px; }
+#log a.src { color: inherit; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.empty { color: var(--muted); padding: 28px 16px; font: 13px/1.6 var(--ui); max-width: 640px; white-space: normal; }
+
+/* 반영 기록 표 */
+.ev, .ev-head {
+	display: grid; grid-template-columns: 64px 64px 96px minmax(0, 1fr) 64px; gap: 0 12px; align-items: baseline;
+	padding: 5px 14px;
+}
+.ev-head {
+	font-size: 11.5px; font-weight: 600; color: var(--muted); background: var(--panel);
+	border-bottom: 1px solid var(--line); padding-top: 6px; padding-bottom: 6px; padding-right: 24px;
+}
+.ev { border-bottom: 1px solid var(--line-soft); }
+.ev:hover { background: var(--panel-2); }
+.ev.err { background: var(--crit-weak); }
+.ev.warn { background: var(--warn-weak); }
+.ev .t { color: var(--muted); font-size: 12px; }
+.ev .who { font-size: 12px; color: var(--muted); }
+/* 2026-10-28 : docket Chip — 20px 알약 · 1px 테두리. 바로 반영 · 클래스 교체(info · hot)는 무채색이고 칩 글자로만 가른다. */
+.ev .k {
+	justify-self: start; display: inline-flex; align-items: center; height: 20px; padding: 0 8px; border-radius: 999px;
+	font-size: 11.5px; font-weight: 500; white-space: nowrap;
+	background: var(--panel-2); color: var(--muted); border: 1px solid var(--line);
+}
+.ev .k.info, .ev .k.hot { color: var(--text); border-color: var(--line-strong); }
+.ev .k.ok { background: var(--ok-weak); color: var(--ok); border-color: color-mix(in oklch, var(--ok) 30%, transparent); }
+.ev .k.warn { background: var(--warn-weak); color: var(--warn); border-color: var(--warn-line); }
+.ev .k.crit { background: var(--crit-weak); color: var(--crit); border-color: var(--crit-line); }
+/* 2026-10-28 : 내용은 한 줄로 접고 흐린 글씨로 둔다. 긴 경로 · 기동 단계 줄이 여러 줄로 늘어나 표가 어지러웠다.
+   넘치는 줄(.fold)만 눌러서 펼치고, 펼친 줄은 본문 색으로 되돌려 지금 읽는 줄이 드러나게 한다. */
+.ev .m { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ev.open .m { color: var(--text); white-space: normal; overflow-wrap: anywhere; }
+.ev.fold { cursor: pointer; }
+/* 꺾쇠 자리는 모든 줄에 비워 둔다 — 줄마다 글 시작이 어긋나지 않고, 꺾쇠가 붙고 떨어져도 넘침 판정이 흔들리지 않는다 */
+.ev .m::before { content: ""; display: inline-block; width: 12px; color: var(--faint); font-size: 10px; }
+.ev.fold .m::before { content: "▸"; }
+.ev.open .m::before { content: "▾"; }
+.ev .m .mono, .alert-text .mono { font-size: 12px; }
+.ev .errs { grid-column: 4 / -1; margin: 3px 0 1px; }
+.ev .errs a { display: block; font: 12px/1.6 var(--mono); color: var(--crit); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; overflow-wrap: anywhere; }
+.ev .errs a.more { font-family: var(--ui); color: var(--muted); }
+.ev .d { text-align: right; color: var(--muted); font-size: 12px; }
+
+/* ---------- 상태 · 설정 쪽 ----------
+   2026-10-28 : 780px 한 줄 → 넓은 창을 쓰는 카드 격자(상태). 설정은 아래에서 한 기둥 목록으로 다시 바꿨다. */
+.pane.page { overflow: auto; }
+.page-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 12px; max-width: 1400px; padding: 16px 20px 40px; }
+.card { min-width: 0; padding: 12px 16px 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
+.card.span { grid-column: 1 / -1; }
+.card h2, .set-sec h2 { font-size: 14px; font-weight: 600; margin: 0 0 6px; }
+.note { padding: 8px 12px; border: 1px solid var(--warn-line); background: var(--warn-weak); color: var(--warn); border-radius: 6px; margin-bottom: 16px; }
+
+/* 2026-10-28 : 왼쪽 구획 목록을 걷고 한 기둥으로. 설명을 걷어 한두 화면에 다 들어온다. */
+.set-wrap { max-width: 880px; padding: 20px 24px 48px; }
+.set-sec { margin-bottom: 24px; }
+.set-sec h2 { margin-bottom: 8px; }
+
+/* 옵션 줄 — 2026-10-28 : 설명을 단 카드 격자 → 이름 · 조작 한 줄의 목록. 설명은 줄의 title 로 옮겼다.
+   딸린 옵션(.sub)은 부모 아래 들여 써서 「무엇에 딸렸는지」를 글 대신 자리로 보인다. */
+.opts { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
+.opt {
+	display: flex; align-items: center; gap: 16px; min-height: 38px; padding: 6px 14px;
+	border-top: 1px solid var(--line-soft); cursor: pointer;
+}
+.opt:first-child { border-top: 0; }
+.opt:hover { background: var(--panel-2); }
+.opt > span { flex: 1; min-width: 0; }
+.opt.sub { padding-left: 38px; }
+.opt.off { opacity: .5; }
+.opt.field { cursor: default; }
+.opt.field select { width: 180px; }
+.opt .val { flex: none; color: var(--muted); font-size: 12px; }
+.opt.flash { outline: 2px solid var(--ring); outline-offset: -2px; }
+/* 스위치 — 체크박스 그대로라 키보드 · 라벨 누르기가 그대로 된다 */
+.opt input[type=checkbox] {
+	order: 2; appearance: none; position: relative; width: 30px; height: 18px; margin: 1px 0 0;
+	border-radius: 9px; background: var(--line-strong); cursor: pointer; transition: background .12s;
+}
+.opt input[type=checkbox]::before {
+	content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%;
+	background: var(--panel); transition: transform .12s;
+}
+/* docket Switch — 켜지면 본문 색 판에 바탕 색 손잡이 */
+.opt input[type=checkbox]:checked { background: var(--text); }
+.opt input[type=checkbox]:checked::before { transform: translateX(12px); }
+.tag { font: 600 11px var(--ui); color: var(--muted); border: 1px solid currentColor; border-radius: 4px; padding: 0 4px; margin-left: 6px; vertical-align: 1px; }
+
+.pat { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 12px; margin: 0 0 10px; font-size: 12px; color: var(--muted); }
+.pat dt, .pat dd { margin: 0; }
+.pat .ex { font-family: var(--mono); font-size: 12px; color: var(--text); background: var(--panel-2); border: 1px solid var(--line-soft); border-radius: 4px; padding: 0 4px; cursor: pointer; }
+.pat .ex:hover, .pat .ex:focus-visible { border-color: var(--line); }
+.ign { list-style: none; margin: 0 0 8px; padding: 0; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
+.ign li { display: flex; align-items: center; gap: 8px; min-height: 32px; padding: 3px 6px 3px 12px; border-top: 1px solid var(--line-soft); }
+.ign li:first-child { border-top: 0; }
+.ign li .mono { flex: 1; min-width: 0; font-size: 12px; overflow-wrap: anywhere; }
+.ign li.builtin { color: var(--muted); cursor: default; }
+.ign li.builtin .tag { margin: 0 2px 0 0; }
+.ign-add { display: flex; gap: 6px; margin-bottom: 10px; }
+.ign-add input { flex: 1; min-width: 0; font-family: var(--mono); }
+
+.mem { display: grid; grid-template-columns: 1fr auto; gap: 3px 12px; padding: 8px 0; border-bottom: 1px solid var(--line-soft); }
+.mem b { font-weight: 600; }
+.mem .bar { grid-column: 1 / -1; height: 6px; border-radius: 3px; background: var(--panel-2); overflow: hidden; }
+.mem .bar i { display: block; height: 100%; background: var(--muted); }
+.mem .bar i.hi { background: var(--warn-solid); }
+.mem small { grid-column: 1 / -1; color: var(--muted); font-size: 12px; }
+.mem:last-child, .ph:last-child { border-bottom: 0; }
+
+.ph { padding: 8px 0; border-bottom: 1px solid var(--line-soft); }
+.ph-top { display: flex; justify-content: space-between; }
+.ph-bar { display: flex; height: 10px; margin: 6px 0 4px; border-radius: 3px; overflow: hidden; background: var(--panel-2); }
+.ph-bar i { display: block; height: 100%; border-right: 1px solid var(--panel); }
+.ph-bar i:last-child { border-right: 0; }
+.ph-legend { color: var(--muted); font-size: 12px; display: flex; flex-wrap: wrap; gap: 2px 14px; }
+.ph-legend span::before { content: ""; display: inline-block; width: 10px; height: 10px; border-radius: 2px; vertical-align: -1px; margin-right: 6px; background: var(--c); }
+
+.checks { list-style: none; margin: 0; padding: 0; }
+.checks li { display: grid; grid-template-columns: 16px 120px minmax(0, 1fr); gap: 0 10px; align-items: baseline; padding: 6px 0; border-bottom: 1px solid var(--line-soft); }
+.checks .ic { color: var(--ok); align-self: center; }
+.checks li.bad .ic { color: var(--crit); }
+.checks li.bad span { color: var(--crit); }
+.checks small { color: var(--muted); word-break: break-all; font-family: var(--mono); font-size: 12px; }
+.checks-sub { margin: 14px 0 4px; font-weight: 600; font-size: 12.5px; }
+.check-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 0 28px; }
+.check-cols .checks-sub { margin-top: 4px; }
+.check-cols .checks li:last-child { border-bottom: 0; }
+.folders { display: flex; flex-wrap: wrap; gap: 6px; }
+
+/* ---------- 버전 관리 (SVN · Git 읽기 전용) ---------- */
+.svn-bar { gap: 10px; }
+.svn-info { color: var(--muted); flex: 1; min-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.svn-info b { color: var(--text); font-weight: 600; }
+.svn-info a, .svn-list .empty a { color: inherit; text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--line-strong); }
+.svn-info a:hover, .svn-list .empty a:hover { text-decoration-color: currentColor; }
+.svn-body { flex: 1; display: grid; grid-template-columns: minmax(280px, 40%) 1fr; min-height: 0; }
+.svn-list { overflow: auto; border-right: 1px solid var(--line); background: var(--panel); }
+.svn-list .row { display: grid; grid-template-columns: auto auto minmax(0, 1fr); gap: 0 8px; align-items: start; padding: 6px 12px; border-bottom: 1px solid var(--line-soft); cursor: pointer; }
+.svn-list .row:hover { background: var(--panel-2); }
+.svn-list .row.on { background: var(--panel-2); box-shadow: inset 2px 0 0 var(--text); }
+.svn-list .row input { margin-top: 2px; }
+.svn-list .code { font-size: 11px; font-weight: 600; border-radius: 4px; padding: 0 6px; line-height: 18px; white-space: nowrap; color: var(--muted); background: var(--panel-2); }
+.svn-list .code.M { color: var(--text); }
+.svn-list .code.A { color: var(--ok); background: var(--ok-weak); }
+.svn-list .code.D, .svn-list .code.\! { color: var(--crit); background: var(--crit-weak); }
+.svn-list .code.C { color: #fff; background: var(--crit-solid); }
+.svn-list .p { color: var(--muted); font-family: var(--mono); font-size: 12px; }
+.svn-list .p b { font-weight: 600; color: var(--text); white-space: nowrap; }
+.svn-list .p small { display: block; color: var(--muted); font: 12px var(--ui); }
+.svn-list .flag, .svn-info .flag { color: var(--crit); font-weight: 600; }
+.svn-group { padding: 8px 12px; color: var(--crit); font-size: 12px; background: var(--crit-weak); border-bottom: 1px solid var(--line); }
+.svn-diff { overflow: auto; font: 12px/1.5 var(--mono); background: var(--panel); }
+.svn-diff .head { position: sticky; top: 0; padding: 8px 14px; background: var(--panel); border-bottom: 1px solid var(--line); font: 13px/1.45 var(--ui); }
+.svn-diff .head b { font-family: var(--mono); font-size: 12.5px; font-weight: 600; }
+.svn-diff .head small { display: block; color: var(--muted); font-size: 12px; }
+.svn-diff .head .add { color: var(--ok); font-weight: 600; }
+.svn-diff .head .del { color: var(--crit); font-weight: 600; }
+.svn-diff .head .acts { margin-top: 6px; display: flex; gap: 6px; flex-wrap: wrap; }
+.svn-diff table { border-collapse: collapse; width: 100%; }
+.svn-diff td { padding: 0 8px; vertical-align: top; white-space: pre-wrap; word-break: break-all; }
+.svn-diff td.no { color: var(--faint); text-align: right; width: 1%; white-space: nowrap; user-select: none; }
+.svn-diff tr.add td.s { background: var(--ok-weak); }
+.svn-diff tr.del td.s { background: var(--crit-weak); }
+.svn-diff tr.add td.s::before { content: "+ "; color: var(--ok); }
+.svn-diff tr.del td.s::before { content: "- "; color: var(--crit); }
+.svn-diff tr.ctx td.s::before { content: "  "; }
+.svn-diff tr.hunk td { color: var(--muted); background: var(--line-soft); padding: 2px 8px; }
+.svn-diff .empty { font-family: var(--ui); }
+.svn-foot { display: flex; gap: 8px; align-items: center; padding: 8px 14px; border-top: 1px solid var(--line); background: var(--panel); flex-wrap: wrap; }
+.svn-foot input { flex: 1; min-width: 240px; }
+.svn-note { color: var(--muted); font-size: 12px; }
+.svn-log { padding: 8px 12px; border-bottom: 1px solid var(--line-soft); }
+.svn-log .r { font-weight: 600; margin-right: 8px; font-family: var(--mono); }
+.svn-log .who { color: var(--muted); font-size: 12px; }
+.svn-log .msg { margin: 3px 0 4px; white-space: pre-wrap; word-break: break-all; }
+.svn-log .cp { display: flex; gap: 8px; padding: 1px 6px; border-radius: 4px; cursor: pointer; font-size: 12px; word-break: break-all; }
+.svn-log .cp:hover { background: var(--panel-2); }
+.svn-log .cp.on { background: var(--panel-2); box-shadow: inset 2px 0 0 var(--text); }
+.svn-log .cp.out { color: var(--faint); cursor: default; }
+.svn-log .cp .a { font-weight: 700; width: 12px; flex: none; font-family: var(--mono); }
+.svn-log .cp .a.A { color: var(--ok); }
+.svn-log .cp .a.D { color: var(--crit); }
+.svn-log .cp .a.M, .svn-log .cp .a.R { color: var(--text); }
+.svn-log .cp .mine { color: var(--crit); font-weight: 600; white-space: nowrap; }
+.svn-login { padding: 20px; max-width: 420px; font: 13px/1.5 var(--ui); }
+.svn-login h3 { margin: 0 0 6px; font-size: 14px; font-weight: 600; }
+.svn-login p { color: var(--muted); margin: 0 0 14px; }
+.svn-login label.f { display: block; font-weight: 600; font-size: 12px; margin-bottom: 4px; }
+.svn-login input[type=text], .svn-login input[type=password] { display: block; width: 100%; margin-bottom: 12px; }
+.svn-login .chk { margin-bottom: 14px; }
+.svn-login .err { color: var(--crit); margin-bottom: 10px; min-height: 0; }
+.svn-login .row-btns { display: flex; gap: 6px; }
+.vcs-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 8px; }
+.vcs-srv { min-width: 0; padding: 10px 14px 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
+.vcs-srv .checks-sub { display: flex; align-items: center; gap: 6px; margin: 0 0 6px; font-size: 13px; }
+.vcs-srv [data-k=found] { display: flex; gap: 4px; }
+.vcs-srv .checks-sub .k { font: 600 11px/18px var(--ui); padding: 0 6px; border-radius: 4px; background: var(--panel-2); color: var(--muted); }
+/* 2026-10-28 : 라벨 위 · 설명 · 입력의 세 단 → 라벨 왼쪽 · 입력 오른쪽 한 줄. 설명은 라벨의 title 에 둔다. */
+.vcs-srv .field { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: 0 10px; align-items: center; padding: 3px 0; }
+.vcs-srv .field > span { color: var(--muted); }
+.vcs-srv .field input[type=text], .vcs-srv .field select { width: 100%; }
+.vcs-srv .field input[type=text] { font-family: var(--mono); font-size: 12px; }
+.vcs-acts { display: flex; justify-content: flex-end; padding-top: 6px; }
+.vcs-srv .field textarea { width: 100%; min-height: 54px; resize: vertical; font: 12px/1.5 var(--mono); }
+.vcs-srv .field.top { align-items: start; }
+.vcs-srv .field.top > span { padding-top: 4px; }
+.set-sec .sec-acts { display: flex; align-items: center; gap: 8px; margin-top: 8px; color: var(--muted); font-size: 12px; }
+
+/* ---------- 상태 표시줄 · 메뉴 · 알림 ---------- */
+/* 2026-10-28 : 켜진 설정을 「·」 로 이은 한 줄 → 묶음(반영 · 기동 · 앱)별 칩. 칩을 누르면 설정의 그 칸으로 간다. */
+.statusbar {
+	display: flex; align-items: center; gap: 12px; height: 28px; padding: 0 6px 0 8px;
+	background: var(--panel); border-top: 1px solid var(--line); font-size: 12px; color: var(--muted);
+}
+.statusbar button { border: 0; background: none; color: inherit; font: inherit; padding: 0 6px; height: 20px; border-radius: 4px; cursor: pointer; white-space: nowrap; }
+.statusbar button:hover { background: var(--panel-2); color: var(--text); }
+.sb-opts { flex: 1; min-width: 0; display: flex; align-items: center; overflow: hidden; }
+.sb-group { display: flex; align-items: center; gap: 4px; flex: none; }
+.sb-group + .sb-group { margin-left: 8px; padding-left: 8px; border-left: 1px solid var(--line); }
+.sb-label { color: var(--faint); font-size: 11px; margin-right: 2px; }
+.statusbar .sb-item { display: inline-flex; align-items: center; gap: 4px; padding: 0 7px; color: var(--text); background: var(--panel-2); }
+.statusbar .sb-item:hover { background: var(--line-soft); }
+.sb-item .ic { width: 12px; height: 12px; color: var(--muted); stroke-width: 2.2; }
+.statusbar .sb-item.off { color: var(--faint); background: none; text-decoration: line-through; }
+.sb-item b { font-weight: 600; font-family: var(--mono); }
+#sbMem { display: inline-flex; align-items: center; gap: 4px; flex: none; }
+#sbMem b { color: var(--text); font-weight: 600; font-family: var(--mono); margin-right: 6px; }
+#sbMem b:last-child { margin-right: 0; }
+/* 떠 있는 것(메뉴 · 알림 조각 · 대화상자)만 그림자를 단다 — docket .pop. 바닥에 붙은 판은 선으로만 나눈다. */
+.menu {
+	position: fixed; z-index: 10; min-width: 240px; padding: 4px; background: var(--panel);
+	border: 1px solid var(--line-strong); border-radius: 8px; box-shadow: var(--shadow-pop);
+}
+.menu button { display: block; width: 100%; text-align: left; border: 0; background: none; padding: 6px 10px; border-radius: 5px; font: 13px var(--ui); color: var(--text); cursor: pointer; }
+.menu button:hover, .menu button:focus-visible { background: var(--panel-2); outline: none; }
+.menu small { display: block; color: var(--muted); font-family: var(--mono); font-size: 11.5px; }
+.toast {
+	position: fixed; right: 16px; bottom: 40px; z-index: 11; display: flex; align-items: center; gap: 8px;
+	padding: 8px 14px; background: var(--panel); color: var(--text); border-radius: 6px;
+	border: 1px solid var(--line-strong); box-shadow: var(--shadow-pop); font-size: 12.5px;
+	opacity: 0; transform: translateY(6px); transition: opacity .18s ease-out, transform .18s ease-out; pointer-events: none;
+}
+.toast.show { opacity: 1; transform: none; }
+
+/* ---------- 닫기 확인 (2026-10-28) ---------- */
+.scrim {
+	position: fixed; inset: 0; z-index: 20; display: flex; align-items: center; justify-content: center;
+	padding: 16px; background: rgba(0, 0, 0, .32);
+}
+.dlg {
+	width: 100%; max-width: 380px; padding: 18px 18px 14px; background: var(--panel); color: var(--text);
+	border: 1px solid var(--line-strong); border-radius: 8px; box-shadow: var(--shadow-pop);
+}
+.dlg h2 { margin: 0 0 6px; font-size: 14px; font-weight: 600; }
+.dlg p { margin: 0; color: var(--muted); }
+.dlg ul { margin: 10px 0 0; padding: 0; list-style: none; }
+.dlg li { display: flex; justify-content: space-between; gap: 12px; padding: 4px 0; border-top: 1px solid var(--line-soft); }
+.dlg li span:last-child { color: var(--muted); }
+.dlg .acts { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+</style>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+	<symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5.5v13l10.5-6.5z"/></symbol>
+	<symbol id="i-restart" viewBox="0 0 24 24"><path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3"/><path d="M19.5 4.5v4.2h-4.2"/></symbol>
+	<symbol id="i-stop" viewBox="0 0 24 24"><rect x="6.5" y="6.5" width="11" height="11" rx="1.5"/></symbol>
+	<symbol id="i-external" viewBox="0 0 24 24"><path d="M13.5 4.5h6v6"/><path d="M19.5 4.5l-8 8"/><path d="M17.5 13.5v5a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1v-11a1 1 0 0 1 1-1h5"/></symbol>
+	<symbol id="i-chev" viewBox="0 0 24 24"><path d="M7 10l5 5 5-5"/></symbol>
+	<symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></symbol>
+	<symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="M15.5 15.5l4 4"/></symbol>
+	<symbol id="i-warn" viewBox="0 0 24 24"><path d="M12 4.5l8.5 15h-17z"/><path d="M12 10v4"/><path d="M12 16.8v.2"/></symbol>
+	<symbol id="i-error" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M9.2 9.2l5.6 5.6M14.8 9.2l-5.6 5.6"/></symbol>
+	<symbol id="i-check" viewBox="0 0 24 24"><path d="M5.5 12.5l4 4 9-9"/></symbol>
+	<symbol id="i-x" viewBox="0 0 24 24"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></symbol>
+	<symbol id="i-folder" viewBox="0 0 24 24"><path d="M4 7a1.5 1.5 0 0 1 1.5-1.5h4l2 2h7A1.5 1.5 0 0 1 20 9v8.5a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 17.5z"/></symbol>
+	<symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="10.5" height="10.5" rx="1.5"/><path d="M15 9V6a1.5 1.5 0 0 0-1.5-1.5h-7.5A1.5 1.5 0 0 0 4.5 6v7.5A1.5 1.5 0 0 0 6 15h3"/></symbol>
+	<symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8.5" r="3.5"/><path d="M5 19.5c1-3.3 3.8-5 7-5s6 1.7 7 5"/></symbol>
+</svg>
+
+<header class="titlebar" id="titlebar">
+	<div class="tb-drag" data-tauri-drag-region="deep">
+		<svg class="tb-icon" viewBox="0 0 16 16" aria-hidden="true">
+			<rect width="16" height="16" rx="3.5" fill="#22344f"/>
+			<path d="M5.2 4.6A4.6 4.6 0 1 0 10.5 4" fill="none" stroke="#e6edf5" stroke-width="1.5" stroke-linecap="round"/>
+			<path d="M4.1 2.7l2.6.6-1 2.4z" fill="#e6edf5"/>
+			<path d="M7 5.9v4.2l3.4-2.1z" fill="#38b6ff"/>
+		</svg>
+		<span class="tb-title">tomcatrun<span class="tb-ver num" id="tbVer"></span></span>
+	</div>
+	<button class="tb-btn" id="tbMin" tabindex="-1" aria-label="최소화" title="최소화"><svg viewBox="0 0 10 10"><path d="M0 5.5h10"/></svg></button>
+	<button class="tb-btn" id="tbMax" tabindex="-1" aria-label="최대화" title="최대화"><svg viewBox="0 0 10 10"><rect x=".5" y=".5" width="9" height="9"/></svg></button>
+	<button class="tb-btn close" id="tbClose" tabindex="-1" aria-label="닫기" title="닫기"><svg viewBox="0 0 10 10"><path d="M.5 .5l9 9M9.5 .5l-9 9"/></svg></button>
+</header>
+
+<div class="servers" id="servers"></div>
+<div id="alerts"></div>
+<nav class="tabs" id="tabs" role="tablist"><span class="gap"></span></nav>
+
+<main>
+	<!-- 반영 기록 · 서버 로그 · 빌드 : 같은 자리를 나눠 쓴다 -->
+	<section class="pane" id="paneLog">
+		<div class="toolbar">
+			<div class="seg" id="evSrv"></div>
+			<button class="btn" id="logFolder"><svg class="ic"><use href="#i-folder"/></svg>로그 폴더</button>
+			<div class="end">
+				<label class="search"><svg class="ic"><use href="#i-search"/></svg><input type="search" id="filter" placeholder="찾기 (Ctrl+F)"></label>
+				<label class="chk"><input type="checkbox" id="onlyErr">오류만</label>
+				<label class="chk"><input type="checkbox" id="follow" checked>따라가기</label>
+				<button class="btn ghost" id="btnClear">지우기</button>
+			</div>
+		</div>
+		<div id="buildCtl"></div>
+		<div class="ev-head" id="evHead"><span>시각</span><span>서버</span><span>구분</span><span>내용</span><span style="text-align:right">걸린 시간</span></div>
+		<div id="log"></div>
+	</section>
+
+	<!-- 버전 관리 (SVN · Git 읽기 전용 · 커밋 · 업데이트는 사용자가 직접) -->
+	<section class="pane" id="paneSvn" hidden>
+		<div class="toolbar svn-bar">
+			<div class="seg" id="svnSrv"></div>
+			<div class="seg" id="vcsKind" hidden></div>
+			<div class="seg" id="svnViews">
+				<button data-view="local" class="on" title="작업복사본에서 바뀐 파일 (저장소에 묻지 않습니다)">내 변경</button>
+				<button data-view="incoming" title="저장소에 새 커밋이 있는지, 업데이트하면 무엇이 들어오는지">업데이트 확인</button>
+				<button data-view="log">로그</button>
+			</div>
+			<span class="svn-info" id="svnInfo">읽는 중...</span>
+			<label class="chk" id="svnUnverBox"><input type="checkbox" id="svnUnver">추가 안 된 파일도</label>
+			<button class="btn" id="svnAccount" title="저장소 계정 (Windows 자격 증명 관리자)"><svg class="ic"><use href="#i-user"/></svg>계정</button>
+			<button class="btn" id="svnRefresh"><svg class="ic"><use href="#i-restart"/></svg>새로 고침</button>
+		</div>
+		<div class="svn-body">
+			<div class="svn-list" id="svnList"></div>
+			<div class="svn-diff" id="svnDiff"></div>
+		</div>
+		<div class="svn-foot" id="svnCommit">
+			<input type="text" id="svnMsg" placeholder="커밋 메시지">
+			<button class="btn" id="svnCopyList"><svg class="ic"><use href="#i-copy"/></svg>고른 파일 목록 복사</button>
+			<button class="btn" id="svnCopyCmd"><svg class="ic"><use href="#i-copy"/></svg>커밋 명령 복사</button>
+		</div>
+		<div class="svn-foot" id="svnUpdateBar" style="display:none">
+			<button class="btn" id="svnCopyUpdate"><svg class="ic"><use href="#i-copy"/></svg>업데이트 명령 복사</button>
+			<button class="btn" id="svnCopyFetch" hidden><svg class="ic"><use href="#i-copy"/></svg>fetch 명령 복사</button>
+			<span class="svn-note" id="svnUpdateNote" style="width:auto;flex:1"></span>
+		</div>
+	</section>
+
+	<!-- 상태 : 메모리 · 기동 시간 · 준비 상태 · 폴더
+	     2026-10-28 : 780px 한 줄 세로 나열 → 카드 격자. 넓은 창에서 메모리와 기동 시간을 나란히 보고, 준비 상태는 공통 · 서버별을 칸으로 나눈다. -->
+	<section class="pane page" id="paneStatus" hidden>
+		<div class="page-grid">
+			<section class="card"><h2>메모리</h2><div id="mems"></div></section>
+			<section class="card"><h2>직전 기동 시간</h2><div id="phases"></div></section>
+			<section class="card span"><h2>준비 상태</h2>
+				<div class="check-cols" id="srvChecks"><div><div class="checks-sub">공통</div><ul class="checks" id="checks"></ul></div></div>
+			</section>
+			<section class="card span"><h2>폴더</h2><div class="folders" id="folders"></div></section>
+		</div>
+	</section>
+
+	<!-- 설정 : 한 번 정하면 거의 바꾸지 않는 것
+	     2026-10-28 : 구획 목록 · 설명 카드 → 한 기둥의 목록 줄. 화면에는 이름과 값만 두고 설명은 줄의 title 에 둔다.
+	     딸린 옵션은 부모 아래 들여 쓴다 (매퍼 하나만 → 핫리로드 · 컴파일러 → 저장하면 컴파일). -->
+	<section class="pane page" id="paneSettings" hidden>
+		<div class="set-wrap">
+			<div class="note" id="optNote" hidden>재시작해야 적용됩니다.</div>
+
+			<!-- 프로젝트 폴더 · 포트 · 접속 주소처럼 쓰는 곳마다 다른 값은 실행기에 들어 있지 않다. 여기서 정하면 tomcatrun.json 에 저장된다. -->
+			<section class="set-sec" id="setServers">
+				<h2>서버</h2>
+				<div class="vcs-cols" id="srvForms"></div>
+				<div class="sec-acts"><button class="btn" id="srvAdd">서버 추가</button><span>더한 서버는 실행기를 다시 열면 보입니다.</span></div>
+			</section>
+
+			<section class="set-sec" id="setPaths">
+				<h2>경로</h2>
+				<div class="vcs-cols"><div class="vcs-srv" id="pathForm"></div></div>
+			</section>
+
+			<section class="set-sec" id="setLive">
+				<h2>고쳐서 바로 보기</h2>
+				<div class="opts">
+					<label class="opt" title="DCEVM JDK 와 HotswapAgent 로 띄웁니다. 메서드 · 필드 추가와 새 빈까지 재시작 없이 들어갑니다."><input type="checkbox" id="optHot"><span>자바 핫리로드</span></label>
+					<label class="opt sub" id="rowMapper" title="매퍼 XML 을 저장하면 그 파일만 다시 읽습니다 (HotswapAgent MyBatis 플러그인). 핫리로드일 때만 동작하고, 반응이 없으면 알려 줍니다."><input type="checkbox" id="optMapper"><span>매퍼 하나만 다시 읽기<span class="tag">실험</span></span></label>
+					<label class="opt" title="각 프로젝트의 src/main/java 를 지켜보다가 바뀐 파일만 컴파일합니다. 다른 도구로 고쳐도 잡힙니다."><input type="checkbox" id="optAuto"><span>저장하면 컴파일</span></label>
+					<div class="opt field sub" title="어느 쪽이든 상주해 있어서 저장할 때마다 JVM 을 새로 띄우지 않습니다."><span>컴파일러</span>
+						<select id="selCompiler"><option value="ecj">ECJ (이클립스 컴파일러)</option><option value="javac">javac</option></select></div>
+					<label class="opt" title="IDE 에서 원격 디버그로 붙습니다."><input type="checkbox" id="optDebug"><span>디버거 연결 허용</span><span class="val num" id="debugHint"></span></label>
+				</div>
+			</section>
+
+			<section class="set-sec" id="setBoot">
+				<h2>기동 · 메모리</h2>
+				<div class="opts">
+					<div class="opt field" title="상한을 두면 메모리가 그 안에서 돕니다."><span>톰캣 힙 상한</span>
+						<select id="selHeap"><option value="1024">1GB</option><option value="1536">1.5GB</option><option value="2048">2GB</option><option value="3072">3GB</option><option value="0">상한 없음 (JVM 기본값)</option></select></div>
+					<label class="opt" title="C1 컴파일러만 쓰고 바이트코드 검증을 건너뜁니다. 기동이 빨라지는 대신 오래 돌 때 최고 속도는 낮습니다."><input type="checkbox" id="optFast"><span>빠른 기동 JVM 옵션</span></label>
+					<label class="opt" title="톰캣이 기동마다 모든 클래스에서 서블릿 애너테이션을 찾지 않게 합니다. 애너테이션으로 등록한 서블릿 · 필터가 없는 앱에서만 켭니다. 원본 web.xml 은 그대로 두고 사본에 표시만 더합니다."><input type="checkbox" id="optSkipScan"><span>클래스 전체 탐색 건너뛰기</span></label>
+					<label class="opt" title="함께 뜨면 CPU 를 나눠 써 서로 느려집니다. 먼저 누른 서버가 다 뜬 뒤 다음 서버를 띄웁니다."><input type="checkbox" id="optStagger"><span>서버를 차례로 띄우기</span></label>
+				</div>
+			</section>
+
+			<section class="set-sec" id="setApp">
+				<h2>개발 전용 앱 설정</h2>
+				<div class="opts">
+					<label class="opt" title="데이터소스마다 처음에 여는 연결을 20개에서 1개로 줄입니다. 재시작 뒤 첫 화면이 빨라집니다. 프로젝트 소스는 그대로 둡니다."><input type="checkbox" id="optPool"><span>DB 연결 미리 열기 1개</span></label>
+					<label class="opt" title="@Scheduled 로 등록한 예약 작업을 돌리지 않습니다."><input type="checkbox" id="optSchedule"><span>예약 작업 멈추기</span></label>
+					<label class="opt" title="빈을 처음 쓸 때 만듭니다. 기동이 짧아지는 대신 처음 여는 화면이 그만큼 느리고, 설정 오류가 그때 드러납니다. 예약 작업도 그 화면을 열 때까지 돌지 않습니다."><input type="checkbox" id="optLazy"><span>지연 초기화<span class="tag">실험</span></span></label>
+					<label class="opt" title="정상 종료 때 세션을 저장했다가 되살립니다 (톰캣 기본 동작)."><input type="checkbox" id="optSession"><span>재시작해도 로그인 유지</span></label>
+				</div>
+			</section>
+
+			<!-- 「기본」 줄은 app/src/main.rs 의 늘 빼는 규칙(편집기 임시 파일 · resources-* · java/ · webapp/ 사본)을 그대로 적은 것이다. 그쪽을 바꾸면 renderIgnore 의 IGNORE_BUILTIN 도 고친다. -->
+			<section class="set-sec" id="setIgnore">
+				<h2>저장 감시 제외</h2>
+				<ul class="ign" id="ignList"></ul>
+				<div class="ign-add">
+					<input type="text" id="ignInput" spellcheck="false" placeholder="예) a.sql · *.sql · src/main/resources/db/deploy/"
+						title="여기 걸린 파일은 저장해도 반영 기록 · 재시작 알림 · 자동 컴파일에 넣지 않습니다. 버전 관리 「내 변경」 목록에는 그대로 나옵니다.&#10;탐색기에서 복사한 전체 경로도 프로젝트 기준으로 바뀌고, 여러 줄을 붙여 넣으면 줄마다 하나씩 들어갑니다.&#10;「/」 가 없으면 이름으로 맞춥니다. 같은 이름의 폴더가 있으면 그 아래도 빠집니다.">
+					<button class="btn" id="ignAdd">추가</button>
+				</div>
+				<dl class="pat" title="누르면 입력칸에 넣습니다">
+					<dt><button type="button" class="ex">a.sql</button></dt><dd>어느 폴더에서나 이 이름의 파일</dd>
+					<dt><button type="button" class="ex">*.sql</button></dt><dd>어느 폴더에서나 이 확장자</dd>
+					<dt><button type="button" class="ex">src/main/a.sql</button></dt><dd>그 파일 하나만</dd>
+					<dt><button type="button" class="ex">src/main/resources/</button></dt><dd>그 폴더 아래 전부</dd>
+					<dt><button type="button" class="ex">deploy/</button></dt><dd>어디에 있든 이 이름의 폴더</dd>
+					<dt><button type="button" class="ex">src/**/tmp/</button></dt><dd>중간 폴더가 몇 단이든</dd>
+				</dl>
+			</section>
+
+			<section class="set-sec" id="setVcs">
+				<h2>버전 관리</h2>
+				<div class="vcs-cols" id="vcsForms"></div>
+			</section>
+		</div>
+	</section>
+</main>
+
+<footer class="statusbar">
+	<div class="sb-opts" id="sbOpts"></div>
+	<button id="sbMem" title="상태 열기"></button>
+</footer>
+
+<div class="menu" id="menu" role="menu" hidden></div>
+<div class="scrim" id="quitScrim" hidden>
+	<div class="dlg" role="alertdialog" aria-modal="true" aria-labelledby="quitTitle" aria-describedby="quitText">
+		<h2 id="quitTitle"></h2>
+		<p id="quitText"></p>
+		<ul id="quitList"></ul>
+		<div class="acts" id="quitActs">
+			<button class="btn" id="quitCancel">취소</button>
+			<button class="btn primary" id="quitOk">종료하고 닫기</button>
+		</div>
+	</div>
+</div>
+<div class="toast" id="toast" role="status"><svg class="ic"><use href="#i-check"/></svg><span id="toastText"></span></div>
+
+<script>
+(function () {
+	var T = window.__TAURI__;
+	var invoke = T.core.invoke;
+	var listen = T.event.listen;
+	// 창 제목에 지금 문제를 적는다 — 최소화해 두었을 때 작업 표시줄에서 보인다
+	var appWin = null;
+	try { appWin = T.window.getCurrentWindow(); } catch (e) { /* 창 API 가 없으면 제목을 그대로 둔다 */ }
+
+	// 제목 줄 단추 — 창 API 가 없으면 단추가 할 일이 없으므로 제목 줄째 숨긴다
+	var MAX_ICON = '<rect x=".5" y=".5" width="9" height="9"/>';
+	var RESTORE_ICON = '<rect x=".5" y="2.5" width="7" height="7"/><path d="M2.5 2.5V.5h7v7h-2"/>';
+	if (appWin) {
+		document.getElementById("tbMin").onclick = function () { appWin.minimize(); };
+		document.getElementById("tbMax").onclick = function () { appWin.toggleMaximize(); };
+		document.getElementById("tbClose").onclick = function () { appWin.close(); };   // 닫기 요청 → 톰캣이 켜져 있으면 실행기가 「close-ask」로 묻는다
+		var syncMax = function () {
+			appWin.isMaximized().then(function (m) {
+				var b = document.getElementById("tbMax");
+				b.firstChild.innerHTML = m ? RESTORE_ICON : MAX_ICON;
+				b.title = m ? "이전 크기로" : "최대화";
+				b.setAttribute("aria-label", b.title);
+			}).catch(function () { /* 알 수 없으면 아이콘을 그대로 둔다 */ });
+		};
+		window.addEventListener("resize", syncMax);
+		syncMax();
+	} else {
+		document.getElementById("titlebar").hidden = true;
+	}
+	// 다른 창을 보고 있으면 제목 줄을 흐리게 (Windows 제목 줄과 같은 동작)
+	window.addEventListener("blur", function () { document.body.classList.add("blur"); });
+	window.addEventListener("focus", function () { document.body.classList.remove("blur"); });
+
+	// 2026-10-27 : 8000 · 3000 → 5000 · 2000. 화면 엔진 메모리를 줄이려는 것 (전체 로그는 logs/console.log 에 있다)
+	var MAX = 5000;      // 탭마다 들고 있는 줄 수
+	var SHOW = 2000;     // 다시 그릴 때 보여 주는 줄 수
+	var APP_TITLE = "tomcatrun";
+	var STATUS_TEXT = { stopped: "꺼짐", starting: "켜는 중", running: "실행 중", stopping: "끄는 중" };
+	// javac 오류 줄의 「파일:줄:」 — 눌러서 편집기로 연다
+	var SRC_RE = /([A-Za-z]:[\\\/][^:*?"<>|\r\n]+?\.java):(\d+):/;
+	// 기동 단계 색 — 회색 다섯 단계 (단계 순서가 곧 진하기). 2026-10-28 : 파랑 → 무채색. 단계 구분은 뜻이 아니라 순서라 상태 색을 쓰지 않는다.
+	var PHASE_COLOR = ["oklch(0.86 0 0)", "oklch(0.74 0 0)", "oklch(0.62 0 0)", "oklch(0.5 0 0)", "oklch(0.38 0 0)"];
+
+	var state = null;
+	var memSnap = null;    // 3초마다 오는 메모리 (servers · daemon · launcher)
+	var built = false;     // 서버 수가 정해진 뒤 한 번만 뼈대를 만든다
+	var bootCfg = {};      // 서버별 이번 기동에 쓴 옵션 — 바꾸면 「다음 시작부터」 안내를 띄운다
+	var tab = "events";
+	var evSrv = -1;        // 반영 기록에서 볼 서버 (-1 은 모두)
+	var store = {}, unread = {}, unreadErr = {};
+	var errMsg = "";       // 실행기 명령이 돌려준 오류 — 닫을 때까지 알림 줄에 둔다
+	var alertOpen = {};    // 알림 줄 목록을 펼친 것
+	var lastTitle = "";
+	var errBuf = {}, lastErrs = {};   // 서버별 컴파일 오류 줄 — 모으는 중 · 직전 컴파일 것
+
+	var $ = function (id) { return document.getElementById(id); };
+	var logEl = $("log");
+
+	function esc(t) {
+		return String(t).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; });
+	}
+	function ic(name, cls) { return '<svg class="ic' + (cls ? " " + cls : "") + '"><use href="#i-' + name + '"/></svg>'; }
+	function fmtDur(ms) {
+		var s = Math.max(0, Math.floor(ms / 1000)), h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60);
+		if (h) return h + "시간 " + m + "분";
+		if (m) return m + "분 " + (s % 60) + "초";
+		return (s % 60) + "초";
+	}
+	function fmtTime(ms) {
+		var d = new Date(ms);
+		return ("0" + d.getHours()).slice(-2) + ":" + ("0" + d.getMinutes()).slice(-2) + ":" + ("0" + d.getSeconds()).slice(-2);
+	}
+	function fmtMb(mb) { return mb >= 1024 ? (mb / 1024).toFixed(1) + "GB" : mb + "MB"; }
+	function baseName(p) { return String(p).split(/[\\\/]/).pop(); }
+
+	/* ---------- 뼈대 (서버 수만큼) ---------- */
+
+	function build(s) {
+		$("tbVer").textContent = s.version;
+		addTab("events", "반영 기록");
+		s.servers.forEach(function (sv, i) {
+			// 서버 줄
+			var card = document.createElement("div");
+			card.className = "srv";
+			card.setAttribute("data-st", "stopped");
+			card.innerHTML =
+				'<div class="srv-head"><span class="dot"></span><b class="srv-name">' + esc(sv.name) + '</b>' +
+					'<span class="srv-port num">:' + sv.httpPort + '</span><span class="srv-state" data-k="state"></span></div>' +
+				'<div class="srv-meta" data-k="meta"></div>' +
+				'<div class="srv-acts">' +
+					'<button class="btn primary" data-k="start">' + ic("play") + "시작</button>" +
+					'<button class="btn" data-k="restart">' + ic("restart") + '<span data-k="rl">재시작</span></button>' +
+					'<button class="btn" data-k="stop">' + ic("stop") + "중지</button>" +
+					'<button class="btn" data-k="open" aria-haspopup="menu" title="브라우저로 열기">' + ic("external") + "열기" + ic("chev", "chev") + "</button>" +
+				"</div>";
+			$("servers").appendChild(card);
+			var q = function (k) { return card.querySelector('[data-k="' + k + '"]'); };
+			q("start").onclick = function () { hideError(); call("start", { srv: i }); };
+			q("restart").onclick = function () { hideError(); call("restart", { srv: i }); };
+			q("stop").onclick = function () { call("stop", { srv: i }); };
+			q("open").onclick = function (ev) {
+				ev.stopPropagation();
+				openMenu(this, state.servers[i].links.map(function (l) {
+					return { label: l.label, sub: l.url, run: function () { invoke("open", { target: l.url }); } };
+				}));
+			};
+
+			// 빌드 탭의 서버별 단추 줄
+			var bc = document.createElement("div");
+			bc.className = "bctl";
+			bc.id = "bctl" + i;
+			bc.innerHTML = "<b>" + esc(sv.name) + "</b>" +
+				'<button class="btn" data-k="c">바뀐 파일 컴파일</button>' +
+				'<button class="btn" data-k="ca" title="톰캣이 꺼져 있으면 비우고 처음부터 다시 만듭니다">전체 컴파일</button>' +
+				'<button class="btn" data-k="deps" title="pom.xml 기준으로 Maven 이 다시 받습니다. 그 서버를 끈 상태에서만 됩니다">의존 jar 다시 받기</button>' +
+				'<span class="bres" data-k="cl">아직 컴파일하지 않았습니다.</span>';
+			$("buildCtl").appendChild(bc);
+			bc.querySelector('[data-k="c"]').onclick = function () { call("compile", { srv: i, full: false }); };
+			bc.querySelector('[data-k="ca"]').onclick = function () { call("compile", { srv: i, full: true }); };
+			bc.querySelector('[data-k="deps"]').onclick = function () { hideError(); call("refresh_deps", { srv: i }); };
+
+			// 반영 기록의 서버 거르기
+			var fb = document.createElement("button");
+			fb.textContent = sv.name;
+			fb.setAttribute("data-s", i);
+			$("evSrv").appendChild(fb);
+
+			// 상태 탭 : 서버별 준비 상태 · 폴더
+			var ck = document.createElement("div");
+			ck.id = "checks" + i;
+			ck.innerHTML = '<div class="checks-sub">' + esc(sv.name) + '</div><ul class="checks" data-k="list"></ul>';
+			$("srvChecks").appendChild(ck);
+			var fo = document.createElement("button");
+			fo.className = "btn";
+			fo.innerHTML = ic("folder") + esc(sv.name) + " 톰캣 로그";
+			fo.onclick = function () { invoke("open", { target: state.servers[i].catalinaBase + "/logs" }); };
+			$("folders").appendChild(fo);
+
+			addTab("srv" + i, sv.name + " 로그");
+		});
+		addTab("build", "빌드");
+		addTab("svn", "버전 관리");
+		addTab("status", "상태", true);
+		addTab("settings", "설정", true, "sliders");
+
+		var all = document.createElement("button");
+		all.textContent = "모두";
+		all.setAttribute("data-s", -1);
+		$("evSrv").insertBefore(all, $("evSrv").firstChild);
+		[].forEach.call($("evSrv").children, function (b) {
+			b.onclick = function () { evSrv = +b.getAttribute("data-s"); renderEvSrv(); redraw(); };
+		});
+		renderEvSrv();
+
+		[["설정 파일 (" + baseName(s.configPath) + ")", function () { return state.configPath; }], ["실행기 폴더", function () { return state.home; }]].forEach(function (x) {
+			var b = document.createElement("button");
+			b.className = "btn";
+			b.innerHTML = ic("folder") + esc(x[0]);
+			b.onclick = function () { invoke("open", { target: x[1]() }); };
+			$("folders").appendChild(b);
+		});
+		svnBuild(s);
+		srvBuild(s);
+		vcsBuild(s);
+		built = true;
+		renderTabs();
+		showPane();
+		redraw();
+	}
+
+	// right : 탭 줄 오른쪽 끝에 둔다 (상태 · 설정)
+	function addTab(name, label, right, icon) {
+		var isLog = name === "events" || name === "build" || /^srv/.test(name);
+		if (isLog) { store[name] = []; unread[name] = 0; unreadErr[name] = false; }
+		var b = document.createElement("button");
+		b.className = "tab";
+		b.setAttribute("role", "tab");
+		b.setAttribute("data-tab", name);
+		b.innerHTML = (icon ? ic(icon) : "") + esc(label) + '<span class="n"></span>';
+		b.onclick = function () { go(name); };
+		var gap = $("tabs").querySelector(".gap");
+		if (right) $("tabs").appendChild(b); else $("tabs").insertBefore(b, gap);
+	}
+
+	function go(name) {
+		tab = name;
+		if (store[name]) { unread[name] = 0; unreadErr[name] = false; }
+		closeMenu();
+		showPane();
+		renderTabs();
+		redraw();
+	}
+
+	function renderEvSrv() {
+		[].forEach.call($("evSrv").children, function (b) { b.classList.toggle("on", +b.getAttribute("data-s") === evSrv); });
+	}
+
+	/* ---------- 서버 줄 ---------- */
+
+	function renderMeta() {
+		if (!state) return;
+		var now = Date.now();
+		state.servers.forEach(function (sv, i) {
+			var card = $("servers").children[i];
+			if (!card) return;
+			var st = sv.status, parts = [];
+			card.setAttribute("data-st", st);
+			var text = STATUS_TEXT[st];
+			if (st === "starting") text += sv.waiting ? " · 차례 기다림" : sv.startedAtMs ? " · " + fmtDur(now - sv.startedAtMs) : "";
+			if (st === "running" && sv.startedAtMs) text += " · " + fmtDur(now - sv.startedAtMs);
+			card.querySelector('[data-k="state"]').textContent = text;
+
+			if (st === "stopped") parts.push(esc(baseName(sv.project)));
+			var m = memSnap && memSnap.servers[i];
+			if (m && m.privateMb && st !== "stopped") {
+				parts.push('<span title="작업 집합 ' + m.wsMb + "MB · 전용 " + m.privateMb + 'MB">메모리 <b class="num">' + fmtMb(m.privateMb) + "</b></span>");
+			}
+			if (sv.startupMs != null && st !== "stopped") {
+				// 단계별 시간은 마우스를 올리면 보인다 (상태 탭 · logs/startup-history.csv 에도 남는다)
+				var tip = (sv.phases || []).map(function (p) { return p.label + " " + (p.ms / 1000).toFixed(1) + "초"; }).join("\n");
+				parts.push('<span title="' + esc(tip) + '">기동 <b class="num">' + (sv.startupMs / 1000).toFixed(1) + "초</b></span>");
+			}
+			if (sv.pid) parts.push('<span class="num">PID ' + sv.pid + "</span>");
+			if (sv.compiling) parts.push("<b>컴파일 중</b>");
+			if (sv.depsBusy) parts.push("<b>의존 jar 받는 중</b>");
+			card.querySelector('[data-k="meta"]').innerHTML = parts.join('<span class="sep">·</span>');
+		});
+	}
+
+	function render(s) {
+		var prev = state;
+		state = s;
+		if (!built) build(s);
+
+		$("optHot").checked = s.hotReload;
+		$("optAuto").checked = s.autoCompile;
+		$("optDebug").checked = s.debug;
+		$("optFast").checked = s.fastJvm;
+		$("optStagger").checked = s.staggerStart;
+		$("optSkipScan").checked = s.skipScan;
+		$("optPool").checked = s.smallPool;
+		$("optSchedule").checked = s.noSchedule;
+		$("optLazy").checked = s.lazyInit;
+		$("optMapper").checked = s.mapperHotswap;
+		$("optSession").checked = s.keepSession;
+		$("selHeap").value = String(s.heapMb);
+		$("selCompiler").value = s.compiler;
+		$("debugHint").textContent = s.servers.map(function (sv) { return sv.debugPort; }).join(" · ");
+		$("debugHint").title = s.servers.map(function (sv) { return sv.name + " " + sv.debugPort; }).join(" · ");
+		// 딸린 줄은 부모가 꺼지면 흐리게 — 「핫리로드일 때만」을 글 대신 자리와 흐림으로 보인다
+		$("rowMapper").classList.toggle("off", !s.hotReload);
+		$("selCompiler").closest(".opt").classList.toggle("off", !s.autoCompile);
+
+		var changed = false;
+		s.servers.forEach(function (sv, i) {
+			var st = sv.status, card = $("servers").children[i];
+			var was = prev && prev.servers[i] ? prev.servers[i].status : "stopped";
+			// 기동 때만 읽는 옵션들 — 실행 중에 바꾸면 「다음 시작부터」 안내
+			var now = [s.hotReload, s.debug, s.fastJvm, s.heapMb, s.skipScan, s.smallPool, s.noSchedule, s.lazyInit, s.mapperHotswap, s.keepSession].join();
+			if (st === "starting" && was === "stopped") bootCfg[i] = now;
+			if (st === "stopped") delete bootCfg[i];
+			if (bootCfg[i] && bootCfg[i] !== now) changed = true;
+
+			// 꺼져 있으면 시작만, 켜져 있으면 재시작 · 중지만 보인다
+			var pend = sv.restartNeeded || [];
+			var q = function (k) { return card.querySelector('[data-k="' + k + '"]'); };
+			q("start").hidden = st !== "stopped";
+			q("start").disabled = sv.depsBusy;
+			q("restart").hidden = st === "stopped";
+			q("restart").disabled = st === "stopping";
+			q("restart").classList.toggle("warn", pend.length > 0 && st === "running");
+			q("rl").textContent = pend.length > 0 && st === "running" ? "재시작 (" + pend.length + ")" : "재시작";
+			q("stop").hidden = st === "stopped";
+			q("stop").disabled = st === "stopping";
+
+			var bc = $("bctl" + i);
+			bc.querySelector('[data-k="c"]').disabled = sv.compiling;
+			bc.querySelector('[data-k="ca"]').disabled = sv.compiling;
+			var lc = sv.lastCompile, cl = bc.querySelector('[data-k="cl"]');
+			if (sv.compiling) { cl.className = "bres"; cl.textContent = "컴파일 중..."; }
+			else if (lc) {
+				cl.className = "bres " + (lc.ok ? "ok" : "fail");
+				cl.innerHTML = "마지막 " + (lc.ok ? "<b>성공</b>" : "<b>실패 · 오류 " + lc.errors + "개</b>") +
+					" · " + (lc.full ? "전체 " : "") + lc.files + "개 파일 · " + (lc.ms / 1000).toFixed(1) + "초 · " + fmtTime(lc.atMs);
+			}
+			var depsCheck = depsOf(sv);
+			var db = bc.querySelector('[data-k="deps"]');
+			db.disabled = st !== "stopped" || sv.depsBusy;
+			db.classList.toggle("warn", !!depsCheck && !depsCheck.ok && !sv.depsBusy);
+			db.textContent = sv.depsBusy ? "받는 중..." : "의존 jar 다시 받기";
+
+			$("checks" + i).querySelector('[data-k="list"]').innerHTML = checkHtml(sv.checks);
+		});
+		$("optNote").hidden = !changed;
+		$("checks").innerHTML = checkHtml(s.checks);
+		svnOnState(s);
+		srvFill(s);
+		vcsFill(s);
+		renderMeta();
+		renderAlerts();
+		renderPhases();
+		renderStatusbar();
+		renderIgnore();
+	}
+
+	function depsOf(sv) { return sv.checks.filter(function (c) { return c.key === "deps"; })[0]; }
+
+	/* ---------- 저장 감시 제외 (파일 · 폴더 · 두 서버 공통) ---------- */
+
+	function dirOf(path) {
+		var k = path.lastIndexOf("/");
+		return k > 0 ? path.slice(0, k + 1) : path;
+	}
+	function setIgnore(list, done) {
+		invoke("set_ignore", { list: list }).then(function () { if (done) done(); }).catch(function (e) { showError(String(e)); });
+	}
+	// 여러 줄이면 줄마다 하나 — 빈 줄 · 겹치는 것은 실행기가 걸러 낸다 (clean_ignore)
+	function addIgnore(text, toast) {
+		var add = String(text || "").split(/\r?\n/).map(function (s) { return s.trim(); }).filter(Boolean);
+		if (!add.length) return;
+		setIgnore((state.ignore || []).concat(add), function () { if (toast) showToast(toast); });
+	}
+	// 재시작 목록의 「무시…」 메뉴 — 넓은 것은 아래로. 확장자는 범위가 넓어(*.xml 이면 매퍼 · Spring 설정까지) 맨 아래에 둔다
+	function ignoreChoices(path) {
+		var name = baseName(path), dot = name.lastIndexOf(".");
+		var said = " 를 무시합니다. 「설정 › 저장 감시 제외」에서 뺄 수 있습니다.";
+		var out = [
+			{ label: "이 이름의 파일 · 어느 폴더에서나", sub: name },
+			{ label: "이 폴더 아래 전부", sub: dirOf(path) }
+		];
+		if (dot > 0 && dot < name.length - 1) out.push({ label: "이 확장자 전부 · 어느 폴더에서나", sub: "*" + name.slice(dot) });
+		out.forEach(function (it) { it.run = function () { addIgnore(it.sub, it.sub + said); }; });
+		return out;
+	}
+	// 실행기가 늘 빼는 것 — app/src/main.rs 의 이름 규칙 · resources 아래 사본 규칙을 그대로 옮겨 적었다. 그쪽을 바꾸면 여기도 고친다
+	var IGNORE_BUILTIN = ["편집기 임시 파일 (~ · .tmp · .swp · . 으로 시작)", "src/main/resources/resources-* · java/ · webapp/"];
+	function renderIgnore() {
+		var list = state.ignore || [];
+		var ul = $("ignList");
+		ul.innerHTML = IGNORE_BUILTIN.map(function (p) {
+			return '<li class="builtin" title="실행기가 늘 뺍니다"><span class="tag">기본</span><span class="mono">' + esc(p) + "</span></li>";
+		}).join("") + list.map(function (p, k) {
+			return '<li><span class="mono">' + esc(p) + '</span><button class="btn ghost sm" data-k="' + k + '">빼기</button></li>';
+		}).join("");
+		[].forEach.call(ul.querySelectorAll("button"), function (b) {
+			b.onclick = function () {
+				var next = list.slice();
+				next.splice(+b.getAttribute("data-k"), 1);
+				setIgnore(next);
+			};
+		});
+	}
+	$("ignAdd").onclick = function () {
+		var v = $("ignInput").value.trim();
+		if (!v) { $("ignInput").focus(); return; }
+		addIgnore(v, "무시 목록에 더했습니다.");
+		$("ignInput").value = "";
+	};
+	$("ignInput").onkeydown = function (e) { if (e.key === "Enter") $("ignAdd").onclick(); };
+	// 한 줄 칸은 붙여 넣은 줄바꿈을 지워 경로가 한 덩어리로 붙는다 — 여러 줄이면 칸을 거치지 않고 줄마다 넣는다
+	$("ignInput").onpaste = function (e) {
+		var text = (e.clipboardData || window.clipboardData).getData("text");
+		var lines = text.split(/\r?\n/).filter(function (s) { return s.trim(); });
+		if (lines.length < 2) return;
+		e.preventDefault();
+		addIgnore(lines.join("\n"), lines.length + "줄을 무시 목록에 더했습니다.");
+	};
+	// 예시를 누르면 입력칸에 넣는다 — 고쳐서 바로 추가하도록
+	[].forEach.call(document.querySelectorAll("#setIgnore .pat .ex"), function (b) {
+		b.onclick = function () {
+			var inp = $("ignInput");
+			inp.value = b.textContent;
+			inp.focus();
+			inp.select();
+		};
+	});
+
+	/* ---------- 알림 줄 — 지금 손볼 일만. 정상이면 아무것도 없다 ---------- */
+
+	function renderAlerts() {
+		if (!state) return;
+		var rows = [];
+		if (errMsg) rows.push({ key: "err", lv: "crit", text: "<b>" + esc(errMsg) + "</b>", close: true });
+		state.servers.forEach(function (sv, i) {
+			var lc = sv.lastCompile;
+			if (lc && !lc.ok && !sv.compiling) {
+				// 첫 오류의 파일:줄 — 누르면 편집기로 연다
+				var first = (lastErrs[i] || [])[0], fm = first && SRC_RE.exec(first);
+				rows.push({ key: "c" + i, lv: "crit", text: "<b>" + esc(sv.name) + " · 컴파일 실패 · 오류 " + lc.errors + "개</b>" +
+					(fm ? '<a class="src" title="' + esc(fm[1]) + ' · 편집기로 열기">' + esc(baseName(fm[1]) + ":" + fm[2]) + "</a>" +
+						'<span class="sub">' + esc(first.slice(fm.index + fm[0].length).trim()) + "</span>"
+						: state.autoCompile ? '<span class="sub">고치고 저장하면 다시 컴파일합니다</span>' : ""),
+					src: fm ? { file: fm[1], line: parseInt(fm[2], 10) } : null,
+					acts: [["빌드 로그 보기", "", false, function () { go("build"); }]] });
+			}
+			var pend = sv.restartNeeded || [];
+			if (pend.length && sv.status !== "stopped") {
+				rows.push({ key: "r" + i, lv: "warn", text: "<b>" + esc(sv.name) + " · 재시작해야 반영되는 변경 " + pend.length + "건</b>" +
+					'<span class="sub mono">' + esc(pend.slice(0, 3).map(function (x) { return baseName(x.path); }).join(", ")) + (pend.length > 3 ? " 외" : "") + "</span>",
+					items: pend,
+					acts: [[sv.name + " 재시작", "warn", sv.status !== "running", function () { hideError(); call("restart", { srv: i }); }]] });
+			}
+			var deps = depsOf(sv);
+			if (deps && !deps.ok && !sv.depsBusy) {
+				var stopped = sv.status === "stopped";
+				rows.push({ key: "d" + i, lv: "warn", text: "<b>" + esc(sv.name) + " · 의존 jar " + esc(deps.detail) + "</b>" +
+					(stopped ? "" : '<span class="sub">서버를 끈 뒤에 받을 수 있습니다</span>'),
+					acts: [["다시 받기", "", !stopped, function () { hideError(); call("refresh_deps", { srv: i }); }]] });
+			}
+		});
+		var bad = state.checks.filter(function (c) { return !c.ok; });
+		if (bad.length) {
+			rows.push({ key: "chk", lv: "crit", text: "<b>준비 안 된 항목 " + bad.length + "개</b>" +
+				'<span class="sub">' + esc(bad.map(function (c) { return c.label; }).join(", ")) + "</span>",
+				acts: [["상태 보기", "", false, function () { go("status"); }]] });
+		}
+
+		// 오류를 경고보다 위에 (같은 등급은 서버 순서대로)
+		var LV = { crit: 0, warn: 1 };
+		rows = rows.map(function (r, k) { return [r, k]; }).sort(function (a, b) { return LV[a[0].lv] - LV[b[0].lv] || a[1] - b[1]; }).map(function (x) { return x[0]; });
+
+		var box = $("alerts");
+		box.innerHTML = "";
+		rows.forEach(function (r) {
+			var el = document.createElement("div");
+			el.className = "alert " + r.lv;
+			el.setAttribute("role", r.lv === "crit" ? "alert" : "status");
+			var open = !!alertOpen[r.key];
+			el.innerHTML = ic(r.lv === "crit" ? "error" : "warn") + '<div class="alert-text">' + r.text + "</div>" + '<div class="alert-acts"></div>' +
+				(r.items && open ? '<ul class="alert-items">' + r.items.map(function (x, k) {
+					return '<li><span class="mono">' + esc(x.path) + "</span><small>" + esc(x.why) + "</small>" +
+						'<button class="btn ghost sm" data-ign="' + k + '" aria-haspopup="menu" title="저장 감시에서 뺄 범위를 고릅니다">무시…</button></li>';
+				}).join("") + "</ul>" : "");
+			// 재시작이 필요 없는 파일(반영용 SQL 등)이 쌓이면 폴더 · 파일 이름 · 확장자 가운데 골라 무시 목록에 넣는다
+			[].forEach.call(el.querySelectorAll("[data-ign]"), function (b) {
+				var path = r.items[+b.getAttribute("data-ign")].path;
+				b.onclick = function (ev) { ev.stopPropagation(); openMenu(b, ignoreChoices(path)); };
+			});
+			var acts = el.querySelector(".alert-acts");
+			var src = el.querySelector("a.src");
+			if (src && r.src) src.onclick = function () { invoke("open_source", r.src); };
+			if (r.items) {
+				var t = document.createElement("button");
+				t.className = "btn ghost sm";
+				t.textContent = open ? "목록 접기" : "목록 보기";
+				t.onclick = function () { alertOpen[r.key] = !open; renderAlerts(); };
+				acts.appendChild(t);
+			}
+			(r.acts || []).forEach(function (a) {
+				var b = document.createElement("button");
+				b.className = "btn sm " + a[1];
+				b.textContent = a[0];
+				b.disabled = a[2];
+				b.onclick = a[3];
+				acts.appendChild(b);
+			});
+			if (r.close) {
+				var c = document.createElement("button");
+				c.className = "btn ghost sm";
+				c.title = "닫기";
+				c.innerHTML = ic("x");
+				c.onclick = hideError;
+				acts.appendChild(c);
+			}
+			box.appendChild(el);
+		});
+
+		// 창 제목 — 작업 표시줄에 마우스를 올리면 보인다
+		var first = rows.filter(function (r) { return r.key !== "err"; })[0];
+		var title = first ? APP_TITLE + " · " + first.text.replace(/<span class="sub">.*$/, "").replace(/<[^>]+>/g, "")
+			.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"') + (rows.length > 1 ? " 외 " + (rows.length - 1) + "건" : "") : APP_TITLE;
+		if (title !== lastTitle) {
+			lastTitle = title;
+			document.title = title;
+			if (appWin) appWin.setTitle(title).catch(function () { /* 권한이 없으면 화면 제목만 바꾼다 */ });
+		}
+	}
+
+	/* ---------- 상태 탭 ---------- */
+
+	// 메모리 — 톰캣은 힙 상한에 대한 막대를 함께 그린다 (상한에 가까우면 노란색)
+	function renderMems() {
+		if (!state || !memSnap) return;
+		var rows = [];
+		state.servers.forEach(function (sv, i) {
+			var m = memSnap.servers[i] || { wsMb: 0, privateMb: 0 };
+			if (!m.privateMb) {
+				rows.push('<div class="mem"><span>' + esc(sv.name) + ' 톰캣</span><b>꺼짐</b></div>');
+				return;
+			}
+			var cap = state.heapMb ? state.heapMb + 400 : 0;  // 힙 상한 + 클래스 영역 · 코드 캐시 · 스레드 몫(대략)
+			// 2026-10-28 : 보조 줄은 숫자만 두고, 막대 기준 · 내리는 시점 같은 설명은 title 로 옮겼다
+			var bar = cap ? '<span class="bar" title="힙 상한 ' + fmtMb(state.heapMb) + ' + 400MB 기준"><i class="' + (m.privateMb > cap * 0.9 ? "hi" : "") + '" style="width:' +
+				Math.min(100, Math.round(m.privateMb / cap * 100)) + '%"></i></span>' : "";
+			rows.push('<div class="mem"><span>' + esc(sv.name) + ' 톰캣</span><b class="num">' + fmtMb(m.privateMb) + "</b>" + bar +
+				'<small class="num">작업 집합 ' + fmtMb(m.wsMb) + (state.heapMb ? " · 힙 상한 " + fmtMb(state.heapMb) : " · 힙 상한 없음") + "</small></div>");
+		});
+		var d = memSnap.daemon;
+		rows.push('<div class="mem" title="' + (d.privateMb ? "20분 안 쓰면 내립니다" : "저장하면 다시 뜹니다") + '"><span>상주 컴파일러' + (state.daemonKind ? " (" + esc(state.daemonKind) + ")" : "") + '</span><b class="num">' +
+			(d.privateMb ? fmtMb(d.privateMb) : "쉬는 중") + "</b>" +
+			(d.privateMb ? '<small class="num">작업 집합 ' + fmtMb(d.wsMb) + "</small>" : "") + "</div>");
+		var l = memSnap.launcher;
+		rows.push('<div class="mem" title="화면 엔진 포함"><span>실행기 화면</span><b class="num">' + fmtMb(l.privateMb) + '</b><small class="num">작업 집합 ' + fmtMb(l.wsMb) + "</small></div>");
+		$("mems").innerHTML = rows.join("");
+		renderStatusbar();
+	}
+
+	// 직전 기동 — 두 서버를 같은 시간 축에 그려 바로 견준다
+	function renderPhases() {
+		var list = state.servers.filter(function (sv) { return sv.phases && sv.phases.length; });
+		if (!list.length) {
+			$("phases").innerHTML = '<div class="empty" style="padding:4px 0">아직 기동 기록이 없습니다.</div>';
+			return;
+		}
+		var max = Math.max.apply(null, list.map(function (sv) { return sv.phases.reduce(function (a, p) { return a + p.ms; }, 0); }));
+		$("phases").innerHTML = list.map(function (sv) {
+			var total = sv.phases.reduce(function (a, p) { return a + p.ms; }, 0);
+			var segs = sv.phases.map(function (p, k) {
+				return '<i style="width:' + (p.ms / max * 100).toFixed(2) + "%;background:" + PHASE_COLOR[k % PHASE_COLOR.length] + '" title="' + esc(p.label) + " " + (p.ms / 1000).toFixed(1) + '초"></i>';
+			}).join("");
+			var legend = sv.phases.map(function (p, k) {
+				return '<span style="--c:' + PHASE_COLOR[k % PHASE_COLOR.length] + '">' + esc(p.label) + ' <b class="num">' + (p.ms / 1000).toFixed(1) + "초</b></span>";
+			}).join("");
+			return '<div class="ph"><div class="ph-top"><b>' + esc(sv.name) + '</b><span class="num">' + (total / 1000).toFixed(1) + "초</span></div>" +
+				'<div class="ph-bar" style="width:100%">' + segs + '</div><div class="ph-legend">' + legend + "</div></div>";
+		}).join("");
+	}
+
+	function checkHtml(list) {
+		return list.map(function (c) {
+			return '<li class="' + (c.ok ? "" : "bad") + '">' + ic(c.ok ? "check" : "error") + "<span>" + esc(c.label) + "</span><small>" + esc(c.detail) + "</small></li>";
+		}).join("");
+	}
+
+	/* ---------- 상태 표시줄 — 켜진 설정만 묶음별 칩으로 ---------- */
+
+	// 핫리로드 · 저장하면 컴파일은 이 도구의 핵심이라 꺼져 있어도 지운 줄로 남긴다. 나머지는 켜진 것만.
+	function renderStatusbar() {
+		if (!state) return;
+		var s = state;
+		var chip = function (id, label, on) {
+			return '<button class="sb-item' + (on === false ? " off" : "") + '" data-opt="' + id + '">' + (on === true ? ic("check") : "") + label + "</button>";
+		};
+		var groups = [
+			["반영", [
+				chip("optHot", "핫리로드", s.hotReload),
+				chip("optAuto", "저장하면 컴파일" + (s.autoCompile ? " <b>" + (s.compiler === "ecj" ? "ECJ" : "javac") + "</b>" : ""), s.autoCompile),
+				s.mapperHotswap ? chip("optMapper", "매퍼 하나만") : "",
+				s.debug ? chip("optDebug", "디버거 <b>" + s.servers.map(function (sv) { return sv.debugPort; }).join(" · ") + "</b>") : ""
+			]],
+			["기동", [
+				chip("selHeap", s.heapMb ? "힙 <b>" + fmtMb(s.heapMb) + "</b>" : "힙 상한 없음"),
+				s.fastJvm ? chip("optFast", "빠른 JVM") : "",
+				s.skipScan ? chip("optSkipScan", "클래스 탐색 건너뜀") : "",
+				s.staggerStart ? chip("optStagger", "차례 기동") : ""
+			]],
+			["앱", [
+				s.smallPool ? chip("optPool", "DB 연결 1개") : "",
+				s.noSchedule ? chip("optSchedule", "예약 작업 멈춤") : "",
+				s.lazyInit ? chip("optLazy", "지연 초기화") : "",
+				s.keepSession ? chip("optSession", "로그인 유지") : ""
+			]]
+		];
+		var html = groups.map(function (g) {
+			var items = g[1].join("");
+			return items ? '<span class="sb-group"><span class="sb-label">' + g[0] + "</span>" + items + "</span>" : "";
+		}).join("");
+		// 메모리가 올 때마다 불리므로 바뀐 때만 다시 그린다 (누르는 중에 단추가 바뀌지 않게)
+		if ($("sbOpts").innerHTML !== html) $("sbOpts").innerHTML = html;
+		if (memSnap) {
+			var d = memSnap.daemon, l = memSnap.launcher;
+			$("sbMem").innerHTML = '<span class="sb-label">상주 컴파일러</span><b>' + (d.privateMb ? fmtMb(d.privateMb) : "쉬는 중") +
+				'</b><span class="sb-label">실행기</span><b>' + fmtMb(l.privateMb) + "</b>";
+		}
+	}
+
+	// 상태 표시줄 칩 → 설정의 그 칸을 보여 주고 잠깐 테두리를 띄운다
+	function openOpt(id) {
+		go("settings");
+		var box = $(id).closest(".opt");
+		box.scrollIntoView({ block: "center" });
+		box.classList.add("flash");
+		setTimeout(function () { box.classList.remove("flash"); }, 1200);
+	}
+
+	/* ---------- 로그 · 반영 기록 ---------- */
+
+	function push(name, item) {
+		var arr = store[name];
+		arr.push(item);
+		if (arr.length > MAX) arr.splice(0, arr.length - MAX);
+	}
+
+	function matches(it) {
+		if (tab === "events" && evSrv >= 0 && it.srv !== evSrv) return false;
+		if ($("onlyErr").checked && it.kind !== "err") return false;
+		var q = $("filter").value.trim().toLowerCase();
+		return !q || it.text.toLowerCase().indexOf(q) >= 0;
+	}
+
+	// 반영 기록 한 줄을 구분 · 내용 · 걸린 시간으로 나눈다 (실행기가 남기는 문구를 그대로 읽는다)
+	function eventInfo(it) {
+		var t = it.text, m;
+		var r = { label: "기록", cls: "", msg: t, dur: "" };
+		if (it.src === "compile") {
+			r.label = it.kind === "err" ? "컴파일 실패" : "컴파일";
+			r.cls = it.kind === "err" ? "crit" : "ok";
+			r.msg = t.replace(/^(전체 )?컴파일 (완료|실패) · /, "").replace(/^(\d+)개 · /, "$1개 파일 · ");
+		} else if (it.src === "deps") {
+			r.label = "의존 jar";
+			r.cls = it.kind === "err" ? "crit" : it.kind === "ok" ? "ok" : "";
+		} else if (it.kind === "live") {
+			r.cls = "info";
+			if ((m = /^바로 반영 · (.*)$/.exec(t))) { r.label = "바로 반영"; r.msg = m[1]; }
+			else if ((m = /^매퍼 (.*)$/.exec(t))) { r.label = "매퍼"; r.msg = m[1]; }
+		} else if (it.kind === "hot") {
+			r.cls = "hot";
+			if ((m = /^매퍼를 다시 읽었습니다 · (.*)$/.exec(t))) { r.label = "매퍼 다시 읽음"; r.msg = m[1]; }
+			else { r.label = "클래스 교체"; r.msg = t.replace(/^HOTSWAP AGENT:\s*[\d:.]+\s+\w+\s+\([^)]*\)\s*-\s*/, ""); }
+		} else if (it.kind === "ok") {
+			r.cls = "ok";
+			if ((m = /^기동 ([\d.]+초) · (.*)$/.exec(t))) { r.label = "기동 완료"; r.dur = m[1]; r.msg = m[2]; }
+			else r.label = "완료";
+		} else if (it.kind === "warn") {
+			r.cls = "warn";
+			if ((m = /^재시작해야 반영 · (.*)$/.exec(t))) { r.label = "재시작 필요"; r.msg = m[1]; }
+			else r.label = "알림";
+		} else if (it.kind === "err") {
+			r.label = "오류";
+			r.cls = "crit";
+		}
+		if (!r.dur && (m = / · ([\d.]+초)(?=[ (]|$)/.exec(r.msg))) {
+			r.dur = m[1];
+			r.msg = r.msg.slice(0, m.index) + r.msg.slice(m.index + m[0].length);
+		}
+		return r;
+	}
+
+	// 파일 경로 · 이름 조각만 고정폭으로 감싸고, 「/」 뒤에서만 줄을 나눈다
+	var PATH_RE = /[\w.\-\/\\$]*[\w\-$]\.(java|jsp|js|css|xml|properties|html|sql|jar|json|tld)\b(:\d+)?/g;
+	function pathify(t) {
+		var out = "", last = 0, m;
+		PATH_RE.lastIndex = 0;
+		while ((m = PATH_RE.exec(t))) {
+			out += esc(t.slice(last, m.index)) + '<span class="mono">' + esc(m[0]).replace(/\//g, "/<wbr>") + "</span>";
+			last = m.index + m[0].length;
+		}
+		return out + esc(t.slice(last));
+	}
+
+	function eventEl(it) {
+		var r = eventInfo(it);
+		var d = document.createElement("div");
+		d.className = "ev" + (r.cls === "crit" ? " err" : r.cls === "warn" ? " warn" : "") + (it.open ? " open" : "");
+		// 펼친 상태는 항목에 둔다 — 찾기 · 거르기로 다시 그려도 펼친 줄이 접히지 않는다.
+		// 글자를 드래그로 고른 때는 접고 펴지 않는다 (경로를 복사하려다 줄이 접히지 않도록)
+		d.onclick = function () {
+			if (!d.classList.contains("fold") || String(window.getSelection())) return;
+			it.open = !it.open;
+			d.classList.toggle("open", it.open);
+		};
+		d.innerHTML = '<span class="t num">' + fmtTime(it.at) + "</span>" +
+			'<span class="who">' + (it.srv != null && state ? esc(state.servers[it.srv].name) : "실행기") + "</span>" +
+			'<span class="k ' + r.cls + '">' + esc(r.label) + "</span>" +
+			'<span class="m">' + pathify(r.msg) + "</span>" +
+			'<span class="d num">' + esc(r.dur) + "</span>";
+		// 컴파일 실패 줄 아래에 그 컴파일의 오류 줄을 단다 (누르면 편집기로 연다)
+		if (it.errs && it.errs.length) {
+			var box = document.createElement("div");
+			box.className = "errs";
+			it.errs.slice(0, 5).forEach(function (t) {
+				var m = SRC_RE.exec(t);
+				if (!m) return;
+				var a = document.createElement("a");
+				a.textContent = baseName(m[1]) + ":" + m[2] + "  " + t.slice(m.index + m[0].length).trim();
+				a.title = m[1] + " · 편집기로 열기";
+				a.onclick = function (e) { e.stopPropagation(); invoke("open_source", { file: m[1], line: parseInt(m[2], 10) }); };
+				box.appendChild(a);
+			});
+			if (it.errs.length > 5) {
+				var more = document.createElement("a");
+				more.className = "more";
+				more.textContent = "외 " + (it.errs.length - 5) + "줄 · 빌드 탭에서 보기";
+				more.onclick = function (e) { e.stopPropagation(); go("build"); };
+				box.appendChild(more);
+			}
+			d.appendChild(box);
+		}
+		return d;
+	}
+
+	// 내용이 지금 폭에서 넘치는 줄만 접기 손잡이(.fold)를 단다. 글자 수가 아니라 실제 폭으로 재므로
+	// 줄이 화면에 붙은 뒤에, 그리고 창 폭이 바뀔 때마다 다시 잰다. 펼친 줄은 넘치지 않아도 다시 접을 수 있어야 한다
+	function markFold(els) {
+		[].forEach.call(els, function (d) {
+			var m = d.querySelector(".m");
+			d.classList.toggle("fold", d.classList.contains("open") || m.scrollWidth > m.clientWidth);
+		});
+	}
+	var foldW = 0;
+	new ResizeObserver(function () {
+		// 펼치고 접어서 높이만 바뀐 때는 다시 재지 않는다
+		if (tab !== "events" || logEl.clientWidth === foldW) return;
+		foldW = logEl.clientWidth;
+		markFold(logEl.querySelectorAll(".ev"));
+	}).observe(logEl);
+
+	function lineEl(it) {
+		if (tab === "events") return eventEl(it);
+		var d = document.createElement("div");
+		d.className = it.kind || (it.src === "app" ? "app" : "");
+		// 빌드 탭에는 두 서버 줄이 섞이므로 서버 이름을 붙인다
+		if (tab === "build" && it.srv != null && state) {
+			var g = document.createElement("span");
+			g.className = "who";
+			g.textContent = state.servers[it.srv].name;
+			d.appendChild(g);
+		}
+		var m = it.kind === "err" && SRC_RE.exec(it.text);
+		if (m) {
+			d.appendChild(document.createTextNode(it.text.slice(0, m.index)));
+			var a = document.createElement("a");
+			a.className = "src";
+			a.textContent = m[0].slice(0, -1);
+			a.title = "편집기로 열기";
+			a.onclick = function () { invoke("open_source", { file: m[1], line: parseInt(m[2], 10) }); };
+			d.appendChild(a);
+			d.appendChild(document.createTextNode(it.text.slice(m.index + m[0].length - 1)));
+		} else {
+			d.appendChild(document.createTextNode(it.text));
+		}
+		return d;
+	}
+
+	// 로그 탭 · SVN · 상태 · 설정은 같은 자리를 나눠 쓴다
+	function showPane() {
+		var logLike = !!store[tab];
+		$("paneLog").hidden = !logLike;
+		$("paneSvn").hidden = tab !== "svn";
+		$("paneStatus").hidden = tab !== "status";
+		$("paneSettings").hidden = tab !== "settings";
+		$("evSrv").hidden = tab !== "events";
+		$("evHead").hidden = tab !== "events";
+		$("buildCtl").hidden = tab !== "build";
+		$("logFolder").hidden = !/^srv/.test(tab);
+		logEl.className = tab === "events" ? "" : "lines";
+		if (tab === "svn") svnActivate();
+	}
+
+	function emptyText() {
+		if (store[tab] && store[tab].length) return "조건에 맞는 줄이 없습니다.";
+		if (tab === "events") return "아직 반영 기록이 없습니다. 서버를 켜고 파일을 저장하면 쌓입니다.";
+		if (tab === "build") return "아직 컴파일 기록이 없습니다.";
+		return "아직 로그가 없습니다.";
+	}
+
+	function redraw() {
+		if (!store[tab]) return;
+		var list = store[tab].filter(matches);
+		logEl.textContent = "";
+		if (!list.length) {
+			var e = document.createElement("div");
+			e.className = "empty";
+			e.textContent = emptyText();
+			logEl.appendChild(e);
+			return;
+		}
+		var frag = document.createDocumentFragment();
+		list.slice(-SHOW).forEach(function (it) { frag.appendChild(lineEl(it)); });
+		logEl.appendChild(frag);
+		if (tab === "events") markFold(logEl.children);
+		if ($("follow").checked) logEl.scrollTop = logEl.scrollHeight;
+	}
+
+	function renderTabs() {
+		document.querySelectorAll(".tab").forEach(function (b) {
+			var name = b.getAttribute("data-tab");
+			b.classList.toggle("on", name === tab);
+			b.setAttribute("aria-selected", name === tab ? "true" : "false");
+			var n = b.querySelector(".n");
+			n.textContent = unread[name] ? (unread[name] > 999 ? "999+" : unread[name]) : "";
+			n.className = "n" + (unreadErr[name] ? " bad" : unread[name] ? " new" : "");
+		});
+	}
+
+	function isEvent(l) {
+		if (l.kind === "hot" || l.kind === "live") return true;
+		// 톰캣의 「Server startup in」 은 실행기가 단계별로 다시 남기므로 한 번만 보인다
+		if (l.kind === "ok") return l.src !== "tomcat";
+		if (l.src === "app") return true;
+		if (l.src === "deps") return /^의존 jar/.test(l.text);
+		return l.src === "compile" && /^(컴파일|전체 컴파일)/.test(l.text);
+	}
+
+	var early = [];   // 뼈대가 서기 전에 온 로그
+	function onLogs(lines) {
+		if (!built) { early = early.concat(lines); return; }
+		var now = Date.now(), added = [], compiled = false;
+		function put(name, it) {
+			if (!store[name]) return;
+			push(name, it);
+			if (name === tab) added.push(it);
+			else {
+				unread[name]++;
+				if (it.kind === "err") unreadErr[name] = true;
+			}
+		}
+		lines.forEach(function (l) {
+			var it = { srv: l.srv, src: l.src, kind: l.kind, text: l.text, at: now };
+			// 오류 줄(파일:줄:)은 컴파일 요약 줄보다 먼저 온다 — 모아 두었다가 요약 줄에 붙인다
+			if (l.src === "compile" && l.srv != null) {
+				if (l.kind === "err" && SRC_RE.test(l.text)) (errBuf[l.srv] = errBuf[l.srv] || []).push(l.text);
+				else if (/^(전체 )?컴파일 (완료|실패)/.test(l.text)) {
+					lastErrs[l.srv] = l.kind === "err" ? (it.errs = errBuf[l.srv] || []) : [];
+					errBuf[l.srv] = [];
+					compiled = true;
+				}
+			}
+			if (l.src === "compile" || l.src === "deps") put("build", it);
+			else if (l.srv != null) put("srv" + l.srv, it);
+			if (isEvent(l)) put("events", it);
+		});
+		var shown = added.filter(matches);
+		if (shown.length && logEl.querySelector(".empty")) logEl.textContent = "";
+		var frag = document.createDocumentFragment();
+		shown.forEach(function (it) { frag.appendChild(lineEl(it)); });
+		var fresh = [].slice.call(frag.children);
+		logEl.appendChild(frag);
+		if (tab === "events") markFold(fresh);
+		while (logEl.childNodes.length > SHOW) logEl.removeChild(logEl.firstChild);
+		if ($("follow").checked) logEl.scrollTop = logEl.scrollHeight;
+		renderTabs();
+		if (compiled) renderAlerts();
+	}
+
+	/* ---------- 작은 메뉴 (서버 「열기」 · 재시작 목록 「무시…」) ---------- */
+
+	var menu = $("menu");
+	// items : [{ label, sub(아래 흐린 줄), run }]
+	function openMenu(btn, items) {
+		if (!menu.hidden && menu._for === btn) { closeMenu(); return; }
+		menu.innerHTML = items.map(function (it, k) {
+			return '<button role="menuitem" data-k="' + k + '">' + esc(it.label) + "<small>" + esc(it.sub) + "</small></button>";
+		}).join("");
+		[].forEach.call(menu.children, function (b) {
+			b.onclick = function () { items[+b.getAttribute("data-k")].run(); closeMenu(); };
+		});
+		menu.hidden = false;
+		var r = btn.getBoundingClientRect();
+		menu.style.top = (r.bottom + 4) + "px";
+		menu.style.left = Math.max(8, Math.min(r.right - menu.offsetWidth, window.innerWidth - menu.offsetWidth - 8)) + "px";
+		menu._for = btn;
+		if (menu.firstChild) menu.firstChild.focus();
+	}
+	function closeMenu() { menu.hidden = true; menu._for = null; }
+	document.addEventListener("click", function (e) { if (!menu.contains(e.target)) closeMenu(); });
+	document.addEventListener("keydown", function (e) {
+		if (e.key === "Escape") closeMenu();
+		if (!menu.hidden && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+			var items = [].slice.call(menu.children), k = items.indexOf(document.activeElement);
+			k = (k + (e.key === "ArrowDown" ? 1 : items.length - 1)) % items.length;
+			items[k].focus();
+			e.preventDefault();
+		}
+		// Ctrl+F : 로그 탭에서 찾기 칸으로
+		if (e.ctrlKey && (e.key === "f" || e.key === "F") && store[tab]) {
+			$("filter").focus();
+			$("filter").select();
+			e.preventDefault();
+		}
+	});
+
+	/* ---------- 버전 관리 (SVN · Git 읽기 전용 · 커밋 · 업데이트는 사용자가 직접) ---------- */
+
+	// kind : svn · git — 서버마다 「설정 › 버전 관리」에서 정한다. 둘 다 쓰면 도구 줄에서 고른다.
+	// view : local(내 변경) · incoming(업데이트 확인) · log(로그)
+	//   SVN  내 변경은 .svn/wc.db 만 읽고, 뒤의 둘은 저장소에 읽기 요청을 보낸다
+	//   Git  모두 로컬 .git 만 읽는다. 업데이트 확인은 마지막으로 fetch 해 둔 원격 추적 브랜치와 견준다
+	// 캐시(data · stale · checked · remote)는 「서버:종류」 열쇠로 나눈다
+	var svn = { srv: 0, kind: "svn", view: "local", data: {}, stale: {}, sel: null, checked: {}, timer: null, loading: false,
+		remote: {}, logRel: "", selRev: null, retry: null, sig: "" };
+	var KIND_NAME = { svn: "SVN", git: "Git" };
+	// 커밋 후보로 처음부터 골라 두는 것 — 추가 안 된 파일 · 없어진 파일 · 충돌은 사람이 보고 고른다
+	var SVN_DEFAULT = { M: true, A: true, D: true, P: true };
+
+	function K() { return svn.srv + ":" + svn.kind; }
+	function kindsOf(i) { return state && state.servers[i] ? state.servers[i].vcsKinds || [] : []; }
+	function vcsOf(i) { return state.servers[i].vcs; }
+	function isGit() { return svn.kind === "git"; }
+	// 작업복사본 · 저장소 맨 위 폴더 — git 은 status 가 알려 준 맨 위 폴더 기준으로 경로가 온다
+	function rootOf(i) {
+		var st = svn.data[i + ":" + svn.kind];
+		return st && st.root ? st.root : state.servers[i].vcsRoot;
+	}
+	function svnFixKind() {
+		var ks = kindsOf(svn.srv);
+		if (ks.length && ks.indexOf(svn.kind) < 0) svn.kind = ks[0];
+	}
+
+	function svnBuild(s) {
+		var box = $("svnSrv");
+		s.servers.forEach(function (sv, i) {
+			var b = document.createElement("button");
+			b.textContent = sv.name;
+			b.onclick = function () { svn.srv = i; svn.sel = null; svn.selRev = null; svnRenderSrv(); svnActivate(true); };
+			box.appendChild(b);
+		});
+		[].forEach.call($("svnViews").children, function (b) {
+			b.onclick = function () {
+				svn.view = b.getAttribute("data-view");
+				svn.sel = null; svn.selRev = null;
+				if (svn.view === "log") svn.logRel = "";
+				svnRenderSrv(); svnActivate(true);
+			};
+		});
+		svnRenderSrv();
+	}
+	// 설정에서 종류 · 폴더를 바꾸면 화면을 다시 세운다 (상태가 올 때마다 다시 그리면 보던 차이가 지워지므로 바뀐 때만)
+	function svnOnState(s) {
+		var sig = JSON.stringify(s.servers.map(function (sv) { return [sv.vcsKinds, sv.vcsRoot, sv.vcs]; }));
+		if (sig === svn.sig) return;
+		var first = !svn.sig;
+		svn.sig = sig;
+		if (first) return;
+		svn.data = {}; svn.stale = {}; svn.remote = {};
+		svnRenderSrv();
+		if (tab === "svn") svnActivate(true);
+	}
+	function svnRenderSrv() {
+		svnFixKind();
+		[].forEach.call($("svnSrv").children, function (b, i) { b.classList.toggle("on", i === svn.srv); });
+		var ks = kindsOf(svn.srv), none = !ks.length, git = isGit(), local = svn.view === "local";
+		var kb = $("vcsKind");
+		kb.hidden = ks.length < 2;
+		kb.innerHTML = ks.map(function (k) { return '<button data-k="' + k + '"' + (k === svn.kind ? ' class="on"' : "") + ">" + KIND_NAME[k] + "</button>"; }).join("");
+		[].forEach.call(kb.children, function (b) {
+			b.onclick = function () { svn.kind = b.getAttribute("data-k"); svn.sel = null; svn.selRev = null; svn.logRel = ""; svnRenderSrv(); svnActivate(true); };
+		});
+		$("svnViews").hidden = none;
+		[].forEach.call($("svnViews").children, function (b) { b.classList.toggle("on", b.getAttribute("data-view") === svn.view); });
+		$("svnViews").children[0].title = git ? "마지막 커밋(HEAD) 뒤로 바뀐 파일" : "작업복사본에서 바뀐 파일 (저장소에 묻지 않습니다)";
+		$("svnViews").children[1].title = git ? "마지막으로 fetch 해 둔 원격 브랜치에 받을 커밋이 있는지 (원격에 묻지 않습니다)" : "저장소에 새 커밋이 있는지, 업데이트하면 무엇이 들어오는지";
+		$("svnAccount").hidden = git || none;
+		$("svnUnverBox").style.display = local && !none ? "" : "none";
+		$("svnCommit").style.display = local && !none ? "" : "none";
+		$("svnUpdateBar").style.display = !local && !none ? "" : "none";
+		$("svnCopyFetch").hidden = !git;
+		if (!none) {
+			var v = vcsOf(svn.srv);
+			$("svnMsg").placeholder = v.commitHint || "커밋 메시지";
+			$("svnCopyUpdate").title = updateCmd();
+			$("svnCopyUpdate").lastChild.textContent = git ? "받기 명령 복사" : "업데이트 명령 복사";
+			// 2026-10-28 : 「저장소에 쓰지 않습니다 · 직접 하세요」는 「… 명령 복사」 단추 이름이 이미 말해서 걷었다. 목록의 기준만 남긴다
+			$("svnUpdateNote").textContent = git ? "마지막 fetch 기준" : "업데이트가 끝나면 「내 변경」을 다시 읽습니다.";
+		}
+		$("svnDiff").innerHTML = none ? "" : '<div class="empty">' + (local
+			? (git ? "파일을 고르면 마지막 커밋(HEAD)과의 차이를 보여 줍니다." : "파일을 고르면 마지막으로 받은 내용(기준본)과의 차이를 보여 줍니다.") + " 두 번 누르면 편집기로 엽니다."
+			: "커밋 아래의 파일을 고르면 그 커밋에서 무엇이 바뀌었는지 보여 줍니다.") + "</div>";
+	}
+	// 이 서버에서 볼 버전 관리가 없을 때 — 왜 없는지와 고칠 곳
+	function svnRenderNone() {
+		var sv = state.servers[svn.srv];
+		$("svnInfo").textContent = "";
+		$("svnList").innerHTML = '<div class="empty">' + (sv.vcs.kind === "none"
+			? "이 서버는 버전 관리를 쓰지 않도록 설정했습니다."
+			: esc(sv.vcsRoot) + " 에서 .svn 이나 .git 을 찾지 못했습니다.") +
+			' <a href="#" id="svnToSettings">설정 › 버전 관리</a>에서 종류나 작업 폴더를 정합니다.</div>';
+		$("svnToSettings").onclick = function (ev) { ev.preventDefault(); go("settings"); };
+	}
+	// force : 서버 · 보기 · 종류를 바꾼 때 — 조회를 다시 한다
+	function svnActivate(force) {
+		if (!kindsOf(svn.srv).length) { svnRenderNone(); return; }
+		if (svn.view === "local") {
+			if (!svn.data[K()] || svn.stale[K()]) svnLoad(); else svnRender();
+			return;
+		}
+		var r = svn.remote[K()] || {};
+		if (svn.view === "incoming") { if (force || !r.incoming) svnIncoming(); else svnRenderIncoming(); }
+		else { if (force || !r.log || r.logRel !== svn.logRel) svnLogLoad(); else svnRenderLog(); }
+	}
+	function svnLoad() {
+		if (svn.loading) { svn.again = true; return; }
+		svn.loading = true;
+		var key = K(), kind = svn.kind;
+		$("svnInfo").textContent = "읽는 중...";
+		invoke(kind + "_status", { srv: svn.srv }).then(function (st) {
+			svn.data[key] = st;
+			svn.stale[key] = false;
+			// 처음 보는 항목은 기본값으로 고르고, 이미 고른 것은 그대로 둔다
+			var ck = svn.checked[key] || (svn.checked[key] = {});
+			var alive = {};
+			st.items.forEach(function (it) {
+				alive[it.path] = true;
+				if (!(it.path in ck)) ck[it.path] = !!SVN_DEFAULT[it.code] && !it.conflict;
+			});
+			Object.keys(ck).forEach(function (p) { if (!alive[p]) delete ck[p]; });
+			if (key === K() && svn.sel && !alive[svn.sel]) svn.sel = null;
+			if (key === K() && svn.view === "local") { svnRender(); if (svn.sel) svnShowDiff(svn.sel, true); }
+		}).catch(function (e) {
+			if (key !== K()) return;
+			$("svnInfo").textContent = String(e);
+			$("svnList").innerHTML = "";
+		}).then(function () {
+			svn.loading = false;
+			if (svn.again) { svn.again = false; svnLoad(); }
+		});
+	}
+	function fmtDate(ms) {
+		if (!ms) return "";
+		var d = new Date(ms);
+		return d.getFullYear() + "-" + ("0" + (d.getMonth() + 1)).slice(-2) + "-" + ("0" + d.getDate()).slice(-2) + " " +
+			("0" + d.getHours()).slice(-2) + ":" + ("0" + d.getMinutes()).slice(-2);
+	}
+	function svnVisible(st) {
+		var showUnver = $("svnUnver").checked;
+		return st.items.filter(function (it) { return showUnver || it.code !== "?"; });
+	}
+	function svnRender() {
+		var st = svn.data[K()];
+		if (!st) return;
+		var changes = st.items.filter(function (it) { return it.code !== "?"; }).length;
+		var unver = st.items.length - changes;
+		var conflicts = st.items.filter(function (it) { return it.conflict; }).length;
+		var head = "변경 <b>" + changes + "</b>" + (conflicts ? ' · <b class="flag">충돌 ' + conflicts + "</b>" : "") + " · 추가 안 됨 " + unver;
+		if (isGit()) {
+			$("svnInfo").innerHTML = head + " · <b>" + esc(st.branch || "분리된 HEAD") + '</b> <span class="num">' + esc(st.head) + "</span>" +
+				(st.upstream ? " · " + esc(st.upstream) + (st.ahead ? " 보다 " + st.ahead + "개 앞" : "") + (st.behind ? (st.ahead ? " · " : " 보다 ") + st.behind + "개 뒤" : (st.ahead ? "" : " 와 같음")) : " · 원격 추적 브랜치 없음") +
+				" · " + (st.tookMs / 1000).toFixed(1) + "초";
+			$("svnInfo").title = st.root;
+		} else {
+			$("svnInfo").innerHTML = head + ' · <span class="num">r' + st.revMin + (st.revMax !== st.revMin ? "~" + st.revMax : "") + "</span>" +
+				" · " + (st.tookMs / 1000).toFixed(1) + "초 · " + esc(st.url);
+			$("svnInfo").title = st.url;
+		}
+		var list = svnVisible(st);
+		var ck = svn.checked[K()] || {};
+		if (!list.length) {
+			$("svnList").innerHTML = '<div class="empty">바뀐 파일이 없습니다.' + (unver ? " (추가 안 된 파일 " + unver + "개는 위에서 켜면 보입니다)" : "") + "</div>";
+			return;
+		}
+		$("svnList").innerHTML = list.map(function (it) {
+			var slash = it.path.lastIndexOf("/");
+			var dirPart = slash >= 0 ? it.path.slice(0, slash + 1) : "";
+			var name = slash >= 0 ? it.path.slice(slash + 1) : it.path;
+			var meta = [];
+			if (it.conflict) meta.push('<span class="flag">충돌 · 먼저 풀어야 커밋된다</span>');
+			if (it.propChanged && it.code !== "P") meta.push("속성도 바뀜");
+			if (it.rev) meta.push("기준 r" + it.rev + (it.author ? " · " + esc(it.author) : "") + (it.dateMs ? " · " + fmtDate(it.dateMs) : ""));
+			return '<div class="row' + (it.path === svn.sel ? " on" : "") + '" data-p="' + esc(it.path) + '">' +
+				'<input type="checkbox"' + (ck[it.path] ? " checked" : "") + ' title="커밋할 파일로 고르기">' +
+				'<span class="code ' + esc(it.code) + '">' + esc(it.label) + "</span>" +
+				'<span class="p">' + esc(dirPart).replace(/\//g, "/<wbr>") + "<b>" + esc(name) + (it.dir ? "/" : "") + "</b>" +
+				(meta.length ? "<small>" + meta.join(" · ") + "</small>" : "") + "</span></div>";
+		}).join("");
+		[].forEach.call($("svnList").querySelectorAll(".row"), function (row) {
+			var p = row.getAttribute("data-p");
+			row.querySelector("input").onclick = function (e) { e.stopPropagation(); ck[p] = this.checked; };
+			row.onclick = function () { svn.sel = p; svnRender(); svnShowDiff(p); };
+			row.ondblclick = function () { invoke("open_source", { file: rootOf(svn.srv) + "/" + p, line: 1 }); };
+		});
+	}
+	function svnShowDiff(path, quiet) {
+		var key = K(), git = isGit();
+		var st = svn.data[key];
+		var it = st && st.items.filter(function (x) { return x.path === path; })[0];
+		if (!quiet) $("svnDiff").innerHTML = '<div class="empty">차이를 계산하는 중...</div>';
+		var args = { srv: svn.srv, path: path === "." ? "" : path };
+		if (it && it.orig) args.orig = it.orig;
+		invoke(svn.kind + "_diff", args).then(function (d) {
+			if (key !== K() || svn.sel !== path || svn.view !== "local") return;
+			var file = it && !it.dir && path !== ".";
+			var base = git
+				? (it && (it.code === "?" || it.code === "A") ? "HEAD 에 없음 (새 파일)" : "HEAD " + esc(st.head) + " 와 비교" + (it && it.orig ? " · HEAD 에서는 옛 이름" : ""))
+				: (it && it.rev ? "기준본 r" + it.rev + (it.author ? " · " + esc(it.author) : "") + (it.dateMs ? " · " + fmtDate(it.dateMs) : "") : "기준본 없음 (새 파일)");
+			var canHead = git ? !!st.upstream : true;
+			var head = '<div class="head"><b>' + esc(path).replace(/\//g, "/<wbr>") + "</b>" +
+				(it ? " · " + esc(it.label) : "") + (it && it.orig ? " (옛 이름 " + esc(it.orig) + ")" : "") + diffCount(d) +
+				"<small>" + base + " · 두 번 누르면 편집기로 엽니다</small>" +
+				(file ? '<div class="acts">' +
+					(canHead ? '<button class="btn sm" data-act="head">' + (git ? esc(st.upstream) + " 와 비교" : "저장소 최신본과 비교") + "</button>" : "") +
+					(it.code !== "?" && it.code !== "A" ? '<button class="btn sm" data-act="log">이 파일의 로그</button>' : "") + "</div>" : "") +
+				"</div>";
+			renderDiff(head, d);
+			var acts = $("svnDiff").querySelector(".acts");
+			if (acts) {
+				var hb = acts.querySelector('[data-act="head"]');
+				if (hb) hb.onclick = function () {
+					svnRevDiff(path, "head", "local", git ? st.upstream + " (마지막 fetch) → 지금 내 파일" : "저장소 최신본(HEAD) → 지금 내 파일");
+				};
+				var lb = acts.querySelector('[data-act="log"]');
+				if (lb) lb.onclick = function () { svn.view = "log"; svn.logRel = path; svn.sel = null; svnRenderSrv(); svnActivate(true); };
+			}
+		}).catch(function (e) {
+			if (key === K() && svn.sel === path) $("svnDiff").innerHTML = '<div class="empty">' + esc(String(e)) + "</div>";
+		});
+	}
+	function diffCount(d) {
+		return d.added || d.removed ? ' · <span class="add">+' + d.added + '</span> <span class="del">−' + d.removed + "</span>" : "";
+	}
+	function renderDiff(head, d) {
+		if (d.note) { $("svnDiff").innerHTML = head + '<div class="empty">' + esc(d.note) + "</div>"; return; }
+		var rows = d.lines.map(function (l) {
+			if (l.t === "hunk") return '<tr class="hunk"><td colspan="3">' + esc(l.s) + "</td></tr>";
+			return '<tr class="' + l.t + '"><td class="no">' + (l.o || "") + '</td><td class="no">' + (l.n || "") + '</td><td class="s">' + esc(l.s) + "</td></tr>";
+		}).join("");
+		$("svnDiff").innerHTML = head + "<table>" + rows + "</table>";
+	}
+
+	/* --- 업데이트 확인 · 로그 · 커밋 차이 (읽기 전용) --- */
+
+	// SVN 계정이 없거나 틀리면 오른쪽에 로그인 칸을 띄우고, 확인되면 하던 일을 다시 한다
+	function remoteErr(e, retry) {
+		var msg = String(e);
+		if (msg.indexOf("NEED_LOGIN|") === 0) { svnLoginForm(msg.slice(11), retry); return true; }
+		$("svnInfo").textContent = msg;
+		return false;
+	}
+	function svnLoginForm(why, retry, user) {
+		svn.retry = retry;
+		$("svnDiff").innerHTML = '<form class="svn-login" id="svnLoginForm" autocomplete="off">' +
+			"<h3>SVN 로그인</h3>" + (why ? "<p>" + esc(why) + "</p>" : "") +
+			'<div class="err" id="svnLoginErr"></div>' +
+			'<label class="f" for="svnUser">아이디</label><input type="text" id="svnUser" value="' + esc(user || "") + '">' +
+			'<label class="f" for="svnPass">비밀번호</label><input type="password" id="svnPass">' +
+			'<label class="chk" title="끄면 이번 실행에서만 씁니다"><input type="checkbox" id="svnSave" checked>Windows 자격 증명 관리자에 저장</label>' +
+			'<div class="row-btns"><button class="btn primary" type="submit">확인</button></div></form>';
+		$("svnInfo").textContent = state.servers[svn.srv].name + " · SVN 로그인이 필요합니다.";
+		(user ? $("svnPass") : $("svnUser")).focus();
+		$("svnLoginForm").onsubmit = function (ev) {
+			ev.preventDefault();
+			var u = $("svnUser").value.trim(), pw = $("svnPass").value;
+			if (!u || !pw) { $("svnLoginErr").textContent = "아이디와 비밀번호를 넣어 주세요."; return; }
+			$("svnLoginErr").textContent = "확인하는 중...";
+			invoke("svn_login", { srv: svn.srv, user: u, pass: pw, save: $("svnSave").checked }).then(function () {
+				$("svnPass").value = "";
+				$("svnDiff").innerHTML = '<div class="empty">계정을 확인했습니다.</div>';
+				var r = svn.retry; svn.retry = null;
+				if (r) r();
+			}).catch(function (e) {
+				var m = String(e);
+				$("svnLoginErr").textContent = m.indexOf("NEED_LOGIN|") === 0 ? "아이디나 비밀번호가 맞지 않습니다." : m;
+			});
+		};
+	}
+	$("svnAccount").onclick = function () {
+		invoke("svn_account", { srv: svn.srv }).then(function (a) {
+			var box = '<div class="svn-login"><h3>SVN 계정 · ' + esc(a.host) + "</h3>" +
+				"<p>" + (a.user ? "지금 쓰는 계정: <b>" + esc(a.user) + "</b> (" + (a.saved ? "Windows 자격 증명 관리자에 저장됨" : "이번 실행에서만") + ")" : "넣은 계정이 없습니다.") + "</p>" +
+				'<div class="row-btns"><button class="btn" id="svnChange">' + (a.user ? "다른 계정으로" : "계정 넣기") + "</button>" +
+				(a.user ? '<button class="btn danger" id="svnForget">계정 지우기</button>' : "") + "</div></div>";
+			$("svnDiff").innerHTML = box;
+			$("svnChange").onclick = function () { svnLoginForm("", function () { svnActivate(true); }, a.user || ""); };
+			if ($("svnForget")) $("svnForget").onclick = function () {
+				invoke("svn_logout", { srv: svn.srv }).then(function () { showToast("SVN 계정을 지웠습니다."); $("svnAccount").onclick(); });
+			};
+		}).catch(function (e) { showError(String(e)); });
+	};
+
+	function svnIncoming() {
+		var key = K();
+		$("svnInfo").textContent = isGit() ? "원격 추적 브랜치와 견주는 중..." : "저장소에 묻는 중...";
+		$("svnList").innerHTML = "";
+		invoke(svn.kind + "_incoming", { srv: svn.srv }).then(function (inc) {
+			(svn.remote[key] = svn.remote[key] || {}).incoming = inc;
+			if (key === K() && svn.view === "incoming") svnRenderIncoming();
+		}).catch(function (e) { if (key === K()) remoteErr(e, svnIncoming); });
+	}
+	function svnRenderIncoming() {
+		var inc = (svn.remote[K()] || {}).incoming;
+		if (!inc) return;
+		var n = inc.entries.length;
+		var overlap = inc.overlap.length ? ' · <b class="flag">내가 고친 파일과 겹침 ' + inc.overlap.length + "</b>" : "";
+		var count = n ? "<b>받을 커밋 " + n + (inc.more ? "개 넘음" : "개") + "</b>" : "<b>최신입니다</b>";
+		if (isGit()) {
+			if (!inc.upstream) {
+				$("svnInfo").innerHTML = "<b>" + esc(inc.branch || "분리된 HEAD") + "</b> · 원격 추적 브랜치 없음";
+				$("svnList").innerHTML = '<div class="empty">이 브랜치에는 따라가는 원격 브랜치가 없어 받을 커밋을 셀 수 없습니다.</div>';
+				return;
+			}
+			$("svnInfo").innerHTML = "<b>" + esc(inc.branch) + "</b> ← " + esc(inc.upstream) + " · " + count + overlap +
+				" · 마지막 fetch " + (inc.fetchedMs ? fmtDate(inc.fetchedMs) : "기록 없음") +
+				(inc.ahead ? " · 올리지 않은 내 커밋 " + inc.ahead + "개" : "");
+			$("svnInfo").title = $("svnInfo").textContent;
+			if (!n) {
+				$("svnList").innerHTML = '<div class="empty">받을 커밋이 없습니다. 마지막 fetch' + (inc.fetchedMs ? "(" + fmtDate(inc.fetchedMs) + ")" : "") +
+					" 기준입니다. 그 뒤 원격에 올라온 커밋을 보려면 아래 fetch 명령을 복사해 실행하세요.</div>";
+				return;
+			}
+		} else {
+			$("svnInfo").innerHTML = '내 작업복사본 <span class="num">r' + inc.base + '</span> · 저장소 <span class="num">r' + inc.head + "</span> · " + count + overlap;
+			if (!n) {
+				$("svnList").innerHTML = '<div class="empty">업데이트할 것이 없습니다. 작업복사본이 저장소 r' + inc.head + " 까지 받았습니다.</div>";
+				return;
+			}
+		}
+		var mine = {};
+		inc.overlap.forEach(function (p) { mine[p] = true; });
+		renderLogList(inc.entries, mine,
+			inc.overlap.length ? '<div class="svn-group">겹치는 파일은 받을 때 합쳐지거나 충돌합니다. 먼저 커밋하거나 내 변경을 따로 챙겨 두세요.</div>' : "");
+	}
+	function svnLogLoad() {
+		var key = K(), rel = svn.logRel;
+		$("svnInfo").textContent = "로그를 읽는 중...";
+		$("svnList").innerHTML = "";
+		invoke(svn.kind + "_log", { srv: svn.srv, rel: rel, limit: 100 }).then(function (entries) {
+			var r = (svn.remote[key] = svn.remote[key] || {});
+			r.log = entries; r.logRel = rel;
+			if (key === K() && svn.view === "log") svnRenderLog();
+		}).catch(function (e) { if (key === K()) remoteErr(e, svnLogLoad); });
+	}
+	function svnRenderLog() {
+		var r = svn.remote[K()] || {};
+		if (!r.log) return;
+		$("svnInfo").innerHTML = (r.logRel ? "<b>" + esc(r.logRel) + "</b> 의 로그" : "전체 로그") + " · 최근 " + r.log.length + "개" +
+			(r.logRel ? ' · <a href="#" id="svnLogAll">전체 로그</a>' : "");
+		if ($("svnLogAll")) $("svnLogAll").onclick = function (ev) { ev.preventDefault(); svn.logRel = ""; svnActivate(true); };
+		renderLogList(r.log, {}, "");
+	}
+	// 커밋 하나의 표시 이름과, 그 커밋에서 바뀐 것을 볼 때 견줄 두 쪽 (SVN 은 리비전 번호 · Git 은 해시)
+	function commitRef(e) {
+		if (e.id) return { key: e.id, name: e.short, old: e.parent ? e.id + "^" : "none", now: e.id,
+			title: e.short + " 에서 바뀐 것" + (e.parent ? " (부모 → " + e.short + ")" : " (첫 커밋)") };
+		return { key: "r" + e.rev, name: "r" + e.rev, old: String(e.rev - 1), now: String(e.rev),
+			title: "r" + e.rev + " 에서 바뀐 것 (r" + (e.rev - 1) + " → r" + e.rev + ")" };
+	}
+	// 커밋 목록 — 커밋 아래 바뀐 파일을 누르면 그 커밋의 차이
+	function renderLogList(entries, mine, top) {
+		var refs = {};
+		$("svnList").innerHTML = top + entries.map(function (e) {
+			var c0 = commitRef(e);
+			refs[c0.key] = c0;
+			var paths = e.paths.map(function (c, k) {
+				var key = c0.key + ":" + k;
+				var on = svn.selRev === key ? " on" : "";
+				return '<div class="cp' + (c.inside && !c.dir ? "" : " out") + on + '" data-k="' + esc(key) + '" data-c="' + esc(c0.key) + '" data-p="' + esc(c.path) + '"' +
+					(c.inside && !c.dir ? "" : ' title="' + (c.dir ? "폴더" : "작업복사본 밖") + '"') + ">" +
+					'<span class="a ' + c.action + '">' + c.action + "</span><span>" + esc(c.path) + (c.dir ? "/" : "") + "</span>" +
+					(mine[c.path] ? '<span class="mine">내가 고친 파일</span>' : "") + "</div>";
+			}).join("");
+			return '<div class="svn-log"><span class="r">' + esc(c0.name) + '</span><span class="who">' + esc(e.author) + " · " + fmtDate(e.dateMs) + "</span>" +
+				'<div class="msg">' + esc(e.msg || "(메시지 없음)") + "</div>" + paths + "</div>";
+		}).join("");
+		[].forEach.call($("svnList").querySelectorAll(".cp:not(.out)"), function (el) {
+			el.onclick = function () {
+				svn.selRev = el.getAttribute("data-k");
+				[].forEach.call($("svnList").querySelectorAll(".cp.on"), function (x) { x.classList.remove("on"); });
+				el.classList.add("on");
+				var c = refs[el.getAttribute("data-c")];
+				svnRevDiff(el.getAttribute("data-p"), c.old, c.now, c.title);
+			};
+		});
+	}
+	function svnRevDiff(rel, oldSpec, newSpec, title) {
+		var key = K();
+		$("svnDiff").innerHTML = '<div class="empty">' + (isGit() ? "내용을 꺼내 견주는 중..." : "저장소에서 내용을 받아 견주는 중...") + "</div>";
+		invoke(svn.kind + "_rev_diff", { srv: svn.srv, rel: rel, old: oldSpec, new: newSpec }).then(function (d) {
+			if (key !== K()) return;
+			renderDiff('<div class="head"><b>' + esc(rel).replace(/\//g, "/<wbr>") + "</b>" + diffCount(d) + "<small>" + esc(title) + "</small></div>", d);
+		}).catch(function (e) {
+			if (key !== K()) return;
+			if (!remoteErr(e, function () { svnRevDiff(rel, oldSpec, newSpec, title); })) {
+				$("svnDiff").innerHTML = '<div class="empty">' + esc(String(e)) + "</div>";
+			}
+		});
+	}
+	function svnChecked() {
+		var st = svn.data[K()];
+		var ck = svn.checked[K()] || {};
+		return st ? st.items.filter(function (it) { return ck[it.path]; }) : [];
+	}
+	function copyText(text, what) {
+		var done = function () { showToast("복사했습니다 · " + what); };
+		if (navigator.clipboard && navigator.clipboard.writeText) {
+			navigator.clipboard.writeText(text).then(done, function () { copyFallback(text); done(); });
+		} else { copyFallback(text); done(); }
+	}
+	function copyFallback(text) {
+		var ta = document.createElement("textarea");
+		ta.value = text;
+		document.body.appendChild(ta);
+		ta.select();
+		try { document.execCommand("copy"); } catch (e) { /* 복사를 못 하면 그대로 둔다 */ }
+		document.body.removeChild(ta);
+	}
+	function cdLine() { return 'cd /d "' + rootOf(svn.srv).replace(/\//g, "\\") + '"'; }
+	// 설정 › 버전 관리의 업데이트 명령 (비어 있으면 기본값)
+	function updateCmd() {
+		var v = vcsOf(svn.srv);
+		return isGit() ? v.gitUpdate || "git pull --ff-only" : v.svnUpdate || "svn update";
+	}
+	$("svnRefresh").onclick = function () { if (svn.view === "local") svnLoad(); else svnActivate(true); };
+	// 업데이트도 사용자가 직접 한다 — 실행기는 이 명령을 실행하지 않는다 (전역 규칙)
+	$("svnCopyUpdate").onclick = function () {
+		var inc = (svn.remote[K()] || {}).incoming;
+		var warn = inc && inc.overlap.length ? " (내가 고친 파일과 겹침 " + inc.overlap.length + "개)" : "";
+		copyText(cdLine() + "\r\n" + updateCmd(), updateCmd() + warn);
+	};
+	$("svnCopyFetch").onclick = function () { copyText(cdLine() + "\r\ngit fetch", "git fetch"); };
+	$("svnUnver").onchange = function () { svnRender(); };
+	$("svnCopyList").onclick = function () {
+		var items = svnChecked();
+		if (!items.length) { showError("고른 파일이 없습니다."); return; }
+		copyText(items.map(function (it) { return it.path; }).join("\n"), "파일 " + items.length + "개 목록");
+	};
+	// 사용자가 직접 실행할 명령을 만들어 줄 뿐이다 — 실행기는 이 명령을 실행하지 않는다
+	$("svnCopyCmd").onclick = function () {
+		var items = svnChecked();
+		if (!items.length) { showError("고른 파일이 없습니다."); return; }
+		var msg = $("svnMsg").value.trim();
+		if (!msg) { showError("커밋 메시지를 먼저 적으세요."); $("svnMsg").focus(); return; }
+		var q = function (p) { return '"' + p + '"'; };
+		var paths = items.map(function (it) { return q(it.path === "." ? "." : it.path); }).join(" ");
+		var lines = [cdLine()];
+		if (isGit()) {
+			items.forEach(function (it) { if (it.orig) paths += " " + q(it.orig); });
+			// add -A 는 새 파일 · 고친 파일 · 지운 파일을 함께 스테이지한다. commit -- 경로 는 고른 파일만 커밋한다 (이미 스테이지된 다른 파일은 남는다)
+			lines.push("git add -A -- " + paths);
+			lines.push("git commit -m " + q(msg.replace(/"/g, "'")) + " -- " + paths);
+		} else {
+			var adds = items.filter(function (it) { return it.code === "?"; });
+			var gone = items.filter(function (it) { return it.code === "!"; });
+			if (adds.length) lines.push("svn add " + adds.map(function (it) { return q(it.path); }).join(" "));
+			if (gone.length) lines.push("svn delete " + gone.map(function (it) { return q(it.path); }).join(" "));
+			lines.push("svn commit -m " + q(msg.replace(/"/g, "'")) + " " + paths);
+		}
+		var conflicts = items.filter(function (it) { return it.conflict; }).length;
+		copyText(lines.join("\r\n"), (isGit() ? "git" : "svn") + " 커밋 명령" + (conflicts ? " (충돌 " + conflicts + "건은 먼저 풀어야 합니다)" : ""));
+	};
+	listen("vcs-dirty", function (e) {
+		var srv = e.payload;
+		["svn", "git"].forEach(function (k) {
+			var key = srv + ":" + k;
+			svn.stale[key] = true;
+			// 커밋 · 업데이트 · fetch 로 바뀌면 「업데이트 확인」 결과도 낡는다 — 다음에 그 보기를 열 때 다시 본다
+			if (svn.remote[key]) svn.remote[key].incoming = null;
+		});
+		if (tab === "svn" && srv === svn.srv && svn.view === "local" && kindsOf(srv).length) {
+			clearTimeout(svn.timer);
+			svn.timer = setTimeout(svnLoad, 1200);
+		}
+	});
+
+	/* ---------- 설정 › 서버 · 경로 (저장하면 다음 기동부터) ---------- */
+
+	// [키, 라벨, 설명, 입력 꼴]
+	var SRV_FIELDS = [
+		["name", "이름", "서버 줄 · 탭에 보이는 이름입니다.", "text"],
+		["project", "프로젝트 폴더", "src/main/webapp 이 있는 폴더입니다. 소스는 읽기만 합니다. 바꾸면 실행기를 다시 열어야 저장 감시가 따라갑니다.", "text"],
+		["httpPort", "HTTP 포트", "브라우저로 들어오는 포트입니다.", "number"],
+		["ajpPort", "AJP 포트", "같은 PC 의 Apache(mod_jk) 등이 넘겨 주는 포트입니다. 127.0.0.1 에만 열립니다.", "number"],
+		["shutdownPort", "종료 포트", "톰캣을 정상 종료할 때 씁니다.", "number"],
+		["debugPort", "디버거 포트", "「디버거 연결 허용」을 켜면 IDE 가 이 포트로 붙습니다.", "number"],
+		["links", "열기 단추", "서버 줄 「열기」 메뉴입니다. 한 줄에 「이름 주소」 하나 (이름을 빼면 주소만).", "lines"],
+		["jvmArgs", "JVM 인자", "이 서버에만 더할 인자입니다. 한 줄에 하나. 회사 · 팀 전용 시스템 속성(-D…)은 여기 둡니다.", "lines"]
+	];
+	function srvField(f) {
+		var input = f[3] === "lines"
+			? '<textarea data-k="' + f[0] + '" spellcheck="false" title="' + esc(f[2]) + '"></textarea>'
+			: '<input type="' + f[3] + '" data-k="' + f[0] + '" spellcheck="false" title="' + esc(f[2]) + '"' + (f[3] === "number" ? ' min="1" max="65535"' : "") + ">";
+		return '<label class="field' + (f[3] === "lines" ? " top" : "") + '"><span title="' + esc(f[2]) + '">' + f[1] + "</span>" + input + "</label>";
+	}
+	function srvLinksText(links) {
+		return links.map(function (l) { return l.label === l.url ? l.url : l.label + " " + l.url; }).join("\n");
+	}
+	function srvLinksParse(text) {
+		return text.split(/\r?\n/).map(function (line) {
+			line = line.trim();
+			var at = line.search(/\S+$/);
+			if (!line) return null;
+			var url = line.slice(at), label = line.slice(0, at).trim();
+			return { label: label || url, url: url };
+		}).filter(Boolean);
+	}
+	function srvBuild(s) {
+		$("srvForms").innerHTML = s.servers.map(function (sv, i) {
+			return '<div class="vcs-srv" id="srv' + i + '"><div class="checks-sub">' + esc(sv.name) + "</div>" +
+				SRV_FIELDS.map(srvField).join("") +
+				'<div class="vcs-acts"><button class="btn" data-k="save">저장</button></div></div>';
+		}).join("");
+		s.servers.forEach(function (sv, i) {
+			var box = $("srv" + i);
+			var val = function (k) { return box.querySelector('[data-k="' + k + '"]').value; };
+			box.querySelector('[data-k="save"]').onclick = function () {
+				var edit = {
+					name: val("name"), project: val("project"),
+					httpPort: +val("httpPort"), ajpPort: +val("ajpPort"), shutdownPort: +val("shutdownPort"), debugPort: +val("debugPort"),
+					links: srvLinksParse(val("links")),
+					jvmArgs: val("jvmArgs").split(/\r?\n/)
+				};
+				invoke("set_server", { srv: i, edit: edit }).then(function (moved) {
+					box._dirty = false;
+					showToast("저장했습니다 · " + edit.name + (moved ? " · 실행기를 다시 열면 새 폴더를 감시합니다" : " · 다음 기동부터"));
+				}).catch(function (e) { showError(String(e)); });
+			};
+			box.oninput = function () { box._dirty = true; };
+		});
+		$("srvAdd").onclick = function () {
+			invoke("add_server").then(function () { showToast("서버를 더했습니다 · 실행기를 다시 열면 보입니다"); })
+				.catch(function (e) { showError(String(e)); });
+		};
+		var PATH_FIELDS = [
+			["tomcatHome", "톰캣 폴더", "톰캣 8.5 를 설치한 폴더입니다 (bin/bootstrap.jar 가 있는 곳).", "text"],
+			["javac", "javac", "자바 컴파일러입니다. 같은 JDK 의 lib/tools.jar 도 씁니다. 기본은 함께 설치된 JDK 8 입니다.", "text"],
+			["javaPlain", "java (핫리로드 끔)", "핫리로드를 끄고 띄울 때 쓰는 java 입니다.", "text"],
+			["editor", "편집기", "컴파일 오류를 누르면 「편집기 -g 파일:줄」 로 엽니다. 비우면 탐색기로 엽니다.", "text"],
+			["tldScan", "TLD jar", "태그 라이브러리를 찾을 jar 이름 (쉼표로 · * 가능). 비우면 모든 jar 를 봅니다. 좁히면 기동이 빨라집니다.", "text"]
+		];
+		var pf = $("pathForm");
+		pf.innerHTML = PATH_FIELDS.map(srvField).join("") + '<div class="vcs-acts"><button class="btn" data-k="save">저장</button></div>';
+		pf.querySelector('[data-k="save"]').onclick = function () {
+			var paths = {};
+			PATH_FIELDS.forEach(function (f) { paths[f[0]] = pf.querySelector('[data-k="' + f[0] + '"]').value; });
+			invoke("set_paths", { paths: paths }).then(function () {
+				pf._dirty = false;
+				showToast("저장했습니다 · 경로");
+			}).catch(function (e) { showError(String(e)); });
+		};
+		pf.oninput = function () { pf._dirty = true; };
+	}
+	function srvFill(s) {
+		s.servers.forEach(function (sv, i) {
+			var box = $("srv" + i);
+			if (!box || box._dirty) return;
+			var set = function (k, v) { box.querySelector('[data-k="' + k + '"]').value = v; };
+			set("name", sv.name); set("project", sv.project);
+			set("httpPort", sv.httpPort); set("ajpPort", sv.ajpPort); set("shutdownPort", sv.shutdownPort); set("debugPort", sv.debugPort);
+			set("links", srvLinksText(sv.links)); set("jvmArgs", sv.jvmArgs.join("\n"));
+		});
+		var pf = $("pathForm");
+		if (pf && !pf._dirty) {
+			Object.keys(s.paths).forEach(function (k) {
+				var el = pf.querySelector('[data-k="' + k + '"]');
+				if (el) el.value = s.paths[k];
+			});
+		}
+	}
+
+	/* ---------- 설정 › 버전 관리 (서버마다 · 저장하면 바로 적용) ---------- */
+
+	// [키, 라벨, 설명(라벨의 title), 이 칸이 쓰이는 종류]
+	// 2026-10-28 : 설명은 화면에서 걷어 title 로. SVN · Git 전용 칸은 그 종류일 때만 보인다 (숨겨도 저장 값에는 그대로 들어간다)
+	var VCS_FIELDS = [
+		["root", "작업 폴더", "비우면 프로젝트 폴더를 봅니다.", ""],
+		["commitHint", "커밋 메시지 예시", "커밋 메시지 칸에 흐리게 보입니다. 팀의 메시지 규칙을 적어 둡니다.", ""],
+		["svnUpdate", "업데이트 명령", "「업데이트 명령 복사」가 만드는 SVN 명령입니다. 앞에 cd 줄이 붙습니다.", "svn"],
+		["gitUpdate", "받기 명령", "「받기 명령 복사」가 만드는 git 명령입니다. 앞에 cd 줄이 붙습니다.", "git"]
+	];
+	function vcsBuild(s) {
+		$("vcsForms").innerHTML = s.servers.map(function (sv, i) {
+			return '<div class="vcs-srv" id="vcs' + i + '"><div class="checks-sub">' + esc(sv.name) + '<span data-k="found"></span></div>' +
+				'<label class="field"><span title="자동 감지는 작업 폴더의 .svn · .git 을 보고 정합니다.">종류</span>' +
+				'<select data-k="kind"><option value="auto">자동 감지</option><option value="svn">SVN</option><option value="git">Git</option>' +
+				'<option value="both">SVN 과 Git</option><option value="none">쓰지 않음</option></select></label>' +
+				VCS_FIELDS.map(function (f) {
+					return '<label class="field" data-for="' + f[3] + '"><span title="' + esc(f[2]) + '">' + f[1] + '</span><input type="text" data-k="' + f[0] + '" spellcheck="false" title="' + esc(f[2]) + '"></label>';
+				}).join("") +
+				'<div class="vcs-acts"><button class="btn" data-k="save">저장</button></div></div>';
+		}).join("");
+		s.servers.forEach(function (sv, i) {
+			var box = $("vcs" + i);
+			box.querySelector('[data-k="save"]').onclick = function () {
+				var v = { kind: box.querySelector('[data-k="kind"]').value };
+				VCS_FIELDS.forEach(function (f) { v[f[0]] = box.querySelector('[data-k="' + f[0] + '"]').value; });
+				invoke("set_vcs", { srv: i, vcs: v }).then(function () {
+					box._dirty = false;
+					showToast("저장했습니다 · " + state.servers[i].name + " 버전 관리");
+				}).catch(function (e) { showError(String(e)); });
+			};
+			// 고치는 중에는 상태가 와도 칸을 덮어쓰지 않는다
+			box.oninput = box.onchange = function () { box._dirty = true; vcsShow(box, state.servers[i]); };
+		});
+	}
+	// 고른 종류에 쓰이는 칸만 보인다. 자동 감지면 지금 찾은 것을, 아무것도 못 찾았으면 둘 다 보인다 (나중에 생길 저장소를 미리 적어 둘 수 있게)
+	function vcsShow(box, sv) {
+		var kind = box.querySelector('[data-k="kind"]').value;
+		var kinds = kind === "auto" ? (sv.vcsKinds.length ? sv.vcsKinds : ["svn", "git"])
+			: kind === "both" ? ["svn", "git"] : kind === "none" ? [] : [kind];
+		[].forEach.call(box.querySelectorAll("[data-for]"), function (el) {
+			var f = el.getAttribute("data-for");
+			el.hidden = kind === "none" ? true : !!f && kinds.indexOf(f) < 0;
+		});
+	}
+	function vcsFill(s) {
+		s.servers.forEach(function (sv, i) {
+			var box = $("vcs" + i);
+			if (!box) return;
+			box.querySelector('[data-k="found"]').innerHTML = sv.vcsKinds.length
+				? sv.vcsKinds.map(function (k) { return '<span class="k" title="지금 보는 것">' + esc(KIND_NAME[k]) + "</span>"; }).join("")
+				: '<span class="k">없음</span>';
+			if (!box._dirty) {
+				box.querySelector('[data-k="kind"]').value = sv.vcs.kind;
+				VCS_FIELDS.forEach(function (f) { box.querySelector('[data-k="' + f[0] + '"]').value = sv.vcs[f[0]] || ""; });
+				box.querySelector('[data-k="root"]').placeholder = sv.project;
+			}
+			vcsShow(box, sv);
+		});
+	}
+
+/* ---------- 동작 ---------- */
+
+	function showToast(msg) {
+		$("toastText").textContent = msg;
+		$("toast").classList.add("show");
+		clearTimeout(showToast.t);
+		showToast.t = setTimeout(function () { $("toast").classList.remove("show"); }, 2500);
+	}
+	function showError(msg) { errMsg = msg; renderAlerts(); }
+	function hideError() { if (errMsg) { errMsg = ""; renderAlerts(); } }
+	function call(cmd, args) {
+		return invoke(cmd, args || {}).catch(function (e) { showError(String(e)); });
+	}
+
+	$("optHot").onchange = function () { call("set_option", { key: "hotReload", value: this.checked }); };
+	$("optAuto").onchange = function () { call("set_option", { key: "autoCompile", value: this.checked }); };
+	$("optDebug").onchange = function () { call("set_option", { key: "debug", value: this.checked }); };
+	$("optFast").onchange = function () { call("set_option", { key: "fastJvm", value: this.checked }); };
+	$("optPool").onchange = function () { call("set_option", { key: "smallPool", value: this.checked }); };
+	$("optStagger").onchange = function () { call("set_option", { key: "staggerStart", value: this.checked }); };
+	$("optSkipScan").onchange = function () { call("set_option", { key: "skipScan", value: this.checked }); };
+	$("optSchedule").onchange = function () { call("set_option", { key: "noSchedule", value: this.checked }); };
+	$("optLazy").onchange = function () { call("set_option", { key: "lazyInit", value: this.checked }); };
+	$("optMapper").onchange = function () { call("set_option", { key: "mapperHotswap", value: this.checked }); };
+	$("optSession").onchange = function () { call("set_option", { key: "keepSession", value: this.checked }); };
+	$("selHeap").onchange = function () { call("set_heap", { mb: parseInt(this.value, 10) }); };
+	$("selCompiler").onchange = function () { call("set_compiler", { name: this.value }); };
+	$("filter").oninput = redraw;
+	$("onlyErr").onchange = redraw;
+	$("btnClear").onclick = function () { if (store[tab]) { store[tab] = []; redraw(); } };
+	$("logFolder").onclick = function () {
+		var i = parseInt(tab.slice(3), 10);
+		if (state && state.servers[i]) invoke("open", { target: state.servers[i].catalinaBase + "/logs" });
+	};
+	$("sbOpts").onclick = function (e) {
+		var b = e.target.closest(".sb-item");
+		if (b) openOpt(b.getAttribute("data-opt")); else go("settings");
+	};
+	$("sbOpts").title = "누르면 설정의 그 칸으로 갑니다";
+	$("sbMem").onclick = function () { go("status"); };
+
+/* ---------- 닫기 확인 ---------- */
+
+	// 켜진 톰캣이 있을 때 닫으면 실행기가 「close-ask」로 묻는다. 확인하면 끄는 동안 서버별 상태를 보여 준다.
+	var quitting = false;
+	var STATUS_TEXT = { stopped: "꺼짐", starting: "켜는 중", running: "실행 중", stopping: "끄는 중" };
+	function quitList(names) {
+		$("quitList").innerHTML = names.map(function (n) {
+			var sv = state && state.servers.filter(function (s) { return s.name === n; })[0];
+			return "<li><span>" + esc(n) + "</span><span>" + (sv ? STATUS_TEXT[sv.status] || "" : "") + "</span></li>";
+		}).join("");
+	}
+	function quitHide() { if (!quitting) { $("quitScrim").hidden = true; } }
+	listen("close-ask", function (e) {
+		if (quitting) return;
+		closeMenu();
+		$("quitScrim")._names = e.payload;
+		$("quitTitle").textContent = "톰캣이 실행 중입니다";
+		$("quitText").textContent = "닫으면 함께 종료됩니다.";
+		quitList(e.payload);
+		$("quitActs").hidden = false;
+		$("quitScrim").hidden = false;
+		$("quitOk").focus();
+	});
+	$("quitOk").onclick = function () {
+		quitting = true;
+		$("quitTitle").textContent = "톰캣을 끄는 중...";
+		$("quitText").textContent = "모두 꺼지면 창이 닫힙니다. 정상 종료가 20초 안에 끝나지 않으면 강제로 끕니다.";
+		$("quitActs").hidden = true;
+		invoke("quit").catch(function (err) { quitting = false; quitHide(); showError(String(err)); });
+	};
+	$("quitCancel").onclick = quitHide;
+	$("quitScrim").onclick = function (e) { if (e.target === this) quitHide(); };
+	$("quitScrim").addEventListener("keydown", function (e) {
+		if (e.key === "Escape") { quitHide(); e.stopPropagation(); }
+		if (e.key === "Tab") {   // 확인 창 밖으로 초점이 새지 않게 두 단추 사이만 돈다
+			e.preventDefault();
+			(document.activeElement === $("quitOk") ? $("quitCancel") : $("quitOk")).focus();
+		}
+	});
+
+	listen("state", function (e) {
+		render(e.payload); renderMems();
+		if (!$("quitScrim").hidden) quitList($("quitScrim")._names);
+	});
+	listen("mem", function (e) { memSnap = e.payload; renderMems(); renderMeta(); });
+	listen("logs", function (e) { onLogs(e.payload); });
+	listen("error", function (e) { showError(String(e.payload)); });
+	invoke("get_state").then(function (s) {
+		render(s);
+		if (early.length) { var x = early; early = []; onLogs(x); }
+	});
+	setInterval(renderMeta, 1000);
+})();
+</script>
+</body>
+</html>

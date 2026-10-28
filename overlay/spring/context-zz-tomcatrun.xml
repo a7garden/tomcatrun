@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  tomcatrun 개발 전용 · 루트 컨텍스트 (프로젝트 소스에 없다 · IDE · 운영에는 읽히지 않는다)
+
+  실행기의 server.xml 이 <실행기 폴더>/overlay 를 /WEB-INF/classes 에 덧붙이므로
+  앱의 contextConfigLocation(classpath*:spring/context-*.xml)이 이 파일도 함께 읽는다.
+  원본과 이름이 달라 원본 설정을 가리지 않는다.
+
+  tomcatrun.DevTweaks : 실행기가 주는 시스템 속성(tomcatrun.*)에 따라 빈 정의를 고친다. 속성이 없으면 아무것도 하지 않는다.
+-->
+<beans xmlns="http://www.springframework.org/schema/beans"
+       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+       xsi:schemaLocation="http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans.xsd">
+
+	<bean class="tomcatrun.DevTweaks"/>
+
+</beans>

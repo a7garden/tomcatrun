@@ -1,0 +1,38 @@
+[package]
+name = "tomcatrun"
+version = "0.6.0"   # 버전은 여기 한 곳 — tauri.conf.json · 설치 파일 · 화면이 이 값을 따른다 (CHANGELOG.md)
+edition = "2021"
+description = "tomcatrun — 로컬 톰캣 개발 실행기 (컴파일 · 핫리로드 · 읽기 전용 SVN/Git)"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+notify = "8"
+encoding_rs = "0.8"
+tauri-plugin-single-instance = "2"
+# 작업 개체(Job Object) — 실행기가 죽으면 톰캣도 함께 끝나게 한다. 버전은 tauri 가 이미 쓰는 것에 맞췄다.
+# 읽기 전용 SVN — wc.db 를 읽기 전용 · immutable 로 연다 (svn 명령을 쓰지 않는다) · 기준본과의 차이
+rusqlite = { version = "0.32", features = ["bundled"] }
+sha1_smol = "1"
+similar = "2"
+# 읽기 전용 저장소 조회 (OPTIONS · REPORT · GET) — 저장소가 http 라 TLS 는 빼고 작게 쓴다
+ureq = { version = "2", default-features = false }
+base64 = "0.22"
+roxmltree = "0.20"
+# 메모리 표시 — ProcessStatus(프로세스 메모리) · ToolHelp(실행기 아래 화면 엔진 프로세스 찾기)
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_System_ProcessStatus", "Win32_System_Diagnostics_ToolHelp", "Win32_Security_Credentials"] }
+
+[features]
+# cargo build 만으로 화면 파일(ui/)을 실행 파일에 넣는다. tauri-cli 가 없어도 된다.
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
+[profile.release]
+opt-level = "s"
+lto = "thin"
+codegen-units = 4
+strip = true

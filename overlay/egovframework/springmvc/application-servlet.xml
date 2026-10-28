@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  tomcatrun 개발 전용 · MVC 컨텍스트 (프로젝트 소스에 없다 · IDE · 운영에는 읽히지 않는다)
+
+  원본 src/main/resources/egovframework/springmvc/application-servlet.xml 과 경로가 같다. 원본을 바꾸지 않는다.
+    · DispatcherServlet 은 classpath*:egovframework/springmvc/application-servlet.xml 로 읽는다.
+      classpath* 는 같은 경로의 파일을 모두 찾으므로 원본과 이 파일이 함께 읽힌다 (이 파일은 빈 하나만 더한다).
+    · 하나만 찾는 getResource 는 server.xml 에서 앞에 물린 원본(src/main/resources)을 먼저 찾는다.
+  컨트롤러 · 서비스 · 매퍼는 이 컨텍스트의 component-scan 이 만들므로, 지연 초기화 · 예약 작업 멈춤은 여기에도 걸어야 한다.
+-->
+<beans xmlns="http://www.springframework.org/schema/beans"
+       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+       xsi:schemaLocation="http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans.xsd">
+
+	<bean class="tomcatrun.DevTweaks"/>
+
+</beans>
