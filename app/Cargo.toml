@@ -1,6 +1,6 @@
 [package]
 name = "tomcatrun"
-version = "0.10.0"   # 버전은 여기 한 곳 — tauri.conf.json · 설치 파일 · 화면이 이 값을 따른다 (CHANGELOG.md)
+version = "0.10.1"   # 버전은 여기 한 곳 — tauri.conf.json · 설치 파일 · 화면이 이 값을 따른다 (CHANGELOG.md)
 edition = "2021"
 description = "tomcatrun — 로컬 톰캣 개발 실행기 (컴파일 · 핫리로드 · 읽기 전용 SVN/Git)"
 

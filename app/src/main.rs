@@ -442,6 +442,7 @@ struct Inner {
 
 /// 서버 하나의 실행 상태
 struct Rt {
+    last_reload: Mutex<String>, // 마지막 「Reloading classes [...]」 의 클래스 (교체 실패 알림에 이름을 붙인다)
     inner: Mutex<Inner>,
     compile_lock: Mutex<()>,
     compile_tx: Sender<bool>, // true = 전체 컴파일
@@ -789,6 +790,31 @@ fn set_status(app: &AppHandle, i: usize, st: Status) {
     emit_state(app);
 }
 
+// HotswapAgent 가 클래스를 실행 중인 JVM 에 넣지 못했다는 줄.
+// 2026-10-28 : 「HOTSWAP AGENT」 와 함께 있는 줄만 찾았는데, 실패는 머리 없는 예외 줄로만 나와 한 번도 잡지 못했다.
+// 그래서 교체가 실패해도(익명 · 안쪽 클래스 구조가 바뀐 경우 등) 재시작 알림이 뜨지 않고 옛 코드가 그대로 돌았다.
+fn is_redefine_failure(t: &str) -> bool {
+    t.contains("Unable to redefine classes") || t.contains("class redefinition failed")
+}
+
+// 「Reloading classes [a.b.C$1, a.b.C, a.b.D]」 → 「C 외 1개」 (안쪽 클래스는 바깥 클래스로 묶는다)
+fn reload_names(t: &str) -> Option<String> {
+    let at = t.find("Reloading classes [")? + "Reloading classes [".len();
+    let body = &t[at..t[at..].find(']').map_or(t.len(), |e| at + e)];
+    let mut names: Vec<String> = Vec::new();
+    for c in body.split(',').map(str::trim).filter(|c| !c.is_empty()) {
+        let simple = c.rsplit('.').next().unwrap_or(c).split('$').next().unwrap_or(c).to_string();
+        if !names.contains(&simple) {
+            names.push(simple);
+        }
+    }
+    match names.len() {
+        0 => None,
+        1 => Some(names[0].clone()),
+        n => Some(format!("{} 외 {}개", names[0], n - 1)),
+    }
+}
+
 fn add_pending(app: &AppHandle, i: usize, path: String, why: &'static str) {
     let mut inner = rt(app, i).inner.lock().unwrap();
     if !inner.restart_needed.iter().any(|x| x.path == path) {
@@ -807,6 +833,10 @@ struct LogLine {
 }
 
 fn classify(t: &str) -> &'static str {
+    // 교체 실패는 「HOTSWAP AGENT」 머리 없이 자바 예외 줄로만 나온다 (Exception in thread … Unable to redefine classes)
+    if is_redefine_failure(t) {
+        return "err";
+    }
     if t.contains("HOTSWAP AGENT") {
         if t.contains("ERROR") || t.contains("Unable to redefine") {
             return "err";
@@ -872,8 +902,14 @@ fn pipe_reader(app: AppHandle, i: usize, src: &'static str, r: impl Read + Send 
                 if let Some(k) = PHASE_MARKS.iter().position(|(m, _)| text.contains(m)) {
                     record_mark(&app, i, k, &text);
                 }
-                if text.contains("HOTSWAP AGENT") && text.contains("Unable to redefine") {
-                    add_pending(&app, i, "자바 클래스".into(), "구조가 바뀌어 실행 중인 앱에 넣지 못함");
+                if let Some(names) = reload_names(&text) {
+                    *r.last_reload.lock().unwrap() = names;
+                }
+                if is_redefine_failure(&text) && text.contains("Unable to redefine classes") {
+                    let names = r.last_reload.lock().unwrap().clone();
+                    let what = if names.is_empty() { "자바 클래스".to_string() } else { names };
+                    add_pending(&app, i, what.clone(), "구조가 바뀌어 실행 중인 앱에 넣지 못함 (안쪽 · 익명 클래스나 상속이 바뀜)");
+                    log(&app, Some(i), "app", "err", format!("{what} 을 실행 중인 앱에 넣지 못했습니다. 재시작해야 반영됩니다."));
                     emit_state(&app);
                 }
                 // 매퍼 하나만 다시 읽기 — HotswapAgent MyBatis 플러그인이 끝나면 남기는 줄
@@ -3385,6 +3421,7 @@ fn main() {
             let (tx, rx) = mpsc::channel();
             compile_rxs.push(rx);
             Rt {
+                last_reload: Mutex::new(String::new()),
                 inner: Mutex::new(Inner {
                     child: None,
                     status: Status::Stopped,
@@ -3766,6 +3803,18 @@ mod tests {
             // 두 번 돌려도 더 붙지 않는다
             assert_eq!(dev_web_xml(&out, true).unwrap(), out);
         }
+    }
+
+    #[test]
+    fn 클래스_교체_실패를_잡고_이름을_붙인다() {
+        // 실제 로그 그대로 — 실패 줄에는 「HOTSWAP AGENT」 머리가 없다
+        assert!(is_redefine_failure(r#"Exception in thread "Thread-352" java.lang.IllegalStateException: Unable to redefine classes"#));
+        assert_eq!(classify("Caused by: java.lang.UnsupportedOperationException: class redefinition failed: attempted to change superclass or interfaces"), "err");
+        assert!(!is_redefine_failure("HOTSWAP AGENT: 18:12:39.488 RELOAD (x) - Registering Spring bean 'a'"));
+        let line = "HOTSWAP AGENT: 18:12:39.132 RELOAD (org.hotswap.agent.config.PluginManager) - Reloading classes [com.example.OrderServiceImpl$4, com.example.OrderServiceImpl$1, com.example.OrderServiceImpl$TxProxy, com.example.OrderServiceImpl, com.example.web.OrderController$Hub]";
+        assert_eq!(reload_names(line).as_deref(), Some("OrderServiceImpl 외 1개"));
+        assert_eq!(reload_names("Reloading classes [a.B]").as_deref(), Some("B"));
+        assert!(reload_names("Registering directory").is_none());
     }
 
     #[test]
