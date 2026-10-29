@@ -1,5 +1,6 @@
 # Windows 설치 파일을 만든다 — v<버전> 태그를 올리면 릴리스까지, 그 밖에는 빌드 결과를 Actions 산출물로만 남긴다.
 # 실행 환경(JDK · DCEVM · HotswapAgent · Maven)은 installer/fetch.sh 가 공개 배포처에서 받아 해시를 대조한다.
+# 2026.10.29 : action 을 Node 24 로 도는 판으로 올렸다 (upload-artifact 는 v5 가 아직 Node 20 이라 v6). Rust 는 stable — 하한은 app/Cargo.toml 의 rust-version.
 name: release
 
 on:
@@ -19,7 +20,7 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: 태그와 Cargo.toml 버전이 같은지 본다
         if: startsWith(github.ref, 'refs/tags/v')
@@ -38,7 +39,7 @@ jobs:
           workspaces: app
 
       - name: 실행 환경 캐시
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: bin
           key: runtime-${{ hashFiles('installer/fetch.sh') }}
@@ -61,7 +62,7 @@ jobs:
           cd installer/dist
           for f in tomcatrun-setup-*.exe; do sha256sum "$f" | cut -d' ' -f1 > "$f.sha256"; done
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: tomcatrun-setup
           path: installer/dist/tomcatrun-setup-*
@@ -80,7 +81,7 @@ jobs:
 
       - name: 릴리스
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: installer/dist/tomcatrun-setup-*
           body_path: release-notes.md

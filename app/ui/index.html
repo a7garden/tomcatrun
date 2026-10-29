@@ -180,6 +180,9 @@ body.blur .tb-icon { opacity: .5; }
 .alert-items li .btn { margin-left: auto; height: 20px; flex: none; }
 .alert-items .mono { font-size: 12px; }
 .alert-items small { color: var(--muted); margin-left: 8px; }
+.alert-items .keep { color: var(--ok); }
+.alert-items .drop { color: var(--muted); text-decoration: line-through; }
+.alert-items .fix { color: var(--warn); }
 
 /* ---------- 탭 ---------- */
 .tabs { display: flex; align-items: stretch; height: 38px; padding: 0 8px; background: var(--panel); border-bottom: 1px solid var(--line); }
@@ -374,6 +377,9 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .checks li.warn .ic { align-self: start; margin-top: 2px; }
 .checks li.warn small { white-space: pre-line; word-break: normal; font-family: var(--ui); line-height: 1.55; }
 .checks small { color: var(--muted); word-break: break-all; font-family: var(--mono); font-size: 12px; }
+.checks li.pre small { white-space: pre-line; word-break: normal; overflow-wrap: anywhere; }
+.checks li.pre .ic { align-self: start; margin-top: 2px; }
+.check-acts { grid-column: 3; margin-top: 6px; }
 .checks-sub { margin: 14px 0 4px; font-weight: 600; font-size: 12.5px; }
 .check-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 0 28px; }
 .check-cols .checks-sub { margin-top: 4px; }
@@ -974,6 +980,11 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 			ck.id = "checks" + i;
 			ck.innerHTML = '<div class="checks-sub">' + esc(sv.name) + '</div><ul class="checks" data-k="list"></ul>';
 			$("srvChecks").appendChild(ck);
+			// 점검 줄의 단추 (checkAct) — 목록은 상태가 올 때마다 다시 그리므로 위에서 받는다
+			ck.querySelector('[data-k="list"]').onclick = function (e) {
+				var b = e.target.closest("[data-act]");
+				if (b) dedupCall(i, b.getAttribute("data-act"));
+			};
 			var fo = document.createElement("button");
 			fo.className = "btn";
 			fo.innerHTML = ic("folder") + esc(sv.name) + " 톰캣 로그";
@@ -1163,7 +1174,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 			db.classList.toggle("warn", !!depsCheck && !depsCheck.ok && !sv.depsBusy);
 			db.textContent = sv.depsBusy ? "받는 중..." : "의존 jar 다시 받기";
 
-			$("checks" + i).querySelector('[data-k="list"]').innerHTML = checkHtml(sv.checks);
+			$("checks" + i).querySelector('[data-k="list"]').innerHTML = checkHtml(sv.checks, sv);
 		});
 		$("optNote").hidden = !changed;
 		$("checks").innerHTML = checkHtml(s.checks);
@@ -1178,6 +1189,20 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 	}
 
 	function depsOf(sv) { return sv.checks.filter(function (c) { return c.key === "deps"; })[0]; }
+
+	// 같은 jar 다른 판 — dedup_deps 는 의존 jar 쪽 겹친 판을 deps.dup 로 치우고, undo_dedup 은 돌려놓는다
+	function dedupCall(i, cmd) {
+		hideError();
+		invoke(cmd, { srv: i }).then(function (m) { showToast(m); }).catch(function (e) { showError(String(e)); });
+	}
+
+	// 「commons-io — 남김 … · 치움 …」 한 줄을 남김 · 치움 · 지울 것 색으로
+	function planHtml(s) {
+		var k = s.indexOf(" — ");
+		return "<b>" + esc(s.slice(0, k)) + "</b> — " + s.slice(k + 3).split(" · ").map(function (p) {
+			return '<span class="' + (/^남김/.test(p) ? "keep" : /^치움/.test(p) ? "drop" : "fix") + '">' + esc(p) + "</span>";
+		}).join(" · ");
+	}
 
 	/* ---------- 저장 감시 제외 (파일 · 폴더 · 두 서버 공통) ---------- */
 
@@ -1290,13 +1315,19 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 						invoke("auto_deps", { srv: i }).then(function (m) { showToast(m); }).catch(function (e) { showError(String(e)); });
 					}]] });
 			}
-			// 같은 jar 다른 판 — 시작은 되지만 켜기 전에 눈에 띄게 (설명 첫 줄이 요약이다)
-			var dup = sv.checks.filter(function (c) { return c.key === "depsDup"; })[0];
+			// 같은 jar 다른 판 — 시작은 되지만 켜기 전에 눈에 띄게 (설명 첫 줄이 요약이다).
+			// 의존 jar 쪽은 단추로 치우고, 프로젝트 WEB-INF/lib 안의 겹침은 지울 파일을 「자세히」에 적는다
+			var dup = sv.checks.filter(function (c) { return c.key === "depsDup"; })[0], dd = sv.dedup;
 			if (dup) {
-				var dl = dup.detail.split("\n");
+				var dl = dup.detail.split("\n"), idle = sv.status === "stopped" && !sv.depsBusy;
+				var how = [];
+				if (dd.movable) how.push("의존 jar 쪽 " + dd.movable + "개를 치우면 한 판만 올라갑니다" + (idle ? "" : " (서버를 끈 뒤에)"));
+				if (dd.manual) how.push(dd.manual + "종은 프로젝트 WEB-INF/lib 에서 지워야 합니다");
 				rows.push({ key: "dd" + i, lv: "warn", text: "<b>" + esc(sv.name) + " · 같은 jar 다른 판 " + esc(dl[0].split(" · ")[0]) + "</b>" +
-					'<span class="sub">' + esc(dl[0].split(" · ").slice(1).join(" · ")) + " — 이클립스와 읽는 순서가 달라 이 실행기에서만 오류가 날 수 있습니다</span>",
-					acts: [["상태 보기", "", false, function () { go("status"); }]] });
+					'<span class="sub">' + esc(dl[0].split(" · ").slice(1).join(" · ")) + " — " + esc(how.join(" · ")) + "</span>",
+					lines: dd.lines,
+					acts: (dd.movable ? [["겹친 판 치우기 (" + dd.movable + ")", "primary", !idle, function () { dedupCall(i, "dedup_deps"); }]] : [])
+						.concat([["상태 보기", "", false, function () { go("status"); }]]) });
 			}
 			// 이클립스와 다른 자바로 뜬다 — 「 — 」 앞이 요약, 뒤가 할 일. 핫리로드 모드면 끄는 단추를 붙인다 (끄면 이클립스와 같은 자바로 뜬다)
 			if (sv.javaDiff && javaDismissed[sv.id] !== sv.javaDiff) {
@@ -1341,7 +1372,8 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 				(r.items && open ? '<ul class="alert-items">' + r.items.map(function (x, k) {
 					return '<li data-srv="' + r.srv + '" data-path="' + esc(x.path) + '"><span class="mono">' + esc(x.path) + "</span><small>" + esc(x.why) + "</small>" +
 						'<button class="btn ghost sm" data-ign="' + k + '" aria-haspopup="menu" title="저장 감시에서 뺄 범위를 고릅니다">무시…</button></li>';
-				}).join("") + "</ul>" : "");
+				}).join("") + "</ul>" : "") +
+				(r.lines && open ? '<ul class="alert-items">' + r.lines.map(function (s) { return "<li><span>" + planHtml(s) + "</span></li>"; }).join("") + "</ul>" : "");
 			// 재시작이 필요 없는 파일(반영용 SQL 등)이 쌓이면 폴더 · 파일 이름 · 확장자 가운데 골라 무시 목록에 넣는다
 			[].forEach.call(el.querySelectorAll("[data-ign]"), function (b) {
 				var path = r.items[+b.getAttribute("data-ign")].path;
@@ -1354,10 +1386,10 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 				src.setAttribute("data-file", r.src.file);
 				src.setAttribute("data-line", r.src.line);
 			}
-			if (r.items) {
+			if (r.items || r.lines) {
 				var t = document.createElement("button");
 				t.className = "btn ghost sm";
-				t.textContent = open ? "목록 접기" : "목록 보기";
+				t.textContent = r.lines ? (open ? "접기" : "자세히") : open ? "목록 접기" : "목록 보기";
 				t.onclick = function () { alertOpen[r.key] = !open; renderAlerts(); };
 				acts.appendChild(t);
 			}
@@ -1441,12 +1473,25 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 		}).join("");
 	}
 
-	function checkHtml(list) {
+	// sv 를 주면(서버 점검) 줄에 단추를 붙인다 — checkAct
+	function checkHtml(list, sv) {
 		return list.map(function (c) {
 			// 값이 경로인 항목은 우클릭으로 탐색기 · 경로 복사
 			var path = /^[A-Za-z]:[\\\/]/.test(c.detail) ? ' data-path="' + esc(c.detail) + '"' : "";
-			return '<li class="' + (!c.ok ? "bad" : c.warn ? "warn" : "") + '"' + path + ">" + ic(!c.ok ? "error" : c.warn ? "warn" : "check") + "<span>" + esc(c.label) + "</span><small>" + esc(c.detail) + "</small></li>";
+			var cls = (!c.ok ? "bad" : c.warn ? "warn" : "") + (c.detail.indexOf("\n") >= 0 ? " pre" : "");
+			return '<li class="' + cls + '"' + path + ">" + ic(!c.ok ? "error" : c.warn ? "warn" : "check") + "<span>" + esc(c.label) + "</span><small>" + esc(c.detail) + "</small>" +
+				(sv ? checkAct(c, sv) : "") + "</li>";
 		}).join("");
+	}
+
+	// 같은 jar 다른 판은 치우고, 치운 jar 는 되돌린다. jar 를 옮기므로 톰캣을 끄고 받는 중이 아닐 때만 누를 수 있다
+	function checkAct(c, sv) {
+		var a = c.key === "depsDup" && sv.dedup.movable ? ["dedup_deps", "겹친 판 치우기 (" + sv.dedup.movable + ")", "primary"]
+			: c.key === "depsAside" ? ["undo_dedup", "되돌리기", ""] : null;
+		if (!a) return "";
+		var off = sv.status !== "stopped" || sv.depsBusy;
+		return '<div class="check-acts"><button class="btn sm ' + a[2] + '" data-act="' + a[0] + '"' +
+			(off ? ' disabled title="서버를 끈 뒤에 할 수 있습니다"' : "") + ">" + esc(a[1]) + "</button></div>";
 	}
 
 	/* ---------- 상태 표시줄 — 켜진 설정만 묶음별 칩으로 ---------- */

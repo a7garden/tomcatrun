@@ -94,6 +94,9 @@ struct ServerCfg {
     // 바꾸면 다음 컴파일이 전체를 다시 만든다 (COMPILE_OPTS_FILE). 톰캣이 켜져 있으면 바꾸지 못한다 (set_server).
     encoding: String, // 자바 소스 인코딩 — 빈 값은 UTF-8
     parameters: bool, // 매개변수 이름을 남긴다 (-parameters)
+    // 2026.10.29~ : 「겹친 판 치우기」를 눌렀다 — 의존 jar 를 다시 받거나 채우면 폴더가 통째로 갈려 치운 판이 되살아나므로
+    // 채운 직후 같은 규칙으로 다시 치운다 (redo_dedup). 「되돌리기」가 끈다.
+    deps_dedup: bool,
 }
 
 // 톰캣 8.5 기본 · 이클립스 server.xml 에 값이 없을 때와 같다. 2026.10.29 : 1000(최근 톰캣의 기본 server.xml 값) → 10000.
@@ -352,6 +355,7 @@ fn new_server(h: &Path, id: &str, name: &str, n: u16) -> ServerCfg {
         max_parameter_count: DEFAULT_MAX_PARAMS,
         encoding: String::new(),
         parameters: false,
+        deps_dedup: false,
         // 2026-10-28 : 「http://localhost:8080/」 대신 「/」. 「/」로 시작하는 주소는 화면이 열 때 그 서버의 HTTP 포트를 붙이므로
         // 포트를 바꿔도 바로가기가 따라간다 (서버를 더할 때 포트를 올려도 링크를 다시 만들 필요가 없다)
         links: vec![link("HTTP", "/")],
@@ -715,6 +719,18 @@ struct ServerSnap {
     eclipse_java: String,        // 이클립스가 쓰던 java (가져올 때 찾았으면)
     eclipse_java_label: String,
     java_diff: Option<String>,   // 이클립스와 다른 자바로 뜨면 그 설명 — 알림 줄에 띄운다
+    dedup: DedupSnap,
+}
+
+/// 같은 jar 다른 판 — 화면이 「겹친 판 치우기」 · 「되돌리기」 단추와 펼침 목록을 그린다
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DedupSnap {
+    movable: usize,     // 단추로 치울 수 있는 의존 jar 수
+    manual: usize,      // 프로젝트 WEB-INF/lib 안에서 겹쳐 사람이 지워야 하는 라이브러리 수
+    lines: Vec<String>, // 라이브러리마다 「남김 · 치움」 한 줄
+    aside: Vec<String>, // 치워 둔 jar (deps.dup)
+    on: bool,           // 다시 받아도 다시 치운다
 }
 
 /// 「설정 › 경로」 — 모든 서버가 함께 쓰는 것
@@ -963,7 +979,22 @@ fn filter_check(s: &ServerCfg, r: &Rt) -> Option<Check> {
     c
 }
 
-fn server_checks(c: &Config, s: &ServerCfg, r: &Rt) -> Vec<Check> {
+// 프로젝트 WEB-INF/lib — 프로젝트를 정하지 않았으면 빈 경로 (실행기 폴더 기준 상대 경로를 읽지 않게 한다)
+fn own_lib(project: &str) -> PathBuf {
+    if project.trim().is_empty() { PathBuf::new() } else { Path::new(project).join("src/main/webapp/WEB-INF/lib") }
+}
+
+fn dedup_snap(s: &ServerCfg, dups: &[jarcheck::Dup]) -> DedupSnap {
+    DedupSnap {
+        movable: dups.iter().map(|d| d.drop.len()).sum(),
+        manual: dups.iter().filter(|d| !d.manual.is_empty()).count(),
+        lines: dups.iter().map(jarcheck::plan_line).collect(),
+        aside: jarcheck::aside_jars(Path::new(&s.deps_dir)),
+        on: s.deps_dedup,
+    }
+}
+
+fn server_checks(c: &Config, s: &ServerCfg, r: &Rt, dups: &[jarcheck::Dup], aside: &[String]) -> Vec<Check> {
     let jars = fs::read_dir(&s.deps_dir)
         .map(|r| r.filter_map(Result::ok).filter(|e| e.path().extension().map_or(false, |x| x == "jar")).count())
         .unwrap_or(0);
@@ -995,11 +1026,14 @@ fn server_checks(c: &Config, s: &ServerCfg, r: &Rt) -> Vec<Check> {
         },
     ];
     // 같은 라이브러리의 다른 판 — 시작은 되므로 노란 줄. 키를 deps 와 나눈 것은 화면이 deps 줄 하나로 「다시 받기」 강조 · 「자동으로 채우기」 알림을 걸기 때문이다
-    // 프로젝트를 정하지 않았으면 빈 경로 — 실행기 폴더 기준 상대 경로를 읽지 않게 한다
-    let own = if s.project.trim().is_empty() { PathBuf::new() } else { Path::new(&s.project).join("src/main/webapp/WEB-INF/lib") };
-    let dups = jarcheck::duplicates(&own, Path::new(&s.deps_dir));
     if !dups.is_empty() {
-        out.push(Check { key: "depsDup", label: "같은 jar 다른 판", ok: true, detail: jarcheck::detail(&dups), warn: true });
+        out.push(Check { key: "depsDup", label: "같은 jar 다른 판", ok: true, detail: jarcheck::detail(dups), warn: true });
+    }
+    // 치워 둔 판 — 겹침이 사라져도 남겨 보여야 되돌릴 곳이 있다
+    if !aside.is_empty() {
+        let mut d = vec![format!("{}개 · 의존 jar 폴더 옆 deps.dup 에 있습니다{}", aside.len(), if s.deps_dedup { " · 다시 받아도 다시 치웁니다" } else { "" })];
+        d.extend(aside.iter().cloned());
+        out.push(Check { key: "depsAside", label: "치운 jar", ok: true, detail: d.join("\n"), warn: false });
     }
     // SVN 쓰기를 켠 서버만 — 끈 서버는 svn.exe 가 없어도 된다
     if s.vcs.write && vcs_kinds(s).contains(&"svn") {
@@ -1043,6 +1077,8 @@ fn snapshot(app: &AppHandle) -> Snapshot {
         .map(|(n, s)| {
             let r = rt(app, n);
             let i = r.inner.lock().unwrap();
+            let dups = jarcheck::duplicates(&own_lib(&s.project), Path::new(&s.deps_dir));
+            let dedup = dedup_snap(s, &dups);
             ServerSnap {
                 id: s.id.clone(),
                 name: s.name.clone(),
@@ -1067,7 +1103,7 @@ fn snapshot(app: &AppHandle) -> Snapshot {
                 last_compile: i.last_compile.clone(),
                 restart_needed: i.restart_needed.clone(),
                 deps_busy: r.deps_busy.load(Ordering::Relaxed),
-                checks: server_checks(&c, s, r),
+                checks: server_checks(&c, s, r, &dups, &dedup.aside),
                 java: s.java.clone(),
                 java_label: java_label(&plain_java(&c, s)),
                 eclipse_java: s.eclipse_java.clone(),
@@ -1084,6 +1120,7 @@ fn snapshot(app: &AppHandle) -> Snapshot {
                     Err(e) => e,
                 },
                 svn_block: svn_block(s),
+                dedup,
             }
         })
         .collect();
@@ -3012,7 +3049,71 @@ fn refresh_deps_blocking(app: &AppHandle, i: usize) -> bool {
     // 상주 컴파일러는 jar 목록을 들고 있다. 바뀐 jar 를 보도록 내려 두고 다음 저장 때 새로 띄운다.
     stop_daemon(app, "");
     log(app, Some(i), "deps", "ok", format!("의존 jar {jars}개로 바꿨습니다. 다음 시작부터 씁니다."));
+    redo_dedup(app, Some(i), &sv);
     true
+}
+
+// 「겹친 판 치우기」를 켠 서버는 의존 jar 를 새로 채운 뒤 같은 규칙으로 다시 치운다 — 폴더가 통째로 갈려 치운 판이 되살아나기 때문이다.
+// 옛 deps.dup 는 지난 폴더에서 치운 사본이라 비우고 새로 채운다.
+fn redo_dedup(app: &AppHandle, i: Option<usize>, sv: &ServerCfg) {
+    if !sv.deps_dedup {
+        return;
+    }
+    let deps = Path::new(&sv.deps_dir);
+    let _ = fs::remove_dir_all(jarcheck::aside_dir(deps));
+    match jarcheck::sweep(&own_lib(&sv.project), deps) {
+        Ok(0) => {}
+        Ok(n) => log(app, i, "deps", "ok", format!("{} 같은 jar 다른 판 {n}개를 다시 치웠습니다 (deps.dup).", sv.name)),
+        Err(e) => log(app, i, "deps", "err", format!("{} 같은 jar 다른 판을 다시 치우지 못했습니다: {e}", sv.name)),
+    }
+}
+
+// 치우기 · 되돌리기는 jar 를 옮기므로 톰캣이 꺼져 있고 받는 중이 아닐 때만
+fn dedup_ready(app: &AppHandle, srv: usize) -> Result<ServerCfg, String> {
+    check_srv(app, srv)?;
+    let (r, sv) = (rt(app, srv), cfgs(app, srv).1);
+    if r.inner.lock().unwrap().status != Status::Stopped {
+        return Err(format!("{} 톰캣을 끈 뒤에 하세요. 실행 중에는 jar 가 잠겨 옮길 수 없습니다.", sv.name));
+    }
+    if r.deps_busy.load(Ordering::SeqCst) {
+        return Err(format!("{} 의존 jar 를 받는 중입니다. 끝난 뒤에 하세요.", sv.name));
+    }
+    Ok(sv)
+}
+
+fn set_dedup(app: &AppHandle, srv: usize, on: bool) -> Result<(), String> {
+    let mut c = shared(app).cfg.lock().unwrap();
+    c.servers[srv].deps_dedup = on;
+    save_config(&c).map_err(|e| format!("설정을 저장하지 못했습니다: {e}"))
+}
+
+#[tauri::command]
+fn dedup_deps(app: AppHandle, srv: usize) -> Result<String, String> {
+    let sv = dedup_ready(&app, srv)?;
+    let n = jarcheck::sweep(&own_lib(&sv.project), Path::new(&sv.deps_dir))?;
+    set_dedup(&app, srv, true)?;
+    // 상주 컴파일러가 치운 jar 를 classpath 에 들고 있다
+    stop_daemon(&app, "");
+    emit_state(&app);
+    let msg = if n == 0 {
+        format!("{} 의존 jar 쪽에서 치울 판이 없습니다. 남은 겹침은 프로젝트 WEB-INF/lib 에서 지워야 합니다.", sv.name)
+    } else {
+        format!("{} 같은 jar 다른 판 {n}개를 deps.dup 로 치웠습니다 · 다음 시작부터 한 판만 올라갑니다.", sv.name)
+    };
+    log(&app, Some(srv), "deps", "ok", msg.clone());
+    Ok(msg)
+}
+
+#[tauri::command]
+fn undo_dedup(app: AppHandle, srv: usize) -> Result<String, String> {
+    let sv = dedup_ready(&app, srv)?;
+    let n = jarcheck::restore(Path::new(&sv.deps_dir))?;
+    set_dedup(&app, srv, false)?;
+    stop_daemon(&app, "");
+    emit_state(&app);
+    let msg = format!("{} 치운 jar {n}개를 의존 jar 폴더로 돌려놓았습니다 · 다시 받아도 치우지 않습니다.", sv.name);
+    log(&app, Some(srv), "deps", "ok", msg.clone());
+    Ok(msg)
 }
 
 /* ---------- 화면 명령 ---------- */
@@ -3459,7 +3560,7 @@ fn import_servers(app: &AppHandle, picked: &[eclipse::EServer], naming: bool) ->
             sv.java = es.java.clone();
             sv.eclipse_java = es.java.clone();
         }
-        if !es.lib_dir.is_empty() { jobs.push((sv.name.clone(), es.lib_dir.clone(), es.project.clone(), PathBuf::from(&sv.deps_dir))); }
+        if !es.lib_dir.is_empty() { jobs.push((sv.clone(), es.lib_dir.clone())); }
         let movable = es.naming_full.iter().filter(|e| e.movable()).count();
         // 다시 가져오면 새로 읽은 것으로 덮는다 — {base} 는 이 서버의 톰캣 설정 폴더
         sv.eclipse_warnings = es.server_warnings.iter().map(|w| w.replace("{base}", &sv.catalina_base)).collect();
@@ -3478,12 +3579,14 @@ fn import_servers(app: &AppHandle, picked: &[eclipse::EServer], naming: bool) ->
     *shared(app).cfg.lock().unwrap() = c;
     start_watchers(app);
     let mut notes = Vec::new();
-    for (name, lib, project, deps) in jobs {
-        match eclipse::copy_deps(&lib, &project, &deps) {
+    for (sv, lib) in jobs {
+        let (name, deps) = (&sv.name, PathBuf::from(&sv.deps_dir));
+        match eclipse::copy_deps(&lib, &sv.project, &deps) {
             Ok(n) => {
                 let _ = fs::write(deps.join(STAMP_FILE), now_ms().to_string());
                 log(app, None, "app", "ok", format!("{name} 의존 jar {n}개를 이클립스 배포본에서 옮겼습니다."));
                 notes.push(format!("{name} jar {n}개"));
+                redo_dedup(app, None, &sv);
             }
             Err(e) => {
                 log(app, None, "app", "err", format!("{name} {e}"));
@@ -3552,9 +3655,10 @@ fn auto_deps_blocking(app: &AppHandle, i: usize) -> Result<String, String> {
         let n = eclipse::copy_deps(&es.lib_dir, &es.project, Path::new(&sv.deps_dir))?;
         let _ = fs::write(Path::new(&sv.deps_dir).join(STAMP_FILE), now_ms().to_string());
         stop_daemon(app, "");
-        emit_state(app);
         let msg = format!("{} 의존 jar {n}개를 이클립스 배포본에서 옮겼습니다.", sv.name);
         log(app, Some(i), "deps", "ok", msg.clone());
+        redo_dedup(app, Some(i), &sv);
+        emit_state(app);
         return Ok(msg);
     }
     if Path::new(&sv.project).join("pom.xml").is_file() {
@@ -4619,7 +4723,7 @@ fn main() {
             git_status, git_diff, git_incoming, git_log, git_rev_diff,
             vcs_commit, vcs_update, vcs_revert, vcs_resolve, vcs_revert_revision, vcs_blame, vcs_conflict, vcs_conflict_diff, set_vcs, set_paths, set_server, add_server, pick_project,
             vcs_fetch, vcs_push, git_outgoing, gen_commit_msg, check_commit_msg,
-            update_check, update_install, changelog, eclipse_scan, eclipse_import, quick_project, pick_dir, auto_deps
+            update_check, update_install, changelog, eclipse_scan, eclipse_import, quick_project, pick_dir, auto_deps, dedup_deps, undo_dedup
         ])
         .run(tauri::generate_context!())
         .expect("실행기를 띄우지 못했습니다");
