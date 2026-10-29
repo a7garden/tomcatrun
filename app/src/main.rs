@@ -13,7 +13,7 @@
 // 반영 경로
 //   JSP · JS · CSS              소스 폴더를 그대로 읽으므로 저장하면 끝
 //   매퍼 XML                    앱이 묶음 전체를 다시 해석한다 (2~3초) · 「매퍼 하나만 다시 읽기」를 켜면 HotswapAgent 가 그 파일만
-//   자바                        저장 → 감시 → 상주 컴파일러(ECJ · 바뀐 파일만) → HotswapAgent 가 실행 중인 JVM 에 교체
+//   자바                        저장 → 감시 → 상주 컴파일러(ECJ · 바뀐 파일만 · 켜져 있으면 임시 폴더에 모아 한 번에 내놓는다) → HotswapAgent 가 실행 중인 JVM 에 교체
 //                               → 빈 클래스면 Spring 이 빈을 다시 등록하고 URL 매핑을 새로 만든다 (컨트롤러는 7~10초 · JavaWait)
 //                               상수 값 · 시그니처가 바뀌면 쓰는 소스도 컴파일한다 (classapi.rs) · 지운 소스의 클래스는 지운다
 //   Spring 설정 · web.xml 등    기동 때만 읽는다 → 「재시작해야 반영」 목록에 올린다
@@ -223,7 +223,7 @@ struct Config {
     mapper_hotswap: bool, // 바뀐 매퍼 하나만 다시 읽는다 (실험 · HotswapAgent MyBatis 플러그인)
     keep_session: bool,   // 재시작해도 로그인 유지 (톰캣 기본값과 같다)
     profile_start: bool,  // 기동 표본 — 켜는 동안 2초마다 스레드를 떠서 어디서 시간을 쓰는지 남긴다 (start_sampler)
-    update_check: bool,   // 켤 때 · 6시간마다 GitHub 릴리스에서 새 판을 확인한다
+    update_check: bool,   // 켤 때 · 1시간마다 · 창으로 돌아올 때 GitHub 릴리스에서 새 판을 확인한다 (update_loop)
     tld_scan: String,     // TLD 를 찾을 jar (쉼표로 · 비우면 모든 jar) — server.xml 의 JarScanFilter
     ignore: Vec<String>,  // 저장 감시에서 뺄 파일 · 폴더 · 모든 서버 공통 · 프로젝트 기준 (「폴더/」 · 「*.sql」 · 「src/**/tmp」 꼴 · ignored() 참고)
     servers: Vec<ServerCfg>,
@@ -613,11 +613,17 @@ struct SvnGet {
 #[serde(rename_all = "camelCase")]
 struct UpdateState {
     release: Option<update::Release>, // 이 판보다 새 판이 있으면
+    building: Option<String>,         // 새 판의 태그는 달렸는데 설치 파일이 아직 없다 (릴리스 빌드 중)
     installable: bool,                // 설치본이라 실행기 안에서 설치까지 할 수 있다
     checking: bool,
     checked_at_ms: Option<u64>,
+    next_at_ms: u64,                  // 다음 자동 확인 (0 이면 곧)
     downloading: Option<u64>,         // 받은 바이트
     error: Option<String>,
+    #[serde(skip)]
+    fails: u32,                       // 연달아 실패 · 빌드 중이었던 횟수 — 다시 묻는 간격을 늘린다
+    #[serde(skip)]
+    etag: Option<String>,             // 지난 응답의 ETag — 실행기를 다시 켜면 비어 처음부터 묻는다
 }
 
 /// 상주 컴파일러 (helper/TomcatrunCompiler) — 띄워 둔 채 저장마다 일을 준다
@@ -2281,7 +2287,7 @@ fn upgrade_server_xml(file: &Path, tpl_xml: &str) -> Result<Option<String>, Stri
         return Ok(None);
     }
     Ok(Some(format!(
-        "{} 가 실행기 원본과 달라(직접 고쳤거나 더 옛 판의 복사본) 바꾸지 않았습니다. 「설정 › 서버」의 {} 가 이 서버에 들어가지 않습니다 — 쓰려면 그 파일에 {} 를 적거나, 파일을 지우고 다시 시작해 원본을 복사하게 하세요.",
+        "{} 가 실행기 원본과 달라(직접 고쳤거나 더 옛 판의 복사본) 바꾸지 않았습니다. 「설정 › 서버」의 {} 가 이 서버에 들어가지 않습니다. 쓰려면 그 파일에 {} 를 적거나, 파일을 지우고 다시 시작해 원본을 복사하게 하세요.",
         p(file),
         missing.iter().map(|m| m.2).collect::<Vec<_>>().join(" · "),
         missing.iter().map(|m| m.1.trim_start_matches("<Context ")).collect::<Vec<_>>().join(" · ")
@@ -2824,10 +2830,24 @@ fn run_compile(app: &AppHandle, i: usize, full: bool) -> Option<CompileResult> {
         let _ = fs::remove_dir_all(&classes);
     }
     let _ = fs::create_dir_all(&classes);
+    // 2026.10.29 : 켜져 있으면 임시 폴더에 컴파일하고 「컴파일 더함」까지 끝난 뒤 한 번에 내놓는다 (publish_classes).
+    //              단계마다 classes 에 바로 쓰면 HotswapAgent 가 100ms 창을 넘긴 단계마다 따로 교체하고, 그때마다 Spring 이
+    //              빈을 다시 등록했다 — 한 번 저장에 교체 4번 · 빈 등록 5번 · 6초 (같은 날 로그). 사이에는 인터페이스만 새 판인 채 돌았다.
+    let stage = (!stopped).then(|| stage_dir(&sv.classes_dir));
+    if let Some(s) = &stage {
+        let _ = fs::remove_dir_all(s);
+        let _ = fs::create_dir_all(s);
+    }
+    let out = stage.clone().unwrap_or_else(|| classes.clone());
+    let out_dir = p(&out);
 
     let argfile = Path::new(&sv.catalina_base).join("temp/javac-files.txt");
     let _ = fs::create_dir_all(argfile.parent().unwrap());
-    let cp = build_cp(&cfg, &sv);
+    // 임시 폴더를 맨 앞에 — 다음 단계 컴파일이 앞 단계가 만든 새 시그니처를 본다 (바로 쓸 때 classes 에서 보던 것과 같다)
+    let cp = match &stage {
+        Some(s) => format!("{};{}", p(s), build_cp(&cfg, &sv)),
+        None => build_cp(&cfg, &sv),
+    };
     // 핫리로드로 켜져 있으면 교체 → Spring 반영까지 지켜본다. 교체 줄이 컴파일 완료보다 먼저 올 수 있어 컴파일 전에 건다.
     let wait_id = {
         let mut inner = r.inner.lock().unwrap();
@@ -2852,11 +2872,11 @@ fn run_compile(app: &AppHandle, i: usize, full: bool) -> Option<CompileResult> {
         // javac 인자 파일 안에서 역슬래시는 이스케이프로 읽히므로 / 로 적는다
         let _ = fs::write(&argfile, list.iter().map(|f| format!("\"{}\"\n", p(f))).collect::<String>());
         // 띄워 둔 상주 컴파일러가 먼저다. 없거나 응답이 없으면 javac 를 새로 띄워 같은 일을 한다.
-        let request = compile_request(&sv.classes_dir, &cp, &argfile, &sv);
+        let request = compile_request(&out_dir, &cp, &argfile, &sv);
         match daemon_call(app, &request, &on_diag) {
             Some((ok, errors)) => (ok, errors, format!("상주 {}", app.state::<Shared>().daemon_kind.lock().unwrap())),
             None => {
-                let (ok, errors) = javac_process(app, i, &cfg, &sv, &cp, &argfile);
+                let (ok, errors) = javac_process(app, i, &cfg, &sv, &out_dir, &cp, &argfile);
                 (ok, errors, "javac 프로세스".to_string())
             }
         }
@@ -2872,7 +2892,8 @@ fn run_compile(app: &AppHandle, i: usize, full: bool) -> Option<CompileResult> {
         if !ok || full {
             break;
         }
-        let shapes = classapi::changed(&before, &classapi::snapshot(&classes, &rels(&round)));
+        // 앞 모양은 앱에 올라가 있는 classes, 뒤 모양은 방금 만든 out(임시 폴더면 거기)에서 읽는다
+        let shapes = classapi::changed(&before, &classapi::snapshot(&out, &rels(&round)));
         let skip: HashSet<PathBuf> = compiled.iter().cloned().collect();
         let users = classapi::users(&src, &shapes, &skip);
         if users.is_empty() {
@@ -2887,6 +2908,21 @@ fn run_compile(app: &AppHandle, i: usize, full: bool) -> Option<CompileResult> {
         round = users;
     }
     let files = compiled;
+    // 실패해도 만들어진 것은 내놓는다 — 바로 쓸 때도 오류 없는 소스의 클래스는 classes 에 남아 교체됐다
+    let mut published = true;
+    let mut publish_note = String::new();
+    if let Some(s) = &stage {
+        let t = Instant::now();
+        match publish_classes(s, &classes) {
+            Ok(n) => publish_note = format!(" · 내놓기 {n}개 {}ms", t.elapsed().as_millis()),
+            Err(e) => {
+                published = false;
+                log(app, Some(i), "compile", "err", format!("컴파일한 클래스를 내놓지 못했습니다 ({e}). 다음 저장 때 다시 컴파일합니다."));
+            }
+        }
+    }
+    // 내놓지 못했으면 스탬프를 남기지 않는다 — 다음 저장 때 같은 파일이 다시 잡힌다
+    let ok = ok && published;
     if let Some(id) = wait_id {
         let mut inner = r.inner.lock().unwrap();
         if !ok && inner.java_wait.as_ref().map_or(false, |w| w.id == id) {
@@ -2924,7 +2960,7 @@ fn run_compile(app: &AppHandle, i: usize, full: bool) -> Option<CompileResult> {
                 add_pending(app, i, rel_to(&sv.project, f), "일반 모드라 자바는 재시작해야 들어감");
             }
         }
-        log(app, Some(i), "compile", "ok", format!("컴파일 완료 · {}개 · {secs:.1}초 (바뀐 파일 찾기 {find_ms}ms · {via}){tail}", result.files));
+        log(app, Some(i), "compile", "ok", format!("컴파일 완료 · {}개 · {secs:.1}초 (바뀐 파일 찾기 {find_ms}ms · {via}{publish_note}){tail}", result.files));
     } else {
         log(app, Some(i), "compile", "err", format!("컴파일 실패 · 오류 {}개 · {secs:.1}초 · 오류 줄을 누르면 편집기로 엽니다", result.errors));
     }
@@ -2939,6 +2975,55 @@ fn run_compile(app: &AppHandle, i: usize, full: bool) -> Option<CompileResult> {
 
 fn build_cp(cfg: &Config, sv: &ServerCfg) -> String {
     format!("{};{}/*;{}/src/main/webapp/WEB-INF/lib/*;{}/lib/*", sv.classes_dir, sv.deps_dir, sv.project, cfg.tomcat_home)
+}
+
+// 켜진 서버의 컴파일 임시 폴더 — classes 의 형제라 같은 드라이브이고, 앱 클래스패스 · HotswapAgent 감시 밖이다
+fn stage_dir(classes_dir: &str) -> PathBuf {
+    PathBuf::from(format!("{}.stage", classes_dir.trim_end_matches(['/', '\\'])))
+}
+
+// 임시 폴더의 클래스 파일을 classes 의 같은 자리에 덮어쓴다. 돌려주는 값은 내놓은 파일 수.
+// 이름 바꾸기가 아니라 덮어쓰기다 — ECJ 가 바로 쓸 때와 같은 「바뀜 · 생김」 이벤트만 HotswapAgent 에 가게 한다.
+// classes 의 다른 파일은 건드리지 않는다 (지운 안쪽 클래스가 남는 것도 바로 쓸 때와 같다).
+fn publish_classes(stage: &Path, classes: &Path) -> Result<usize, String> {
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+        let Ok(rd) = fs::read_dir(dir) else { return };
+        for e in rd.filter_map(Result::ok) {
+            let path = e.path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else {
+                out.push(path);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    walk(stage, &mut files);
+    // 다 읽어 둔 뒤 한꺼번에 쓴다 — 쓰는 사이가 짧아야 HotswapAgent 의 100ms 창 하나에 든다
+    let mut items = Vec::with_capacity(files.len());
+    for f in &files {
+        let rel = f.strip_prefix(stage).map_err(|e| e.to_string())?;
+        let bytes = fs::read(f).map_err(|e| format!("{} 읽기: {e}", p(f)))?;
+        items.push((classes.join(rel), bytes));
+    }
+    for (target, bytes) in &items {
+        if let Some(dir) = target.parent() {
+            let _ = fs::create_dir_all(dir);
+        }
+        // 백신 등이 잠깐 잡고 있으면 실패한다 — 0.2초 간격으로 세 번까지
+        let mut tries = 0;
+        loop {
+            match fs::write(target, bytes) {
+                Ok(()) => break,
+                Err(_) if tries < 2 => {
+                    tries += 1;
+                    thread::sleep(Duration::from_millis(200));
+                }
+                Err(e) => return Err(format!("{} 쓰기: {e}", p(target))),
+            }
+        }
+    }
+    Ok(items.len())
 }
 
 fn javac_encoding(sv: &ServerCfg) -> &str {
@@ -3081,14 +3166,14 @@ fn daemon_call(app: &AppHandle, request: &str, mut on_diag: impl FnMut(String)) 
     }
 }
 
-fn javac_process(app: &AppHandle, i: usize, cfg: &Config, sv: &ServerCfg, cp: &str, argfile: &Path) -> (bool, usize) {
+fn javac_process(app: &AppHandle, i: usize, cfg: &Config, sv: &ServerCfg, out_dir: &str, cp: &str, argfile: &Path) -> (bool, usize) {
     // -g : Spring 이 @RequestParam 이름을 지역 변수 정보에서 읽는다. 빼면 이름 없는 파라미터가 깨진다.
     // -encoding · -parameters 는 서버 설정 (상주 컴파일러에 싣는 것과 같다 — compile_request)
     let out = Command::new(&cfg.javac)
         .args(["-nowarn", "-g", "-encoding", javac_encoding(sv), "-source", "1.8", "-target", "1.8", "-implicit:none", "-sourcepath", ""])
         .args(sv.parameters.then_some("-parameters"))
         .arg("-d")
-        .arg(&sv.classes_dir)
+        .arg(out_dir)
         .arg("-cp")
         .arg(cp)
         .arg(format!("@{}", p(argfile)))
@@ -3760,6 +3845,14 @@ fn quit_then(app: AppHandle, after: impl FnOnce(&AppHandle) + Send + 'static) {
         log(&app, None, "app", "", "창을 닫기 전에 톰캣을 끕니다.");
     }
     thread::spawn(move || {
+        // 2026-10-29 : svn 이 쓰는 도중 실행기가 끝나면 svn 도 출력을 잃고 멈춰 작업복사본에 잠금이 남는다 — 끝나기를 기다린다
+        if any_vcs_busy(&app) {
+            log(&app, None, "app", "", "버전 관리 작업이 끝나기를 기다린 뒤 닫습니다.");
+            let _ = app.emit("toast", "버전 관리 작업이 끝나기를 기다린 뒤 닫습니다.");
+            while any_vcs_busy(&app) {
+                thread::sleep(Duration::from_millis(200));
+            }
+        }
         let hs: Vec<_> = running
             .into_iter()
             .map(|i| {
@@ -4139,7 +4232,7 @@ fn import_servers(app: &AppHandle, picked: &[eclipse::EServer], naming: bool) ->
         sv.parameters = es.parameters;
         let mut compile_note = format!("{} 자바 컴파일 옵션: {}", sv.name, opts_label(sv));
         if es.encoding_unset {
-            compile_note.push_str(" — 이클립스 설정에 소스 인코딩이 없어 UTF-8 로 둡니다. 한글이 깨지면 설정 › 서버 › 소스 인코딩을 MS949 로 바꾸세요");
+            compile_note.push_str(" · 이클립스 설정에 소스 인코딩이 없어 UTF-8 로 둡니다. 한글이 깨지면 설정 › 서버 › 소스 인코딩을 MS949 로 바꾸세요");
         }
         log(app, None, "app", if es.encoding_unset { "warn" } else { "" }, compile_note);
         for a in &es.jvm_args {
@@ -4160,7 +4253,7 @@ fn import_servers(app: &AppHandle, picked: &[eclipse::EServer], naming: bool) ->
         } else {
             skipped += movable;
             if movable > 0 {
-                sv.eclipse_warnings.push(format!("이클립스 서버에 DB 연결(JNDI) 설정 {movable}개가 있는데 옮기지 않았습니다 — 설정 › 서버 › 이클립스에서 가져오기에서 「JNDI 설정 {movable}개도 옮기기」를 켜고 다시 가져오세요"));
+                sv.eclipse_warnings.push(format!("이클립스 서버에 DB 연결(JNDI) 설정 {movable}개가 있는데 옮기지 않았습니다. 설정 › 서버 › 이클립스에서 가져오기에서 「JNDI 설정 {movable}개도 옮기기」를 켜고 다시 가져오세요"));
             }
         }
         warned += es.warnings.len();
@@ -4256,7 +4349,7 @@ fn auto_deps_blocking(app: &AppHandle, i: usize) -> Result<String, String> {
         refresh_deps(app.clone(), i)?;
         return Ok(format!("{} 의존 jar 를 Maven 으로 받는 중입니다 (빌드 탭). 끝나면 알려 드립니다.", sv.name));
     }
-    Err(format!("{} 의존 jar 를 채울 곳이 없습니다 — 이클립스 배포본도 pom.xml 도 없습니다. src/main/webapp/WEB-INF/lib 의 jar 만 씁니다.", sv.name))
+    Err(format!("{} 의존 jar 를 채울 곳이 없습니다. 이클립스 배포본도 pom.xml 도 없습니다. src/main/webapp/WEB-INF/lib 의 jar 만 씁니다.", sv.name))
 }
 
 #[tauri::command]
@@ -4343,44 +4436,80 @@ async fn pick_dir(app: AppHandle, title: String) -> Result<Option<String>, Strin
 
 /* ---------- 업데이트 ---------- */
 
+// 2026.10.29 : 6시간 → 1시간. 하루에 판이 여럿 나오는 날, 켜 둔 실행기가 「지금 확인」을 눌러야 새 판을 알았다
+const UPDATE_EVERY_MS: u64 = 3600 * 1000;
+// 창으로 돌아올 때 마지막 확인이 이보다 오래됐으면 다시 묻는다 — 창을 오갈 때마다 묻지 않게
+const UPDATE_FOCUS_MS: u64 = 10 * 60 * 1000;
+
 // 확인은 조용히 한다 — 회사망에서 GitHub 에 닿지 않을 수 있으므로 실패는 설정 › 업데이트에만 보이고 알림 줄에 올리지 않는다
+// 실패하거나 새 판이 빌드 중이면 1시간을 기다리지 않고 5분부터 늘려 가며 다시 묻는다 (켤 때 VPN 이 아직 안 붙은 경우 · 태그 직후)
 fn check_update(app: &AppHandle) {
-    {
+    let etag = {
         let mut u = shared(app).update.lock().unwrap();
         if u.checking || u.downloading.is_some() {
             return;
         }
         u.checking = true;
         u.error = None;
-    }
+        u.etag.clone()
+    };
     emit_state(app);
-    let r = update::check();
+    let r = update::check(etag.as_deref());
     {
         let mut u = shared(app).update.lock().unwrap();
+        let now = now_ms();
         u.checking = false;
-        u.checked_at_ms = Some(now_ms());
+        u.checked_at_ms = Some(now);
         u.installable = update::installable(&home_dir());
         match r {
-            Ok(rel) => {
-                if let Some(x) = &rel {
-                    log(app, None, "app", "", format!("새 판이 있습니다: {} (지금 {})", x.version, env!("CARGO_PKG_VERSION")));
+            Ok((latest, tag)) => {
+                if tag.is_some() {
+                    u.etag = tag;
                 }
-                u.release = rel;
+                match latest {
+                    update::Latest::NotModified => {}
+                    update::Latest::Current => (u.release, u.building) = (None, None),
+                    update::Latest::Building(v) => (u.release, u.building) = (None, Some(v)),
+                    update::Latest::Ready(rel) => {
+                        // 같은 새 판을 확인할 때마다 남기지 않는다
+                        if u.release.as_ref().map(|x| &x.version) != Some(&rel.version) {
+                            log(app, None, "app", "", format!("새 판이 있습니다: {} (지금 {})", rel.version, env!("CARGO_PKG_VERSION")));
+                        }
+                        (u.release, u.building) = (Some(rel), None);
+                    }
+                }
+                u.fails = if u.building.is_some() { u.fails + 1 } else { 0 };
             }
-            Err(e) => u.error = Some(e),
+            Err(e) => {
+                u.error = Some(e);
+                u.fails += 1;
+            }
         }
+        u.next_at_ms = now + if u.fails > 0 { update::retry_after(u.fails) } else { UPDATE_EVERY_MS };
     }
     emit_state(app);
 }
 
-// 켠 뒤 30초, 그 뒤 6시간마다 (설정에서 끌 수 있다)
+// 켠 뒤 30초에 한 번, 그 뒤로는 1분마다 깨어 다음 확인 시각(next_at_ms)이 지났는지 본다 (설정에서 끌 수 있다).
+// 2026.10.29 : 6시간을 통째로 thread::sleep 하던 것을 바꿨다. Windows 의 Sleep 은 절전 동안의 시간을 세지 않아
+// 노트북을 덮었다 열면 다음 확인이 그만큼 밀렸다. 벽시계(now_ms)로 재면 깨어난 뒤 1분 안에 밀린 확인을 한다.
 fn update_loop(app: AppHandle) {
     thread::sleep(Duration::from_secs(30));
     loop {
-        if app.state::<Shared>().cfg.lock().unwrap().update_check {
+        let due = shared(&app).update.lock().unwrap().next_at_ms <= now_ms();
+        if due && shared(&app).cfg.lock().unwrap().update_check {
             check_update(&app);
         }
-        thread::sleep(Duration::from_secs(6 * 3600));
+        thread::sleep(Duration::from_secs(60));
+    }
+}
+
+// 창으로 돌아오면 — 일하다 실행기를 다시 볼 때가 새 판 알림이 쓸모 있는 때다. 켠 직후(아직 확인 전)는 update_loop 에 맡긴다
+fn update_on_focus(app: &AppHandle) {
+    let stale = shared(app).update.lock().unwrap().checked_at_ms.is_some_and(|t| now_ms().saturating_sub(t) > UPDATE_FOCUS_MS);
+    if stale && shared(app).cfg.lock().unwrap().update_check {
+        let app = app.clone();
+        thread::spawn(move || check_update(&app));
     }
 }
 
@@ -4502,7 +4631,16 @@ fn reveal(path: String) {
 async fn svn_status(app: AppHandle, srv: usize) -> Result<svn::Status, String> {
     check_srv(&app, srv)?;
     let wc = PathBuf::from(vcs_root(&cfgs(&app, srv).1));
-    tauri::async_runtime::spawn_blocking(move || svn::status(&wc)).await.map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut st = svn::status(&wc)?;
+        // 잠금이 남아 있을 때만 — 누가 쥐고 있을지 화면이 함께 말한다
+        if !st.locks.is_empty() {
+            st.other_svn = other_svn_programs();
+        }
+        Ok(st)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -4759,6 +4897,12 @@ impl Drop for VcsBusy {
 }
 
 fn vcs_begin(app: &AppHandle, srv: usize, kind: &str) -> Result<(ServerCfg, PathBuf, VcsBusy), String> {
+    vcs_begin_with(app, srv, kind, true)
+}
+
+// locks : 작업복사본 잠금이 남아 있으면 svn 을 부르기 전에 멈춘다. 부르면 E155004 로 실패하는데, 그 전에 add · delete 가 반쯤 돌 수 있다.
+// Cleanup 만 잠금을 풀려고 부르므로 false 로 건너뛴다.
+fn vcs_begin_with(app: &AppHandle, srv: usize, kind: &str, locks: bool) -> Result<(ServerCfg, PathBuf, VcsBusy), String> {
     check_srv(app, srv)?;
     let s = cfgs(app, srv).1;
     if !s.vcs.write {
@@ -4771,6 +4915,10 @@ fn vcs_begin(app: &AppHandle, srv: usize, kind: &str) -> Result<(ServerCfg, Path
         if let Some(why) = svn_block(&s) {
             return Err(why);
         }
+        let held = svn::wc_locks(Path::new(&vcs_root(&s)));
+        if locks && !held.is_empty() {
+            return Err(locked_msg(&held));
+        }
     }
     let r = rt(app, srv);
     if r.vcs_busy.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
@@ -4778,6 +4926,57 @@ fn vcs_begin(app: &AppHandle, srv: usize, kind: &str) -> Result<(ServerCfg, Path
     }
     let root = PathBuf::from(vcs_root(&s));
     Ok((s, root.clone(), VcsBusy { app: app.clone(), srv, root }))
+}
+
+// 잠금이 남은 폴더와, 그것을 쥐고 있을지 모르는 다른 SVN 프로그램
+fn locked_msg(held: &[String]) -> String {
+    let others = other_svn_programs();
+    let who = if others.is_empty() {
+        "쓰는 SVN 프로그램이 없다면 끊긴 작업이 남긴 잠금입니다.".to_string()
+    } else {
+        format!("켜져 있는 SVN 프로그램: {}. 그쪽 SVN 작업이 끝났는지 보거나 닫은 뒤", others.join(" · "))
+    };
+    format!("{}작업복사본이 잠겨 있습니다 ({}). {who} Cleanup 하면 풀립니다.", svncli::LOCKED, held.join(", "))
+}
+
+// 같은 작업복사본을 잠글 수 있는 다른 SVN 프로그램 — Eclipse 의 Subversive · Subclipse(SVNKit)는 svn.exe 없이 wc.db 를 직접 잠근다
+// 2026-10-29 : 남은 잠금을 쥔 것이 켜 둔 Eclipse 였다. 프로세스 이름만 보므로 Eclipse 에 SVN 플러그인이 없어도 이름이 나온다.
+fn other_svn_programs() -> Vec<String> {
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+    };
+    const KNOWN: [(&str, &str); 4] = [("eclipse.exe", "Eclipse"), ("sts.exe", "STS"), ("TortoiseProc.exe", "TortoiseSVN"), ("svn.exe", "다른 svn")];
+    let mut found: Vec<String> = Vec::new();
+    unsafe {
+        let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snap == INVALID_HANDLE_VALUE {
+            return found;
+        }
+        let mut e: PROCESSENTRY32W = std::mem::zeroed();
+        e.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+        if Process32FirstW(snap, &mut e) != 0 {
+            loop {
+                let len = e.szExeFile.iter().position(|&c| c == 0).unwrap_or(e.szExeFile.len());
+                let name = String::from_utf16_lossy(&e.szExeFile[..len]);
+                for (exe, label) in KNOWN {
+                    if name.eq_ignore_ascii_case(exe) && !found.iter().any(|f| f == label) {
+                        found.push(label.to_string());
+                    }
+                }
+                if Process32NextW(snap, &mut e) == 0 {
+                    break;
+                }
+            }
+        }
+        CloseHandle(snap);
+    }
+    found
+}
+
+// 쓰기 중인 서버가 하나라도 있는가 — 닫기 · 업데이트 설치가 끝나기를 기다린다
+fn any_vcs_busy(app: &AppHandle) -> bool {
+    (0..rt_count(app)).any(|i| rt(app, i).vcs_busy.load(Ordering::SeqCst))
 }
 
 fn svn_cli(s: &ServerCfg, wc: &Path) -> Result<svncli::Svn, String> {
@@ -4885,12 +5084,56 @@ async fn vcs_commit(app: AppHandle, srv: usize, kind: String, paths: Vec<String>
                 }
             }
         }
-        let rev = cli.commit(&msg, &targets, cred.as_ref()).map_err(web_err)?;
-        Ok(format!("Commit 했습니다 · {} · 파일 {}개", rev.map_or("리비전 모름".into(), |r| format!("r{r}")), targets.len()))
+        // 지운 폴더는 안쪽까지 한 번에 올려야 한다 (--depth empty 면 E200009). 그 아래 경로는 빼고 폴더 하나만 넘긴다.
+        // 깊이는 명령 하나에 하나뿐이라, 속성만 바꾼 기존 폴더(「.」 등)가 함께 있으면 그 안의 고르지 않은 변경까지 올라간다 — 나눠 올리게 한다.
+        let st = svn::status(&root)?;
+        let gone_dirs: Vec<String> =
+            st.items.iter().filter(|i| i.dir && i.code == "D" && targets.contains(&i.path)).map(|i| i.path.clone()).collect();
+        let deep = !gone_dirs.is_empty();
+        if deep {
+            let under = |p: &str| gone_dirs.iter().any(|d| p.starts_with(&format!("{d}/")));
+            targets.retain(|p| !under(p));
+            let shallow: Vec<&String> = targets
+                .iter()
+                .filter(|p| st.items.iter().any(|i| &i.path == *p && i.dir && i.code != "D" && i.code != "A"))
+                .collect();
+            if !shallow.is_empty() {
+                return Err(format!(
+                    "지운 폴더({})와 속성을 바꾼 폴더({})는 한 번에 Commit 할 수 없습니다. 둘을 나눠 Commit 하세요.",
+                    gone_dirs.join(", "),
+                    shallow.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+                ));
+            }
+        }
+        let rev = cli.commit(&msg, &targets, deep, cred.as_ref()).map_err(web_err)?;
+        match rev {
+            Some(r) => Ok(format!("Commit 했습니다 · r{r} · 파일 {}개", paths.len())),
+            None => Err("올라간 것이 없습니다. 고른 파일의 내용이 BASE 와 같습니다 (저장만 다시 했거나 고쳤다가 되돌린 파일).".into()),
+        }
     })
     .await
     .map_err(|e| e.to_string())?;
     vcs_record(&app, srv, "Commit", &r, |m| m.clone());
+    r
+}
+
+// 작업복사본 잠금 · 끊긴 작업만 푼다 (svn cleanup · 옵션 없음). 고친 파일 · 버전 관리 밖 파일은 건드리지 않는다.
+#[tauri::command]
+async fn vcs_cleanup(app: AppHandle, srv: usize) -> Result<String, String> {
+    let (s, root, busy) = vcs_begin_with(&app, srv, "svn", false)?;
+    let r = tauri::async_runtime::spawn_blocking(move || -> Result<String, String> {
+        let _busy = busy;
+        svn_cli(&s, &root)?.call(&svncli::cleanup_args(), None).map_err(web_err)?;
+        let left = svn::wc_locks(&root);
+        if left.is_empty() {
+            Ok("Cleanup 했습니다 · 잠금이 풀렸습니다".into())
+        } else {
+            Err(locked_msg(&left))
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    vcs_record(&app, srv, "Cleanup", &r, |m| m.clone());
     r
 }
 
@@ -5330,6 +5573,9 @@ fn main() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            if let WindowEvent::Focused(true) = event {
+                update_on_focus(window.app_handle());
+            }
             if let WindowEvent::CloseRequested { api, .. } = event {
                 // 2026-10-28 : 켜진 톰캣이 있으면 바로 끄지 않고 화면에 묻는다. 끄는 몇 초 동안 창이 그대로라 닫기가 안 먹은 것처럼 보였다.
                 // 제목 줄 단추 · Alt+F4 · 작업 표시줄 모두 여기로 온다. 확인하면 화면이 `quit` 를 부른다.
@@ -5341,6 +5587,10 @@ fn main() {
                     if !running.is_empty() {
                         api.prevent_close();
                         let _ = app.emit("close-ask", running);
+                    } else if any_vcs_busy(&app) {
+                        // 켜진 톰캣은 없지만 Commit · Update 가 도는 중 — 끝난 뒤 닫는다
+                        api.prevent_close();
+                        quit_then(app, |_| {});
                     }
                 }
             }
@@ -5349,7 +5599,7 @@ fn main() {
             get_state, start, stop, restart, quit, compile, refresh_deps, set_option, set_heap, set_compiler, set_ignore, open, reveal, open_source,
             svn_status, svn_diff, svn_account, svn_login, svn_logout, svn_incoming, svn_log, svn_rev_diff,
             git_status, git_diff, git_incoming, git_log, git_rev_diff,
-            vcs_commit, vcs_update, vcs_revert, vcs_resolve, vcs_revert_revision, vcs_blame, vcs_conflict, vcs_conflict_diff, set_vcs, set_paths, set_server, add_server, pick_project,
+            vcs_commit, vcs_update, vcs_cleanup, vcs_revert, vcs_resolve, vcs_revert_revision, vcs_blame, vcs_conflict, vcs_conflict_diff, set_vcs, set_paths, set_server, add_server, pick_project,
             vcs_fetch, vcs_push, git_outgoing, gen_commit_msg, check_commit_msg,
             update_check, update_install, svn_get, changelog, eclipse_scan, eclipse_import, quick_project, pick_dir, auto_deps, dedup_deps, undo_dedup, apply_scan_hint
         ])
@@ -5551,6 +5801,36 @@ mod tests {
         // 상주 컴파일러 요청 — 옛 네 칸 뒤에 인코딩 · -parameters
         let req = compile_request("C:/c", "C:/c;D:/d/*", Path::new("C:/t/args.txt"), &sv);
         assert_eq!(req, "COMPILE\tC:/c\tC:/c;D:/d/*\tC:/t/args.txt\tMS949\ttrue");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 내놓기는_바이트를_그대로_덮어쓰고_다른_클래스는_두다() {
+        let dir = std::env::temp_dir().join(format!("tomcatrun-publish-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let classes = dir.join("classes");
+        let stage = stage_dir(&format!("{}/", p(&classes)));
+        assert_eq!(stage, dir.join("classes.stage"));
+        fs::create_dir_all(classes.join("a/b")).unwrap();
+        fs::write(classes.join("a/b/C.class"), b"old").unwrap();
+        fs::write(classes.join("a/b/C$3.class"), b"gone-in-source").unwrap();
+        fs::write(classes.join("a/b/D.class"), b"untouched").unwrap();
+        fs::create_dir_all(stage.join("a/b")).unwrap();
+        fs::create_dir_all(stage.join("a/n")).unwrap();
+        fs::write(stage.join("a/b/C.class"), [0xCA, 0xFE, 0xBA, 0xBE, 0, 1]).unwrap();
+        fs::write(stage.join("a/n/New.class"), b"new").unwrap();
+        // 내놓기 전에는 classes 가 그대로다
+        assert_eq!(fs::read(classes.join("a/b/C.class")).unwrap(), b"old");
+        assert_eq!(publish_classes(&stage, &classes), Ok(2));
+        assert_eq!(fs::read(classes.join("a/b/C.class")).unwrap(), [0xCA, 0xFE, 0xBA, 0xBE, 0, 1]);
+        assert_eq!(fs::read(classes.join("a/n/New.class")).unwrap(), b"new");
+        // 덮어쓰기만 한다 — 다른 클래스 · 소스에서 없어진 안쪽 클래스는 바로 쓸 때처럼 남는다
+        assert_eq!(fs::read(classes.join("a/b/D.class")).unwrap(), b"untouched");
+        assert!(classes.join("a/b/C$3.class").exists());
+        // 빈 임시 폴더면 아무것도 하지 않는다
+        let empty = dir.join("empty.stage");
+        fs::create_dir_all(&empty).unwrap();
+        assert_eq!(publish_classes(&empty, &classes), Ok(0));
         let _ = fs::remove_dir_all(&dir);
     }
 

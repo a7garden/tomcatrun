@@ -8,11 +8,13 @@
 //   늘 --non-interactive   계정 · 인증서 · 충돌을 묻느라 멈추지 않게 한다 (충돌은 postpone 으로 남는다)
 //   메시지는 UTF-8 임시 파일(-F · --encoding utf-8)로 넘긴다. 인자로 넘기면 따옴표 · 줄바꿈이 깨진다.
 //   경로는 인자로 넘긴다. Windows 의 svn 은 넓은 글자 인자를 UTF-8 로 받으므로 한글 경로가 그대로 간다.
+//   commit 만은 경로를 UTF-8 임시 파일(--targets)로 넘긴다. 파일이 수백 개면 명령줄 상한(32767자)을 넘는다.
 //   이름에 @ 가 있으면 끝에 @ 를 붙인다. 붙이지 않으면 svn 이 그 뒤를 리비전(peg)으로 읽는다.
 //   계정은 먼저 svn 자신의 인증 캐시를 쓰고, 인증에 실패하면 실행기 계정을 --password-from-stdin 으로 넣어 한 번 더 부른다.
 //   비밀번호는 명령줄 · 프로세스 목록 · svn 캐시(--no-auth-cache) 어디에도 남지 않는다. --password-from-stdin 은 svn 1.10 부터다.
+//   실패하면 오류 번호로 무엇을 하면 되는지를 앞에 붙인다(explain). 잠금 · 낡은 작업복사본은 화면이 Cleanup · Update 단추를 내밀도록 표지를 단다.
 //
-// 목차 : 프로세스(run · gitwrite 도 쓴다) · svn.exe 찾기 · 판(probe · block_reason) · 명령 인자 · Svn(call · commit) · blame 읽기
+// 목차 : 프로세스(run · gitwrite 도 쓴다) · svn.exe 찾기 · 판(probe · block_reason) · 명령 인자 · 오류 풀이(explain) · Svn(call · commit) · blame 읽기
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -31,6 +33,10 @@ use crate::svnweb::{parse_date, WebErr};
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 // 큰 업데이트 · 커밋도 끝나도록 넉넉히 둔다. 중간에 끊으면 작업복사본이 잠겨 cleanup 이 필요해지므로 짧게 잡지 않는다.
 const SVN_LIMIT: Duration = Duration::from_secs(600);
+
+/// 화면이 알아보는 표지 — 오류 글 맨 앞에 붙는다. 잠금이면 Cleanup, 낡았으면 Update 단추를 함께 보인다.
+pub const LOCKED: &str = "VCS_LOCKED|";
+pub const STALE: &str = "VCS_STALE|";
 
 /* ---------- 프로세스 ---------- */
 
@@ -161,6 +167,43 @@ pub fn block_reason(p: &Probe, wc_format: Option<i64>) -> Option<String> {
     }
 }
 
+/* ---------- 오류 풀이 ---------- */
+
+/// svn 오류를 「무엇을 하면 되는가」로 옮긴다. 원문의 오류 줄은 뒤에 남겨 오류 번호로 찾을 수 있게 한다.
+/// 2026-10-29 : 잠금(E155004)이 원문 세 줄로만 떠서 무엇을 해야 할지 몰랐다.
+pub fn explain(err: &str) -> String {
+    let has = |ks: &[&str]| ks.iter().any(|k| err.contains(k));
+    let (mark, why) = if has(&["E155004", "E155037", "E200033", "E200030"]) {
+        (LOCKED, "작업복사본이 잠겨 있습니다. 다른 SVN 프로그램(Eclipse 의 SVN · TortoiseSVN)이 작업 중이면 끝나기를 기다리고, 아니면 끊긴 작업이 남긴 잠금이니 Cleanup 하세요.")
+    } else if has(&["E155011", "E160024", "E160028", "E170004", "E160042"]) {
+        (STALE, "저장소에 더 새 변경이 있어 Commit 이 거절됐습니다. 먼저 Update 한 뒤 다시 Commit 하세요.")
+    } else if has(&["E155015"]) {
+        ("", "Conflicted 가 남아 있습니다. Resolve 한 뒤 다시 하세요.")
+    } else if has(&["E200009"]) {
+        ("", "고른 경로만으로는 올릴 수 없습니다. 새로 더한 폴더 안의 파일이면 그 폴더도 함께 고르세요.")
+    } else if has(&["E195022", "E160038", "E160039"]) {
+        ("", "다른 사람이 이 파일에 lock 을 걸어 두었습니다. lock 을 건 사람에게 풀어 달라고 하세요.")
+    } else if has(&["E165001"]) {
+        ("", "저장소 규칙(pre-commit hook)이 거절했습니다. 아래 저장소의 말을 보고 고친 뒤 다시 하세요.")
+    } else if has(&["E170013", "E175002", "E731001", "E730060", "E120108", "E230001"]) {
+        ("", "저장소에 닿지 못했습니다. 네트워크 · VPN · 저장소 주소를 보세요.")
+    } else {
+        ("", "")
+    };
+    // 「svn: 」 머리를 떼고 줄을 잇는다. 같은 줄이 되풀이되면 한 번만
+    let mut lines: Vec<String> = Vec::new();
+    for l in err.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        let l = l.strip_prefix("svn: ").unwrap_or(l).to_string();
+        if !lines.contains(&l) {
+            lines.push(l);
+        }
+    }
+    let raw = lines.join("
+");
+    if why.is_empty() { format!("{mark}{raw}") } else { format!("{mark}{why}
+{raw}") }
+}
+
 /* ---------- 명령 ---------- */
 
 // svn 이 계정 문제로 실패했다는 표지 — E170001 인증 필요 · E215004 넣어 볼 계정이 더 없음
@@ -179,13 +222,26 @@ fn with_paths(mut head: Vec<String>, paths: &[String]) -> Vec<String> {
     head
 }
 
-pub fn commit_args(msg_file: &Path, paths: &[String]) -> Vec<String> {
-    // --depth empty : 고른 경로만 올린다. 「.」 의 속성 변경을 고른 것이 작업복사본 전체 커밋이 되지 않게 한다.
-    // 새로 더한 폴더의 안쪽은 부르는 쪽이 경로를 하나하나 넣는다.
-    with_paths(
-        vec!["commit".into(), "--depth".into(), "empty".into(), "-F".into(), msg_file.to_string_lossy().into_owned(), "--encoding".into(), "utf-8".into()],
-        paths,
-    )
+/// deep 이 아니면 --depth empty : 고른 경로만 올린다. 「.」 의 속성 변경을 고른 것이 작업복사본 전체 커밋이 되지 않게 한다.
+/// 새로 더한 폴더의 안쪽은 부르는 쪽이 경로를 하나하나 넣는다.
+/// 지운 폴더가 끼면 deep 으로 부른다 — empty 로는 svn 이 「안에 든 것이 있는 폴더는 지울 수 없다」(E200009)며 거절한다.
+pub fn commit_args(msg_file: &Path, targets_file: &Path, deep: bool) -> Vec<String> {
+    vec![
+        "commit".into(),
+        "--depth".into(),
+        if deep { "infinity" } else { "empty" }.into(),
+        "-F".into(),
+        msg_file.to_string_lossy().into_owned(),
+        "--encoding".into(),
+        "utf-8".into(),
+        "--targets".into(),
+        targets_file.to_string_lossy().into_owned(),
+    ]
+}
+
+/// 잠금 · 끊긴 작업만 푼다. 고친 파일을 되돌리거나(--revert) 버전 관리 밖 파일을 지우는(--remove-*) 옵션은 쓰지 않는다.
+pub fn cleanup_args() -> Vec<String> {
+    vec!["cleanup".into()]
 }
 
 pub fn update_args() -> Vec<String> {
@@ -242,26 +298,39 @@ impl Svn {
 
     /// 먼저 svn 의 인증 캐시로, 계정 문제로 실패하면 실행기 계정으로 한 번 더. 그래도 안 되면 로그인 필요.
     pub fn call(&self, args: &[String], cred: Option<&(String, String)>) -> Result<String, WebErr> {
-        let mut out = self.once(args, None).map_err(WebErr::Other)?;
+        // 시간이 다 돼 끊으면 svn 이 잡은 잠금이 남는다 — Cleanup 을 내민다
+        let cut = |e: String| WebErr::Other(if e.contains("초 안에") { format!("{LOCKED}{e} 끊긴 svn 이 작업복사본에 잠금을 남겼을 수 있습니다. Cleanup 하세요.") } else { e });
+        let mut out = self.once(args, None).map_err(cut)?;
         if !out.ok && auth_failed(&out.stderr) {
             let Some(c) = cred else { return Err(WebErr::NeedLogin("SVN 계정이 필요합니다.".into())) };
-            out = self.once(args, Some(c)).map_err(WebErr::Other)?;
+            out = self.once(args, Some(c)).map_err(cut)?;
             if !out.ok && auth_failed(&out.stderr) {
                 return Err(WebErr::NeedLogin("SVN 계정이 없거나 맞지 않습니다.".into()));
             }
         }
         if !out.ok {
             let first = args.first().map(String::as_str).unwrap_or("");
-            return Err(WebErr::Other(if out.stderr.is_empty() { format!("svn {first} 이 실패했습니다.") } else { out.stderr }));
+            return Err(WebErr::Other(if out.stderr.is_empty() { format!("svn {first} 이 실패했습니다.") } else { explain(&out.stderr) }));
         }
         Ok(decode(&out.stdout))
     }
 
-    pub fn commit(&self, msg: &str, paths: &[String], cred: Option<&(String, String)>) -> Result<Option<i64>, WebErr> {
+    /// 올린 리비전. 고른 파일 내용이 모두 BASE 와 같으면 svn 이 아무것도 올리지 않고 성공하므로 None 이다.
+    pub fn commit(&self, msg: &str, paths: &[String], deep: bool, cred: Option<&(String, String)>) -> Result<Option<i64>, WebErr> {
         let file = temp_message(msg).map_err(WebErr::Other)?;
-        let r = self.call(&commit_args(&file, paths), cred);
+        let list: Vec<String> = paths.iter().map(|p| arg_path(p)).collect();
+        let targets = match temp_file("targets", &list.join("
+")) {
+            Ok(t) => t,
+            Err(e) => {
+                let _ = std::fs::remove_file(&file);
+                return Err(WebErr::Other(e));
+            }
+        };
+        let r = self.call(&commit_args(&file, &targets, deep), cred);
         let _ = std::fs::remove_file(&file);
-        Ok(last_number(&r?))
+        let _ = std::fs::remove_file(&targets);
+        Ok(committed_rev(&r?))
     }
 }
 
@@ -274,6 +343,14 @@ fn temp_file(tag: &str, text: &str) -> Result<PathBuf, String> {
 
 pub fn temp_message(text: &str) -> Result<PathBuf, String> {
     temp_file("msg", text)
+}
+
+// 올린 것이 없으면 svn 은 아무 줄도 내지 않는다 — 그때는 None
+fn committed_rev(out: &str) -> Option<i64> {
+    if out.trim().is_empty() {
+        return None;
+    }
+    last_number(out)
 }
 
 // 「Committed revision 3761.」 — 판 · 언어마다 문구가 달라 마지막 줄의 숫자만 읽는다
@@ -311,8 +388,11 @@ mod tests {
     #[test]
     fn 명령_인자를_만든다() {
         let paths = vec!["src/주문.java".to_string(), "a@b.txt".to_string()];
-        let c = commit_args(Path::new("C:/t/m.txt"), &paths);
-        assert_eq!(c, ["commit", "--depth", "empty", "-F", "C:/t/m.txt", "--encoding", "utf-8", "--", "src/주문.java", "a@b.txt@"]);
+        let c = commit_args(Path::new("C:/t/m.txt"), Path::new("C:/t/l.txt"), false);
+        assert_eq!(c, ["commit", "--depth", "empty", "-F", "C:/t/m.txt", "--encoding", "utf-8", "--targets", "C:/t/l.txt"]);
+        assert_eq!(commit_args(Path::new("m"), Path::new("l"), true)[2], "infinity");
+        assert_eq!(arg_path(&paths[1]), "a@b.txt@");
+        assert_eq!(cleanup_args(), ["cleanup"]);
         assert_eq!(revert_args(false, &paths[..1]), ["revert", "--depth", "empty", "--", "src/주문.java"]);
         assert_eq!(revert_args(true, &paths[..1])[2], "infinity");
         assert_eq!(resolve_args("theirs", "x").unwrap(), ["resolve", "--accept", "theirs-full", "--", "x"]);
@@ -341,8 +421,21 @@ mod tests {
         assert_eq!(last_number("Sending        a.java\nTransmitting file data .done\nCommitting transaction...\nCommitted revision 3761.\n"), Some(3761));
         assert_eq!(last_number("리비전 3762 를 커밋했습니다.\r\n"), Some(3762));
         assert_eq!(last_number("nothing"), None);
+        assert_eq!(committed_rev(""), None);
+        assert_eq!(committed_rev("Committed revision 9.\n"), Some(9));
         assert!(auth_failed("svn: E170001: Authentication required for '<http://h:80> repo'"));
         assert!(!auth_failed("svn: E155015: Commit failed (details follow):"));
+    }
+
+    #[test]
+    fn 오류를_풀어_쓴다() {
+        let lock = "svn: E155004: Run 'svn cleanup' to remove locks (type 'svn help cleanup' for details)\nsvn: E155004: Commit failed (details follow):\nsvn: E155004: Working copy 'D:\\w\\src\\main' locked.\n";
+        let e = explain(lock);
+        assert!(e.starts_with(LOCKED) && e.contains("Cleanup") && e.contains("E155004: Working copy"));
+        assert!(!e.contains("svn: E"));
+        assert!(explain("svn: E160028: File '/trunk/a.java' is out of date").starts_with(STALE));
+        assert!(explain("svn: E170013: Unable to connect").contains("네트워크"));
+        assert_eq!(explain("svn: E999999: 낯선 오류"), "E999999: 낯선 오류");
     }
 
     #[test]

@@ -259,14 +259,14 @@ components:
 
 - **제목 줄:** 높이 36px, `side` 바탕. 왼쪽에 16px 아이콘과 이름(12.5px 600 · `ink`)과 버전(`ink-faint`), 오른쪽 끝에 44px 폭 창 단추 셋(획 1.1 · `ink-muted`, hover 에 `panel-raised` 와 `ink`). 닫기 hover 만 빨강(`close-red`)이다. 창이 포커스를 잃으면 글자가 `ink-faint` 로 흐려진다. 지금 문제는 알림 줄이 맡으므로 제목 줄에 되풀이하지 않는다(작업 표시줄 제목에는 붙는다).
 - **서버 줄:** 두 칸 grid(1fr 1fr), 칸 사이 1px 세로선. 칸 안은 왼쪽 이름 · 상태 두 줄, 오른쪽 단추 묶음. 창 폭 1000px 이하에서 한 칸씩 위아래로 쌓는다.
-- **알림 줄:** 아이콘 · 글 · 단추의 세 칸 grid. 문제가 있을 때만 생긴다.
+- **알림 줄:** 아이콘 · 글 · 단추의 세 칸 grid. 문제가 있을 때만 생긴다. 예외는 닫을 수 있는 제안 둘(새 판 · 기동 탐색 줄이기)이다. 열어 보지 않는 탭에만 두면 모르고 지나가서 여기 올렸다(2026-10-29). 글은 한 줄로 말줄임한다(전체는 `title` · 「자세히」). 세 줄까지만 펼치고 넘는 것은 「알림 n개 더」 한 줄로 접는다(오류는 늘 모두 보인다 · 2026-10-29).
 - **탭 줄:** 높이 38px. 왼쪽에 작업 탭과 「상태」, 빈 칸을 두고 오른쪽 끝에 설정 모달을 여는 「설정」(탭 모양 단추 · Ctrl+,).
 - **도구 줄:** 최소 높이 44px, 안쪽 여백 8px 14px, 오른쪽 끝 묶음은 `margin-left: auto`.
 - **반영 기록 표:** 다섯 칸 grid(64px 64px 96px 1fr 64px, 칸 사이 12px), 줄 여백 5px 14px. 「내용」 칸은 `ink-muted` 한 줄로 말줄임한다. 지금 폭에서 넘치는 줄만 앞에 ▸(`ink-faint`)가 붙고 줄 아무 데나 누르면 펼친다(펼치면 `ink`). 컴파일 오류 위치 목록은 접지 않는다.
 - **상태 쪽:** 카드 격자(최소 420px 칸, 넓으면 두 칸). 메모리 · 직전 기동 시간이 나란히, 준비 상태(공통 · 서버별 칸)와 폴더는 한 줄 전체. 폭 1400px 까지.
 - **설정 모달:** 폭 1040px · 높이 720px 까지(창이 작으면 사방 24px 를 남기고 줄어든다), `canvas` 바탕. 왼쪽 200px 은 `side` 바탕의 구획 목록이다 — 맨 위 「설정」 제목, 묶음 이름(서버 · 동작 · 앱, 11px 600 `ink-faint`) 아래 아이콘 달린 30px 항목. 고른 항목은 `panel` 바탕 · 안쪽 1px `line` · `ink` 600. 오른쪽은 52px 머리(`panel` · 구획 이름 14px 600 · 닫기 단추)와 그 아래 스크롤하는 몸통(여백 20px 28px)이고, 고른 구획 하나만 보인다. 마지막에 본 구획을 기억해 다시 열면 그 자리다. 창 폭 720px 이하에서는 목록이 위쪽 가로 줄이 된다. 모달 뒤 알림 줄이 가려지므로 저장 실패 같은 오류는 몸통 맨 위에 옅은 빨강 상자로도 띄운다(누르면 닫힌다). Esc · 바깥 누르기 · 닫기 단추로 닫는다.
 - **설정 구획 안:** 구획마다 `panel` 띠 하나이고, 띠 안은 이름 왼쪽 · 스위치나 선택 오른쪽의 한 줄 목록(최소 높이 38px, 줄 사이 `line-soft`)이다. 부제 · 설명 글은 없다. 설명은 줄의 `title` 에 둔다. 딸린 옵션(매퍼 하나만 → 핫리로드 · 컴파일러 → 저장하면 컴파일)은 부모 바로 아래 38px 들여 쓰고, 부모가 꺼지면 투명도 .5 로 흐린다. 값(디버거 포트)은 줄 오른쪽에 고정폭 `ink-muted` 로 둔다. 저장 감시 제외는 목록(맨 위에 지울 수 없는 「기본」 줄) · 입력칸 · 예시 표(누르면 입력칸에 들어가는 코드 모양 단추)를 위에서 아래로 놓는다. 서버 · 버전 관리는 서버마다 한 칸(최소 380px, 넓으면 나란히)이고, 안은 라벨 112px · 입력 나머지의 두 칸 줄이며, 고른 종류에 쓰이지 않는 칸(SVN 업데이트 · Git 받기)은 숨긴다.
-- **SVN:** 왼쪽 목록(최소 280px, 40%)과 오른쪽 차이 보기의 두 칸.
+- **버전 관리 (2026-10-29):** GitHub Desktop 꼴. 맨 위 저장소 줄(44px · 서버 세그먼트 · 저장소 경로 끝 두 마디와 리비전 · 받을 커밋 상태 · 오른쪽 끝 Update 계열 단추 · 새로 고침 · 더 보기 `⋯`), 그 아래 문제 있을 때만 띠, 그 아래 두 칸 — 왼쪽(최소 300px, 34%)은 36px 「Changes · History」 탭 · 36px 머리(모두 고르기 · 고른 수 · Revert… · 파일 찾기) · 목록 · 맨 아래 Commit 칸, 오른쪽은 Diff. 창 폭 860px 이하에서 왼쪽은 42%.
 - **상태 표시줄:** 높이 28px. 켜진 설정을 묶음(반영 · 기동 · 앱)별 칩으로 놓고 묶음 사이에 1px 세로선. 칩의 체크 아이콘은 `ink-muted` 다(꾸밈에 상태 색을 쓰지 않는다). 핫리로드 · 저장하면 컴파일은 꺼져도 지운 줄로 남는다. 칩을 누르면 설정의 그 칸으로 간다. 메모리 요약은 오른쪽.
 
 간격은 6px(단추 사이) · 8px(도구 줄 항목) · 14px(가로 안쪽 여백의 기본) · 24px(쪽 여백)이 되풀이된다.
@@ -278,7 +278,7 @@ components:
 ### Shadow Vocabulary
 - **떠 있는 판** (`shadow-pop`): 밝음 `0 10px 28px oklch(0 0 0 / .12), 0 1px 3px oklch(0 0 0 / .08)`, 어두움 `0 14px 36px oklch(0 0 0 / .5), 0 1px 3px oklch(0 0 0 / .35)`.
 - **선택 테두리** (`box-shadow: inset 0 0 0 1px var(--line)`): 세그먼트에서 고른 항목 하나.
-- **고른 줄 표시** (`box-shadow: inset 2px 0 0 var(--text)`): SVN 목록 · 로그에서 고른 줄.
+- **고른 줄 표시** (`box-shadow: inset 2px 0 0 var(--text)`): 버전 관리의 파일 줄 · 커밋 줄 · 커밋 아래 파일 줄에서 고른 줄.
 
 ### Named Rules
 **The Float-Only Shadow Rule.** 그림자는 떠 있는 판에만 쓴다. 바닥의 띠 · 카드 · 표에는 쓰지 않는다. 흐림 · 그라데이션 · 빛은 어디에도 쓰지 않는다.
@@ -331,21 +331,42 @@ docket 의 단추와 같은 결의 Windows 도구 단추다.
 ### 알림 줄 (Signature Component)
 서버 줄 바로 아래 전체 폭 띠. 컴파일 실패는 `crit-weak`, 재시작 필요는 `warn-weak`. 아이콘은 상태 색, 글은 `ink`, 굵게 쓴 요지 뒤에 고정폭 파일 위치 링크(밑줄), 오른쪽에 조치 단추. 문제가 없으면 띠가 없다.
 
+2026-10-29 : 세 단계로 나눴다. 위에서부터 차례로 놓는다.
+
+| 단계 | 바탕 · 아이콘 | 무엇 | 닫기 |
+| - | - | - | - |
+| 오류 `crit` | `crit-weak` · 빨강 ⊗ | 컴파일 실패 · 준비 안 된 항목 | 없음 |
+| 손볼 일 `warn` | `warn-weak` · 호박 △ | 재시작 필요 · 의존 jar · 같은 jar 다른 판 · TLD jar 빠짐 · 탐색 건너뛰기가 맞지 않음 · 이클립스와 다름 · 리소스 필터링 · 이클립스와 다른 자바 | 이클립스와 다름 · 리소스 필터링 · 다른 자바만 (알고 쓰는 차이일 수 있다) |
+| 제안 `hint` | `panel` · `ink-muted` 선 아이콘 | 기동 탐색 줄이기 · 새 판 | 있음 |
+
+- 제안은 문제가 아니므로 상태 색을 쓰지 않는다(The Status-Only Color Rule). 창 제목의 「외 n건」에도 세지 않는다.
+- 단추는 「자세히 · 목록 보기」(ghost) → 조치 → 닫기 순서이고, 닫기 칸은 없어도 24px 자리를 둔다. 줄마다 단추의 오른쪽 끝이 맞는다.
+- 닫은 알림은 그 문구가 바뀌기 전까지 다시 뜨지 않는다(실행기를 다시 열어도). 상태 탭에는 남는다. 새 판만 이번 실행 동안이다.
+- 「알림 n개 더」 줄은 `panel` 바탕 12px `ink-muted` 로 접힌 알림의 이름만 잇고, 「모두 보기 · 접기」 하나를 둔다.
+- 점검 문장에 섞인 줄표는 화면에 낼 때 가운뎃점으로 바꾼다.
+
 ### 버전 관리 용어 (2026-10-29)
 버전 관리의 동작 · 상태 · 보기 이름은 영문 표준 용어를 그대로 쓴다. TortoiseSVN · VS Code · `svn` · `git` 출력과 같은 낱말이라 도구를 오가도 같은 말로 찾는다. 설명 · 확인 · 오류 문장은 한국어로 쓰되 그 안에서도 같은 낱말을 쓴다(「Revert 하면 고친 내용이 사라집니다」). 「계정」 · 「새로 고침」처럼 버전 관리 용어가 아닌 것은 한국어로 둔다.
 
 | 쓰는 곳 | 말 |
 | - | - |
-| 보기 | Changes · Incoming · Log |
+| 보기 | Changes (맨 위에 받을 커밋) · History |
 | 상태 칩 (SVN) | Modified · Added · Deleted · Missing · Conflicted · Properties · Obstructed · Unversioned |
 | 상태 칩 (Git) | Modified · Added · Deleted · Renamed · Type changed · Conflicted · Untracked |
 | 비교 기준 | BASE (마지막으로 받은 내용) · HEAD (SVN 은 저장소 최신, Git 은 마지막 커밋) · upstream (Git 원격 추적 브랜치) |
-| 단추 | Commit · Update · Pull · Revert… · Diff · Compare with HEAD · Show log · Blame · Show unversioned (Git 은 Show untracked) |
+| 단추 | Commit · Update · Pull · Fetch · Push · Revert… · Cleanup… · Diff · Compare with HEAD · Show log · Blame |
+| 묶음 | Conflicted · Changes · Unversioned (Git 은 Untracked) · 받을 커밋 |
 | 충돌 판 | Resolve · Use mine · Use theirs · Mark as resolved · BASE ↔ mine · BASE ↔ theirs |
-| Log 의 되돌리기 | Revert changes from this revision… (SVN) · Revert commit… (Git) |
+| History 의 되돌리기 | Revert changes from this revision… (SVN) · Revert commit… (Git) |
 | 설정 | Allow write · Commit message 예시 · Update 명령 · Pull 명령 · svn.exe · svn 받기 |
 
-- **쓰기 단추:** 「Allow write」를 켠 서버에서만 보인다. 실행 단추(Commit · Update)는 Primary, Revert 는 기본 단추이고 확인 창의 실행 단추만 Danger 다. 쓰기를 못 하는 까닭(svn.exe 없음 등)이 있으면 단추를 숨기지 않고 잠근 채 `title` 과 바닥 띠 안내에 까닭을 둔다.
+- **저장소 줄:** 저장소 경로는 `ink` 600, 리비전은 고정폭 `ink-muted`, 받을 커밋 상태는 12px. 내 변경과 겹치면 호박(`warn`) 600, 저장소에 묻지 못하면 빨강. Update 단추는 받을 커밋이 있으면 Primary 로 바뀌고 수 배지(16px 알약)를 단다. Git 은 Fetch · Pull(뒤처지면 Primary) · Push(앞서기만 하면 Primary).
+- **띠:** 저장소 줄 바로 아래 전체 폭, 아이콘 · 글 · 단추의 세 칸 grid. 쓰기 실패는 `crit-weak`(첫 줄 굵게 · 무엇을 하면 되는지, 아래 svn 원문은 11.5px 고정폭 `ink-muted` · 최대 72px 스크롤 · 닫기 단추), 남은 잠금과 쓰기를 못 하는 까닭은 `warn-weak`(설명은 본문 글꼴 `ink-muted`). 도는 일은 `panel` 바탕에 1.4초 깜빡이는 8px 점과 걸린 시간. 단추는 고칠 일 하나(Cleanup… · Update… · 설정)만.
+- **목록 줄:** 28px 한 줄. 체크박스 · 18px 상태 코드 칸(글자 하나 · 고정폭 · 4px 모서리) · 파일 이름(고정폭 600 `ink`) · 폴더(고정폭 `ink-faint` · 앞쪽부터 말줄임). 까닭이 있을 때만 둘째 줄(Conflicted 는 빨강 600). 고른 A · D 폴더 아래 줄은 체크박스를 흐린 채 잠그고 「… 와 함께 올라갑니다」. 묶음 머리는 28px 11.5px 600 `ink-muted`, 제 묶음 안에서만 위에 붙는다. Unversioned · 받을 커밋은 접힌다(Unversioned 는 처음에 접힘).
+- **커밋 줄:** 첫 줄 메시지(말줄임) · 둘째 줄 리비전(고정폭 `ink`) · 작성자 · 시각(12px `ink-muted`). 받을 커밋이 내 파일과 겹치면 오른쪽에 호박 「겹침」.
+- **Commit 칸:** 왼쪽 아래 `panel` · 위 1px `line`. 제목 입력과 자동 생성 아이콘 단추 한 줄, 설명(30px · 누르거나 내용이 있으면 84px), 제목 규칙 경고(호박 12px · 확인 창에서도 호박 `.flag.warn`), 폭 전체 Commit 단추(「Commit n개 → trunk」), 누를 수 없는 까닭(12px `ink-muted`).
+- **커밋 하나 (오른쪽):** 메시지(600 · 줄바꿈 유지) · 리비전 · 작성자 · 시각 · 파일 수 · 오른쪽 끝 「Revert changes from this revision…」 단추, 그 아래 바뀐 파일 목록(최대 40%), 그 아래 고른 파일의 Diff. 첫 파일을 바로 보인다.
+- **쓰기 단추:** 「Allow write」를 켠 서버에서만 보인다. Commit 은 Primary, Update 는 위 「저장소 줄」 규칙을 따르고, Revert 는 기본 단추(Changes 머리의 「Revert…」는 찾기 칸과 같은 줄이라 `ghost`)이며 확인 창의 실행 단추만 Danger 다. 쓰기를 못 하는 까닭(svn.exe 없음 등)이 있으면 단추를 숨기지 않고 잠근 채 `title` 과 저장소 줄 아래 띠에 까닭을 둔다.
 - **svn 받기:** 「찾은 svn」 칸 아래 작은 기본 단추(`btn sm`). svn.exe 칸을 비웠는데 어디서도 svn 을 못 찾았을 때만 보인다. 받는 동안은 단추를 잠그고 옆에 「받는 중 · n MB」, 실패하면 그 까닭을 `crit` 글자색으로 둔다.
 - **확인 창:** 닫기 확인과 같은 `dlg`(최대 폭 540px). 제목 · 한두 줄 설명 · 넘길 파일 목록(경로는 고정폭, 상태는 `ink-muted`) · 취소 / 실행. 되돌릴 수 없는 일이면 초점을 「취소」에 둔다.
 - **충돌 판:** Diff 머리 아래 `crit-weak` 바탕 6px 모서리 상자. 세 쪽 비교 단추 줄과 Resolve 단추 줄 두 줄.

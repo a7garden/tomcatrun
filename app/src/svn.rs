@@ -11,7 +11,7 @@
 // 목차
 //   status       Changes 목록 (svn status 와 같은 판정)
 //   diff         BASE 와 지금 파일 · text_diff 는 SVN · Git 이 함께 쓴다
-//   wc_info      저장소 주소 · 리비전 범위 · wc_format 작업복사본 형식
+//   wc_info      저장소 주소 · 리비전 범위 · wc_format 작업복사본 형식 · wc_locks 남은 잠금
 //   Blame · 충돌  화면에 주는 공통 꼴 · conflict_data 읽기 · 충돌 세 쪽 비교
 
 use std::collections::{HashMap, HashSet};
@@ -58,6 +58,8 @@ pub struct Status {
     pub hashed: usize,
     pub took_ms: u64,
     pub items: Vec<Item>,
+    pub locks: Vec<String>, // 작업복사본 잠금이 걸린 폴더 (「.」 은 맨 위) — 남아 있으면 svn 쓰기가 E155004 로 막힌다
+    pub other_svn: Vec<String>, // 잠금이 있을 때 켜져 있던 다른 SVN 프로그램 (Eclipse 등) — main.rs 가 채운다
 }
 
 #[derive(Serialize)]
@@ -273,6 +275,7 @@ pub fn status(wc: &Path) -> Result<Status, String> {
             |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)),
         )
         .unwrap_or_default();
+    let locks = locks_of(&c);
     drop(c);
 
     let mut items: HashMap<String, Item> = HashMap::new();
@@ -382,7 +385,7 @@ pub fn status(wc: &Path) -> Result<Status, String> {
         let kb = ORDER.iter().position(|c| *c == b.code).unwrap_or(9);
         ka.cmp(&kb).then_with(|| a.path.cmp(&b.path))
     });
-    Ok(Status { url, rev_min, rev_max, nodes: nodes.len(), hashed, took_ms: began.elapsed().as_millis() as u64, items: list })
+    Ok(Status { url, rev_min, rev_max, nodes: nodes.len(), hashed, took_ms: began.elapsed().as_millis() as u64, items: list, locks, other_svn: Vec::new() })
 }
 
 // UTF-8 이 아니면 MS949 로 읽는다 (로그와 같은 규칙). svn.exe 의 출력(콘솔 코드페이지)도 같은 규칙으로 읽는다.
@@ -518,6 +521,27 @@ pub fn base_content(wc: &Path, rel: &str) -> Option<Vec<u8>> {
 /// 작업복사본 형식 (wc.db 의 user_version · svn 1.8~1.14 는 31) — svncli 가 쓰기 전에 svn 판과 맞는지 본다
 pub fn wc_format(wc: &Path) -> Option<i64> {
     open(wc).ok()?.query_row("PRAGMA user_version", [], |r| r.get(0)).ok()
+}
+
+/// 작업복사본 잠금 (WC_LOCK) — svn 이 쓰는 동안 잡고 끝나면 푼다. 쓰는 svn 이 없는데 남아 있으면
+/// 끊긴 작업(실행기 · IDE 의 SVN 이 중간에 죽음)이 남긴 것이고 svn cleanup 이 푼다.
+/// 2026-10-29 : 이 잠금으로 Commit 이 E155004 에 막혔다. 쓰기 전에 먼저 보고 까닭과 Cleanup 을 내민다.
+pub fn wc_locks(wc: &Path) -> Vec<String> {
+    open(wc).map(|c| locks_of(&c)).unwrap_or_default()
+}
+
+fn locks_of(c: &Connection) -> Vec<String> {
+    let mut v: Vec<String> = c
+        .prepare("SELECT local_dir_relpath FROM WC_LOCK")
+        .and_then(|mut s| s.query_map([], |r| r.get::<_, String>(0))?.collect())
+        .unwrap_or_default();
+    for p in v.iter_mut() {
+        if p.is_empty() {
+            *p = ".".into();
+        }
+    }
+    v.sort();
+    v
 }
 
 /* ---------- Blame · 충돌 (SVN · Git 이 같은 꼴로 화면에 준다) ---------- */

@@ -1,6 +1,8 @@
 // 자동 업데이트 — GitHub 릴리스의 최신 판을 보고, 새 판이면 화면에 알린다. 사용자가 누르면 받아서 설치 파일을 조용히 돌린다.
 //
 //   확인    GET api.github.com/repos/<REPO>/releases/latest → tag_name(v0.7.0) 을 이 실행 파일의 판과 견준다
+//           지난 응답의 ETag 를 If-None-Match 로 붙인다 — 304 는 GitHub 비인증 한도(IP 당 시간 60회)를 쓰지 않는다
+//           태그는 새 판인데 설치 파일이 아직 없으면(릴리스 빌드 중) Building — 실행기가 몇 분 뒤 다시 묻는다
 //   받기    설치 파일(tomcatrun-setup-<판>.exe)을 %TEMP% 에 받고 SHA-256 을 대조한다
 //           (GitHub 가 자산마다 주는 digest, 없으면 같은 릴리스의 <설치 파일>.sha256) — 둘 다 없거나 다르면 돌리지 않는다
 //   설치    tomcatrun-setup.exe /S /D=<실행기 폴더> 를 띄우고 실행기는 톰캣을 끄고 닫힌다.
@@ -60,18 +62,45 @@ pub fn newer(remote: &str, local: &str) -> bool {
     a > b
 }
 
-/// 최신 릴리스. 이 실행 파일보다 새 판이 아니면 None
-pub fn check() -> Result<Option<Release>, String> {
+/// 확인 결과
+pub enum Latest {
+    NotModified,      // 지난 확인과 같은 응답 (304) — 지난 결과를 그대로 쓴다
+    Current,          // 이 판이 최신
+    Building(String), // 새 판의 태그는 있는데 설치 파일이 아직 붙지 않았다
+    Ready(Release),
+}
+
+/// 최신 릴리스와 응답의 ETag. etag 는 지난 응답의 것 — 주면 바뀌지 않았을 때 NotModified
+pub fn check(etag: Option<&str>) -> Result<(Latest, Option<String>), String> {
     let url = format!("https://api.github.com/repos/{REPO}/releases/latest");
-    let text = agent()?
-        .get(&url)
-        .set("Accept", "application/vnd.github+json")
-        .call()
-        .map_err(|e| format!("업데이트를 확인하지 못했습니다: {e}"))?
-        .into_string()
-        .map_err(|e| e.to_string())?;
-    let rel = parse_latest(&text)?;
-    Ok(rel.filter(|r| newer(&r.version, env!("CARGO_PKG_VERSION"))))
+    let mut req = agent()?.get(&url).set("Accept", "application/vnd.github+json");
+    if let Some(t) = etag {
+        req = req.set("If-None-Match", t);
+    }
+    let resp = req.call().map_err(|e| format!("업데이트를 확인하지 못했습니다: {e}"))?;
+    let tag = resp.header("ETag").map(String::from);
+    if resp.status() == 304 {
+        return Ok((Latest::NotModified, tag));
+    }
+    let text = resp.into_string().map_err(|e| e.to_string())?;
+    Ok((classify(&text, env!("CARGO_PKG_VERSION"))?, tag))
+}
+
+fn classify(text: &str, local: &str) -> Result<Latest, String> {
+    if let Some(r) = parse_latest(text)? {
+        return Ok(if newer(&r.version, local) { Latest::Ready(r) } else { Latest::Current });
+    }
+    // 설치 파일이 없는 릴리스 — 태그가 이 판보다 높으면 Actions 가 아직 설치 파일을 만드는 중이다
+    let v: serde_json::Value = serde_json::from_str(text).map_err(|e| format!("릴리스 응답을 읽지 못했습니다: {e}"))?;
+    let tag = v["tag_name"].as_str().unwrap_or("");
+    let pre = v["draft"].as_bool() == Some(true) || v["prerelease"].as_bool() == Some(true);
+    Ok(if !tag.is_empty() && !pre && newer(tag, local) { Latest::Building(tag.trim_start_matches('v').to_string()) } else { Latest::Current })
+}
+
+/// 실패 · 빌드 중일 때 다음 확인까지 (ms). 연달아 n 번째면 5 · 10 · 20 · 40 · 60분 — 1시간을 넘기지 않는다
+pub fn retry_after(fails: u32) -> u64 {
+    let min = 5u64 << fails.clamp(1, 5).saturating_sub(1);
+    min.min(60) * 60_000
 }
 
 fn parse_latest(text: &str) -> Result<Option<Release>, String> {
@@ -210,5 +239,23 @@ mod tests {
         // 미리 보기 판 · 설치 파일이 없는 릴리스는 알리지 않는다
         assert!(parse_latest(r#"{"tag_name":"v9.0.0","prerelease":true,"assets":[]}"#).unwrap().is_none());
         assert!(parse_latest(r#"{"tag_name":"v9.0.0","assets":[{"name":"src.zip"}]}"#).unwrap().is_none());
+    }
+
+    #[test]
+    fn 새_판_빌드_중을_가린다() {
+        let ready = r#"{"tag_name":"v0.7.0","assets":[{"name":"tomcatrun-setup-0.7.0.exe","digest":"sha256:ab"}]}"#;
+        assert!(matches!(classify(ready, "0.6.0").unwrap(), Latest::Ready(r) if r.version == "0.7.0"));
+        assert!(matches!(classify(ready, "0.7.0").unwrap(), Latest::Current));
+        // 태그만 달리고 설치 파일이 아직 없다 — 새 판이면 빌드 중, 아니면 최신
+        let bare = r#"{"tag_name":"v0.7.0","assets":[]}"#;
+        assert!(matches!(classify(bare, "0.6.0").unwrap(), Latest::Building(v) if v == "0.7.0"));
+        assert!(matches!(classify(bare, "0.7.0").unwrap(), Latest::Current));
+        assert!(matches!(classify(r#"{"tag_name":"v0.7.0","prerelease":true,"assets":[]}"#, "0.6.0").unwrap(), Latest::Current));
+    }
+
+    #[test]
+    fn 실패하면_점점_늦게_다시_묻는다() {
+        let m = |f| retry_after(f) / 60_000;
+        assert_eq!([m(0), m(1), m(2), m(3), m(4), m(5), m(9)], [5, 5, 10, 20, 40, 60, 60]);
     }
 }
