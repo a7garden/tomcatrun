@@ -51,7 +51,7 @@ IDE 의 서버 배포 없이 Spring · 서블릿 웹앱을 로컬 톰캣으로 �
 | 경로 › 톰캣 폴더 · javac · java · 편집기 | 기본은 설치된 JDK 8 · `code`(VS Code). java 는 서버 › java 칸을 비운 서버가 쓴다 |
 | 경로 › TLD jar | 태그 라이브러리를 찾을 jar (쉼표로). 비우면 모든 jar 를 본다 |
 | 경로 › Commit message 생성 명령 | 「자동 생성」이 부르는 언어 모델 CLI (예: `claude -p`). 기본은 비어 있고, 비우면 자동 생성을 쓰지 않는다 |
-| 버전 관리 | 서버마다 SVN · Git · 작업 폴더 · Allow write · Commit message 예시 · 메시지 규칙 · Update · Pull 명령 · svn.exe 경로 |
+| 버전 관리 | 서버마다 SVN · Git · 작업 폴더 · Allow write · Commit message 예시 · 메시지 규칙 · Update · Pull 명령 · svn.exe 경로 · svn 받기 |
 | 저장 감시 제외 | 저장해도 반영 기록 · 재시작 알림에 넣지 않을 파일 · 폴더 |
 
 **실행기가 알아서 정하는 것은 없다.** 서버 이름 · 프로젝트 폴더 · 바로가기는 PC 마다 사람이 정한다 — 어느 폴더가 어느 망(내부망 · 외부망 등)의 소스인지 실행기는 감지하지 않는다.
@@ -157,7 +157,7 @@ HotswapAgent 의 원문 줄(`Reloading classes …` · `Registering Spring bean 
 | 리비전 되돌리기 (Log) | `svn merge -c -N` · 결과는 Changes 에 남고 Commit 은 따로 | `git revert --no-commit` |
 
 - Conflicted 가 남은 파일은 Commit 하지 않는다. 내가 고친 파일과 겹치는 리비전은 되돌리지 않는다.
-- SVN 쓰기 · Blame 은 **svn.exe 1.10 이상**이 필요하다 (TortoiseSVN 을 설치할 때 「command line client tools」를 고르거나, 설정에 경로를 적는다). 판이나 작업복사본 형식이 맞지 않으면 쓰기 단추를 잠그고 까닭을 보인다. `svn upgrade` 는 하지 않는다.
+- SVN 쓰기 · Blame 은 **svn.exe 1.10 이상**이 필요하다. 못 찾으면 「설정 › 버전 관리」의 **svn 받기** 단추가 VisualSVN 이 배포하는 Apache Subversion 명령줄 도구 zip 을 받아 SHA-256 을 대조한 뒤 `%LOCALAPPDATA%\tomcatrun\svn` 에 푼다 (TortoiseSVN 을 설치할 때 「command line client tools」를 고르거나, 설정에 경로를 적어도 된다). 찾는 순서는 설정 경로 → PATH → TortoiseSVN · SlikSVN → 받은 svn 이다. 판이나 작업복사본 형식이 맞지 않으면 쓰기 단추를 잠그고 까닭을 보인다. `svn upgrade` 는 하지 않는다.
 - SVN 계정은 먼저 svn 자신의 인증 캐시를 쓰고, 안 되면 실행기 계정을 `--password-from-stdin --no-auth-cache` 로 넘긴다. 비밀번호는 명령줄 · 로그에 남지 않는다.
 - 무엇을 썼는지는 그 서버의 로그에 한 줄씩 남는다.
 

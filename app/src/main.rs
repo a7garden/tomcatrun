@@ -35,6 +35,7 @@ mod jarcheck;
 mod scancheck;
 mod svn;
 mod svncli;
+mod svnget;
 mod svnweb;
 mod update;
 
@@ -595,6 +596,16 @@ struct Shared {
     job: isize, // 실행기가 죽어도 톰캣이 남지 않게 묶는 작업 개체
     quitting: AtomicBool, // 닫기를 확인해 톰캣을 끄는 중 — 그 사이 닫기를 또 눌러도 다시 묻지 않는다
     update: Mutex<UpdateState>,
+    svn_get: Mutex<SvnGet>,
+}
+
+/// svn 받기 — 설정 › 버전 관리의 「svn 받기」 단추가 그린다
+#[derive(Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SvnGet {
+    version: &'static str,    // 받을 판
+    downloading: Option<u64>, // 받은 바이트 · 받는 중이 아니면 없다
+    error: Option<String>,
 }
 
 /// 업데이트 — 화면 위 알림 줄 · 설정 › 업데이트가 그린다
@@ -738,6 +749,7 @@ struct ServerSnap {
     vcs_root: String,
     svn_cli: String,             // 찾은 svn.exe 와 판 (또는 못 찾은 까닭) — 설정 › 버전 관리에 보인다
     svn_block: Option<String>,   // Allow write 를 켰어도 SVN 쓰기를 못 하는 까닭 — 있으면 쓰기 단추를 잠근다
+    svn_missing: bool,           // 경로를 비웠는데 어디서도 svn.exe 를 못 찾았다 — 「svn 받기」 단추를 보인다
     java: String,                // 서버에 정한 java (핫리로드 끔) — 비면 전역
     java_label: String,          // 핫리로드를 끄고 띄우면 쓰는 java 의 판 (설정 › 서버 › java 칸 아래에 보인다)
     eclipse_java: String,        // 이클립스가 쓰던 java (가져올 때 찾았으면)
@@ -815,6 +827,7 @@ struct Snapshot {
     paths: Paths,
     update_check: bool,
     update: UpdateState,
+    svn_get: SvnGet,
     daemon: bool,
     daemon_kind: String,
     daemon_mem: Mem,
@@ -1312,6 +1325,7 @@ fn snapshot(app: &AppHandle) -> Snapshot {
                     Err(e) => e,
                 },
                 svn_block: svn_block(s),
+                svn_missing: s.vcs.svn_exe.trim().is_empty() && svncli::locate("").is_none(),
                 dedup,
             }
         })
@@ -1343,6 +1357,7 @@ fn snapshot(app: &AppHandle) -> Snapshot {
         },
         update_check: c.update_check,
         update: sh.update.lock().unwrap().clone(),
+        svn_get: sh.svn_get.lock().unwrap().clone(),
         daemon:sh.daemon_alive.load(Ordering::Relaxed),
         daemon_kind: sh.daemon_kind.lock().unwrap().clone(),
         daemon_mem: *sh.daemon_mem.lock().unwrap(),
@@ -4426,6 +4441,42 @@ fn update_install(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+// svn.exe 를 못 찾은 PC 에서 Subversion 명령줄 도구를 사용자 폴더에 받는다 (svnget.rs). 다 받으면 찾은 결과를 잊고 화면을 다시 그린다
+#[tauri::command]
+fn svn_get(app: AppHandle) -> Result<(), String> {
+    {
+        let mut g = shared(&app).svn_get.lock().unwrap();
+        if g.downloading.is_some() {
+            return Err("이미 받는 중입니다.".into());
+        }
+        g.downloading = Some(0);
+        g.error = None;
+    }
+    emit_state(&app);
+    thread::spawn(move || {
+        log(&app, None, "app", "", format!("svn {} 을 받습니다: {}", svnget::VERSION, p(&svnget::dir())));
+        let a = app.clone();
+        let r = svnget::install(move |got| {
+            shared(&a).svn_get.lock().unwrap().downloading = Some(got);
+            emit_state(&a);
+        });
+        svncli::forget();
+        {
+            let mut g = shared(&app).svn_get.lock().unwrap();
+            g.downloading = None;
+            match &r {
+                Ok(exe) => log(&app, None, "app", "", format!("svn 을 받았습니다 (해시 일치): {}", p(exe))),
+                Err(e) => {
+                    log(&app, None, "app", "err", e.clone());
+                    g.error = Some(e.clone());
+                }
+            }
+        }
+        emit_state(&app);
+    });
+    Ok(())
+}
+
 #[tauri::command]
 fn open(target: String) {
     // 주소든 폴더든 탐색기에 맡기면 기본 브라우저 · 탐색기로 열린다
@@ -5237,6 +5288,7 @@ fn main() {
         job: make_job(),
         quitting: AtomicBool::new(false),
         update: Mutex::new(UpdateState::default()),
+        svn_get: Mutex::new(SvnGet { version: svnget::VERSION, ..Default::default() }),
     };
 
     tauri::Builder::default()
@@ -5299,7 +5351,7 @@ fn main() {
             git_status, git_diff, git_incoming, git_log, git_rev_diff,
             vcs_commit, vcs_update, vcs_revert, vcs_resolve, vcs_revert_revision, vcs_blame, vcs_conflict, vcs_conflict_diff, set_vcs, set_paths, set_server, add_server, pick_project,
             vcs_fetch, vcs_push, git_outgoing, gen_commit_msg, check_commit_msg,
-            update_check, update_install, changelog, eclipse_scan, eclipse_import, quick_project, pick_dir, auto_deps, dedup_deps, undo_dedup, apply_scan_hint
+            update_check, update_install, svn_get, changelog, eclipse_scan, eclipse_import, quick_project, pick_dir, auto_deps, dedup_deps, undo_dedup, apply_scan_hint
         ])
         .run(tauri::generate_context!())
         .expect("실행기를 띄우지 못했습니다");

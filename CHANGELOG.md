@@ -6,6 +6,10 @@
 - **판은 릴리스 한 번에 한 번만 올린다.** 마지막 태그 뒤 첫 변경에서 다음 판을 하나 정하고, 릴리스 전까지 생기는 변경은 모두 그 판의 절에 더한다. 작업마다 새로 올리지 않는다. 고치기만 하다가 화면 · 동작이 바뀌면 그 판을 셋째 자리에서 둘째 자리로 바꿀 뿐이다. 2026.10.29 : 한 번에 릴리스한 0.11.1 다음 판이 작업마다 올라 0.16.0 이 되어 이 줄을 더했다.
 - 올린 뒤 이 파일 맨 위에 그 버전의 줄을 더하고 `v<버전>` 태그를 달아 GitHub 에 올린다. GitHub Actions(`.github/workflows/release.yml`)가 설치 파일을 만들어 릴리스에 붙인다. 이 PC 에서 만들 때는 `installer/build.sh`.
 
+## 0.19.0 · 2026-10-29
+
+- svn.exe 를 못 찾았으면 「설정 › 버전 관리」에서 「svn 받기」로 바로 받는다. 전에는 TortoiseSVN 을 「command line client tools」와 함께 다시 설치하라는 안내만 떴다. 누르면 VisualSVN 이 배포하는 Apache Subversion 1.15.0 명령줄 도구(약 5 MB)를 받아 해시를 대조한 뒤 `%LOCALAPPDATA%\tomcatrun\svn` 에 풀고, SVN 쓰기와 Blame 에 바로 쓴다. 이미 쓰던 svn 이 있으면 그쪽을 먼저 쓴다.
+
 ## 0.18.0 · 2026-10-29
 
 - 핫리로드 모드에서도 외부 HTTPS 호출이 인증서 오류 없이 된다. DCEVM 8u181 의 루트 인증서 목록은 2018년 판이라 GlobalSign Root R3 가 없어서, 브이월드(`api.vworld.kr`) 건물도형 호출이 `PKIX path building failed` 로 막혔다. 이제 기동마다 DCEVM 목록에 이 PC 의 Windows 루트 인증서를 더해 넘긴다. 못 만들면 경고를 남기고 전처럼 기본 목록으로 뜬다.

@@ -343,9 +343,10 @@ docket 의 단추와 같은 결의 Windows 도구 단추다.
 | 단추 | Commit · Update · Pull · Revert… · Diff · Compare with HEAD · Show log · Blame · Show unversioned (Git 은 Show untracked) |
 | 충돌 판 | Resolve · Use mine · Use theirs · Mark as resolved · BASE ↔ mine · BASE ↔ theirs |
 | Log 의 되돌리기 | Revert changes from this revision… (SVN) · Revert commit… (Git) |
-| 설정 | Allow write · Commit message 예시 · Update 명령 · Pull 명령 · svn.exe |
+| 설정 | Allow write · Commit message 예시 · Update 명령 · Pull 명령 · svn.exe · svn 받기 |
 
 - **쓰기 단추:** 「Allow write」를 켠 서버에서만 보인다. 실행 단추(Commit · Update)는 Primary, Revert 는 기본 단추이고 확인 창의 실행 단추만 Danger 다. 쓰기를 못 하는 까닭(svn.exe 없음 등)이 있으면 단추를 숨기지 않고 잠근 채 `title` 과 바닥 띠 안내에 까닭을 둔다.
+- **svn 받기:** 「찾은 svn」 칸 아래 작은 기본 단추(`btn sm`). svn.exe 칸을 비웠는데 어디서도 svn 을 못 찾았을 때만 보인다. 받는 동안은 단추를 잠그고 옆에 「받는 중 · n MB」, 실패하면 그 까닭을 `crit` 글자색으로 둔다.
 - **확인 창:** 닫기 확인과 같은 `dlg`(최대 폭 540px). 제목 · 한두 줄 설명 · 넘길 파일 목록(경로는 고정폭, 상태는 `ink-muted`) · 취소 / 실행. 되돌릴 수 없는 일이면 초점을 「취소」에 둔다.
 - **충돌 판:** Diff 머리 아래 `crit-weak` 바탕 6px 모서리 상자. 세 쪽 비교 단추 줄과 Resolve 단추 줄 두 줄.
 - **Blame:** Diff 표와 같은 꼴에 왼쪽 `panel-raised` 칸(리비전 · 작성자 · 날짜, 11.5px `ink-muted`). 같은 리비전이 이어지면 첫 줄에만 적고, 바뀌는 줄 위에 `line-soft` 1px 선을 긋는다.

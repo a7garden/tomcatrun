@@ -1,6 +1,6 @@
 [package]
 name = "tomcatrun"
-version = "0.18.0"  # 버전은 여기 한 곳 — tauri.conf.json · 설치 파일 · 화면이 이 값을 따른다 (CHANGELOG.md)
+version = "0.19.0"  # 버전은 여기 한 곳 — tauri.conf.json · 설치 파일 · 화면이 이 값을 따른다 (CHANGELOG.md)
 edition = "2021"
 # 2026.10.29 : 1.99 아래는 받지 않는다 — 1.99.1 에서 cargo test 를 통과했다. 판을 못박지 않아 CI 는 그날의 stable 로 빌드한다
 rust-version = "1.99"
@@ -32,6 +32,8 @@ base64 = "0.22"
 roxmltree = "0.20"
 # Commit message 규칙 (제목 규칙 · 이슈 번호 찾기) — 사용자가 적은 정규식이라 되돌아가며 찾지 않는(느려지지 않는) 엔진을 쓴다
 regex = "1"
+# 「svn 받기」 — Subversion 명령줄 도구 zip 을 푼다. 읽기만 하므로 deflate 밖의 압축 방식은 켜지 않는다
+zip = { version = "2", default-features = false, features = ["deflate"] }
 # 메모리 표시 — ProcessStatus(프로세스 메모리) · ToolHelp(실행기 아래 화면 엔진 프로세스 찾기)
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_System_ProcessStatus", "Win32_System_Diagnostics_ToolHelp", "Win32_Security_Credentials"] }
 

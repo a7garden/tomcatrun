@@ -468,6 +468,10 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .svn-log .undo { float: right; margin-left: 8px; }
 .vcs-srv .svn-note { word-break: break-all; }
 .vcs-srv .svn-note.flag { color: var(--crit); }
+.vcs-srv .svn-get { display: flex; gap: 8px; align-items: center; margin-top: 6px; }
+.vcs-srv .svn-get .btn { flex: none; }
+.vcs-srv .svn-get .svn-note { word-break: keep-all; min-width: 0; }
+.vcs-srv .svn-get .svn-note:not(.flag) { white-space: nowrap; }
 .vcs-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 8px; }
 .vcs-srv { min-width: 0; padding: 10px 14px 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
 .vcs-srv .checks-sub { display: flex; align-items: center; gap: 6px; margin: 0 0 6px; font-size: 13px; }
@@ -3356,7 +3360,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 		["subjectMax", "제목 최대 길이", "제목 글자 수 상한입니다 (한글도 한 글자). 비우거나 0 이면 보지 않습니다.", ""],
 		["svnUpdate", "Update 명령", "Allow write 를 끈 서버에서 「Update 명령 복사」가 만드는 SVN 명령입니다. 앞에 cd 줄이 붙습니다.", "svn"],
 		["gitUpdate", "Pull 명령", "「Pull」 단추와 「Pull 명령 복사」가 쓰는 git 명령입니다. 복사할 때는 앞에 cd 줄이 붙습니다.", "git"],
-		["svnExe", "svn.exe", "비우면 PATH → TortoiseSVN · SlikSVN 설치 폴더에서 찾습니다. SVN 의 Allow write 와 Blame 에 씁니다 (1.10 이상).", "svn"]
+		["svnExe", "svn.exe", "비우면 PATH → TortoiseSVN · SlikSVN 설치 폴더 → 「svn 받기」로 받은 svn 순서로 찾습니다. SVN 의 Allow write 와 Blame 에 씁니다 (1.10 이상).", "svn"]
 	];
 	// 2026-10-29 : 저장소에 쓰는 것은 서버마다 켠다 — 기본은 꺼짐 (명령 복사만)
 	var WRITE_TIP = "켜면 이 서버의 버전 관리 탭에서 Commit · Update(Pull) · Revert · Resolve 를, Git 이면 Fetch · Push 도 실행합니다. Fetch 밖에는 실행 전에 늘 확인 창이 뜹니다. 끄면 명령을 복사만 해 줍니다.";
@@ -3371,11 +3375,15 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 				VCS_FIELDS.map(function (f) {
 					return '<label class="field" data-for="' + f[3] + '"><span title="' + esc(f[2]) + '">' + f[1] + '</span><input type="text" data-k="' + f[0] + '" spellcheck="false" title="' + esc(f[2]) + '"></label>';
 				}).join("") +
-				'<div class="field" data-for="svn"><span>찾은 svn</span><small class="svn-note" data-k="svnCli"></small></div>' +
+				'<div class="field top" data-for="svn"><span>찾은 svn</span><div><small class="svn-note" data-k="svnCli"></small>' +
+					'<div class="svn-get" data-k="svnGetBox" hidden><button class="btn sm" data-k="svnGet"></button><small class="svn-note" data-k="svnGetNote"></small></div></div></div>' +
 				'<div class="vcs-acts"><button class="btn" data-k="save">저장</button></div></div>';
 		}).join("");
 		s.servers.forEach(function (sv, i) {
 			var box = $("vcs" + i);
+			box.querySelector('[data-k="svnGet"]').onclick = function () {
+				invoke("svn_get").catch(function (e) { showError(String(e)); });
+			};
 			box.querySelector('[data-k="save"]').onclick = function () {
 				var v = { kind: box.querySelector('[data-k="kind"]').value, write: box.querySelector('[data-k="write"]').checked };
 				VCS_FIELDS.forEach(function (f) { v[f[0]] = box.querySelector('[data-k="' + f[0] + '"]').value; });
@@ -3410,6 +3418,16 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 			var cli = box.querySelector('[data-k="svnCli"]');
 			cli.textContent = sv.svnBlock ? sv.svnBlock : sv.svnCli;
 			cli.classList.toggle("flag", !!sv.svnBlock);
+			// 2026.10.29 : svn 받기 — 경로를 비웠는데 어디서도 못 찾았을 때만. 받는 중이거나 실패했으면 그것도 보인다 (모든 서버에 같은 상태)
+			var g = s.svnGet, getting = g.downloading != null;
+			box.querySelector('[data-k="svnGetBox"]').hidden = !(sv.svnMissing || getting);
+			var gb = box.querySelector('[data-k="svnGet"]');
+			gb.disabled = getting;
+			gb.textContent = "svn 받기";
+			gb.title = "VisualSVN 이 배포하는 Apache Subversion " + g.version + " 명령줄 도구(약 5 MB)를 받아 사용자 폴더(AppData\\Local\\tomcatrun\\svn)에 풉니다. 해시가 맞을 때만 씁니다.";
+			var gn = box.querySelector('[data-k="svnGetNote"]');
+			gn.textContent = getting ? "받는 중 · " + (g.downloading / 1048576).toFixed(1) + " MB" : g.error || "";
+			gn.classList.toggle("flag", !getting && !!g.error);
 			if (!box._dirty) {
 				box.querySelector('[data-k="write"]').checked = !!sv.vcs.write;
 				box.querySelector('[data-k="kind"]').value = sv.vcs.kind;

@@ -88,7 +88,8 @@ pub struct Probe {
     pub minor: u32,
 }
 
-/// 설정에 적은 경로 → PATH → TortoiseSVN · SlikSVN 설치 폴더 순서
+/// 설정에 적은 경로 → PATH → TortoiseSVN · SlikSVN 설치 폴더 → 설정에서 받은 svn(svnget.rs) 순서
+/// 받은 svn 을 맨 끝에 둔다 — 이미 쓰던 svn 이 있는 PC 에서는 찾은 svn 이 바뀌지 않는다
 pub fn locate(cfg_exe: &str) -> Option<PathBuf> {
     let cfg = cfg_exe.trim();
     if !cfg.is_empty() {
@@ -100,6 +101,7 @@ pub fn locate(cfg_exe: &str) -> Option<PathBuf> {
         ["C:/Program Files/TortoiseSVN/bin/svn.exe", "C:/Program Files/SlikSvn/bin/svn.exe", "C:/Program Files (x86)/SlikSvn/bin/svn.exe"]
             .iter()
             .map(PathBuf::from)
+            .chain([crate::svnget::dir().join("bin").join("svn.exe")])
             .find(|p| p.is_file())
     })
 }
@@ -125,7 +127,7 @@ pub fn probe(cfg_exe: &str) -> Result<Probe, String> {
     let r = (|| -> Result<Probe, String> {
         let exe = locate(&key).ok_or_else(|| {
             if key.is_empty() {
-                "svn.exe 를 찾지 못했습니다. TortoiseSVN 을 설치할 때 「command line client tools」 를 고르거나, svn.exe 경로를 적어 주세요.".to_string()
+                "svn.exe 를 찾지 못했습니다. 설정 › 버전 관리에서 「svn 받기」를 누르거나, TortoiseSVN 의 「command line client tools」 를 설치하거나, svn.exe 경로를 적어 주세요.".to_string()
             } else {
                 format!("svn.exe 가 없습니다: {key}")
             }
@@ -139,6 +141,11 @@ pub fn probe(cfg_exe: &str) -> Result<Probe, String> {
     })();
     PROBES.lock().unwrap().get_or_insert_with(HashMap::new).insert(key, (Instant::now(), r.clone()));
     r
+}
+
+/// 찾은 결과를 잊는다 — svn 을 받은 직후에 부른다. 잊지 않으면 30초 동안 「찾지 못했습니다」가 남는다
+pub fn forget() {
+    *PROBES.lock().unwrap() = None;
 }
 
 /// 이 svn 으로 이 작업복사본에 써도 되는가 — 안 되면 그 까닭. svn upgrade 는 부르지 않는다 (형식을 바꾸면 다른 도구가 못 연다).
