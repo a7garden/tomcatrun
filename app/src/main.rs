@@ -36,7 +36,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::sync::Mutex;
+use std::sync::{Mutex, RwLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -455,7 +455,9 @@ struct Rt {
 
 struct Shared {
     cfg: Mutex<Config>,
-    rts: Vec<Rt>,
+    // 서버를 더하면 실행 중에 늘어난다 (줄지는 않는다). 하나씩 앱 끝까지 살려 두어 참조를 잠금 밖으로 넘긴다.
+    // 늘릴 때는 cfg.servers 보다 먼저 늘린다 — 화면 상태가 cfg.servers 의 번호로 rts 를 찾는다.
+    rts: RwLock<Vec<&'static Rt>>,
     log_tx: Sender<LogLine>,
     change_tx: Sender<(usize, PathBuf)>,
     auto_compile: AtomicBool,
@@ -501,11 +503,60 @@ fn shared(app: &AppHandle) -> &Shared {
     app.state::<Shared>().inner()
 }
 
-fn rt(app: &AppHandle, i: usize) -> &Rt {
-    // State 는 앱이 살아 있는 동안 그대로이므로 참조를 넘겨도 된다
-    let s: tauri::State<'_, Shared> = app.state::<Shared>();
-    let shared: &Shared = s.inner();
-    &shared.rts[i]
+fn rt(app: &AppHandle, i: usize) -> &'static Rt {
+    shared(app).rts.read().unwrap()[i]
+}
+
+fn rt_count(app: &AppHandle) -> usize {
+    shared(app).rts.read().unwrap().len()
+}
+
+fn new_rt() -> (&'static Rt, Receiver<bool>) {
+    let (tx, rx) = mpsc::channel();
+    let r = Rt {
+        last_reload: Mutex::new(String::new()),
+        inner: Mutex::new(Inner {
+            child: None,
+            status: Status::Stopped,
+            started_at_ms: None,
+            startup_ms: None,
+            spawn_ms: 0,
+            marks: Vec::new(),
+            phases: Vec::new(),
+            mode: String::new(),
+            java: String::new(),
+            waiting: false,
+            generation: 0,
+            mapper_hotswap: false,
+            mapper_wait: None,
+            session_had: None,
+            session_err: None,
+            mem: Mem::default(),
+            compiling: false,
+            last_compile: None,
+            restart_needed: Vec::new(),
+        }),
+        compile_lock: Mutex::new(()),
+        compile_tx: tx,
+        console: Mutex::new(None),
+        deps_busy: AtomicBool::new(false),
+        live_mappers: Mutex::new(Vec::new()),
+        svn_stamp: AtomicU64::new(0),
+        git_stamp: AtomicU64::new(0),
+    };
+    (Box::leak(Box::new(r)), rx)
+}
+
+// 서버가 n 개가 되도록 실행 상태와 컴파일 줄을 늘린다 — 서버를 더해도 실행기를 다시 열지 않는다
+fn grow_rts(app: &AppHandle, n: usize) {
+    let mut rts = shared(app).rts.write().unwrap();
+    while rts.len() < n {
+        let (r, rx) = new_rt();
+        let i = rts.len();
+        rts.push(r);
+        let a = app.clone();
+        thread::spawn(move || compile_worker(a, i, rx));
+    }
 }
 
 fn cfgs(app: &AppHandle, i: usize) -> (Config, ServerCfg) {
@@ -1239,7 +1290,7 @@ fn monitor(app: AppHandle) {
         let s = app.state::<Shared>();
         let mut servers = Vec::new();
         let mut changed = false;
-        for i in 0..s.rts.len() {
+        for i in 0..rt_count(&app) {
             let r = rt(&app, i);
             let (m, overdue) = {
                 let mut inner = r.inner.lock().unwrap();
@@ -2009,10 +2060,10 @@ fn newest_java(dir: &Path, best: &mut Option<(u64, PathBuf)>) {
 // 서버 하나가 다 뜬 뒤(켜는 중인 서버가 없을 때), 또는 60초 동안 아무 서버도 켜지 않았을 때 데운다.
 // 2026-10-27 : 「켜고 5초 뒤」였는데, 실행기를 켜자마자 서버를 누르면 데우기가 서버 기동과 겹쳤다 (JVM · 에이전트 9.1초 · 톰캣 초기화 10.8초).
 fn warm_daemon(app: &AppHandle) {
-    let n = shared(app).rts.len();
     let began = Instant::now();
     loop {
         thread::sleep(Duration::from_secs(2));
+        let n = rt_count(app);
         let statuses: Vec<Status> = (0..n).map(|i| rt(app, i).inner.lock().unwrap().status).collect();
         let starting = statuses.iter().any(|s| *s == Status::Starting);
         let running = statuses.iter().any(|s| *s == Status::Running);
@@ -2286,7 +2337,7 @@ fn change_worker(app: AppHandle, rx: Receiver<(usize, PathBuf)>) {
                 Err(RecvTimeoutError::Disconnected) => return,
             }
         }
-        let count = app.state::<Shared>().rts.len();
+        let count = rt_count(&app);
         for i in 0..count {
             let mine: Vec<&PathBuf> = paths.iter().filter(|(n, _)| *n == i).map(|(_, p)| p).collect();
             if !mine.is_empty() {
@@ -2358,11 +2409,17 @@ fn apply_changes(app: &AppHandle, i: usize, paths: &[&PathBuf]) {
     }
 }
 
+// 켤 때 · 프로젝트 폴더가 바뀌었을 때 — 감시를 모두 걷고 지금 설정으로 다시 건다 (실행기를 다시 열지 않아도 새 폴더를 감시한다)
 fn start_watchers(app: &AppHandle) {
-    let s = app.state::<Shared>();
+    let s = shared(app);
     let servers = s.cfg.lock().unwrap().servers.clone();
+    let mut watchers = s.watchers.lock().unwrap();
+    watchers.clear();
     for (i, sv) in servers.iter().enumerate() {
-        *s.rts[i].live_mappers.lock().unwrap() = live_mappers(&sv.project);
+        *rt(app, i).live_mappers.lock().unwrap() = live_mappers(&sv.project);
+        if sv.project.trim().is_empty() {
+            continue;
+        }
         let project = PathBuf::from(&sv.project);
         let tx = s.change_tx.clone();
         let watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
@@ -2386,7 +2443,7 @@ fn start_watchers(app: &AppHandle) {
         match w.watch(&main, RecursiveMode::Recursive).and_then(|_| w.watch(&project, RecursiveMode::NonRecursive)) {
             Ok(()) => {
                 log(app, Some(i), "app", "", format!("저장 감시 중: {}", p(&main)));
-                s.watchers.lock().unwrap().push(w);
+                watchers.push(w);
             }
             Err(e) => log(app, Some(i), "app", "err", format!("소스 폴더를 감시하지 못했습니다: {e}")),
         }
@@ -2476,7 +2533,7 @@ fn refresh_deps_blocking(app: &AppHandle, i: usize) -> bool {
 /* ---------- 화면 명령 ---------- */
 
 fn check_srv(app: &AppHandle, srv: usize) -> Result<(), String> {
-    if srv < app.state::<Shared>().rts.len() {
+    if srv < rt_count(app) {
         Ok(())
     } else {
         Err(format!("없는 서버: {srv}"))
@@ -2503,7 +2560,7 @@ fn stop(app: AppHandle, srv: usize) -> Result<(), String> {
 
 fn running_names(app: &AppHandle) -> Vec<String> {
     let c = shared(app).cfg.lock().unwrap().clone();
-    (0..shared(app).rts.len())
+    (0..rt_count(app))
         .filter(|&i| rt(app, i).inner.lock().unwrap().child.is_some())
         .map(|i| c.servers[i].name.clone())
         .collect()
@@ -2521,7 +2578,7 @@ fn quit_then(app: AppHandle, after: impl FnOnce(&AppHandle) + Send + 'static) {
     if shared(&app).quitting.swap(true, Ordering::Relaxed) {
         return;
     }
-    let n = shared(&app).rts.len();
+    let n = rt_count(&app);
     let running: Vec<usize> = (0..n).filter(|&i| rt(&app, i).inner.lock().unwrap().child.is_some()).collect();
     if !running.is_empty() {
         log(&app, None, "app", "", "창을 닫기 전에 톰캣을 끕니다.");
@@ -2664,7 +2721,7 @@ fn set_ignore(app: AppHandle, list: Vec<String>) -> Result<(), String> {
         out
     };
     // 이미 쌓인 「재시작 필요」 가운데 이제 무시하는 것은 걷어낸다
-    for i in 0..s.rts.len() {
+    for i in 0..rt_count(&app) {
         rt(&app, i).inner.lock().unwrap().restart_needed.retain(|x| !ignored(&clean, &x.path));
     }
     emit_state(&app);
@@ -2698,7 +2755,7 @@ fn set_paths(app: AppHandle, paths: Paths) -> Result<(), String> {
     Ok(())
 }
 
-// 「설정 › 서버」 — 포트 · 이름 · 바로가기는 다음 기동부터, 프로젝트 폴더의 저장 감시는 실행기를 다시 열면 따라간다
+// 「설정 › 서버」 — 포트 · 이름 · 바로가기는 다음 기동부터, 프로젝트 폴더를 바꾸면 저장 감시를 바로 옮긴다
 #[tauri::command]
 fn set_server(app: AppHandle, srv: usize, edit: ServerEdit) -> Result<bool, String> {
     check_srv(&app, srv)?;
@@ -2738,6 +2795,9 @@ fn set_server(app: AppHandle, srv: usize, edit: ServerEdit) -> Result<bool, Stri
         (c.clone(), moved)
     };
     save_config(&c.0).map_err(|e| format!("설정을 저장하지 못했습니다: {e}"))?;
+    if c.1 {
+        start_watchers(&app);
+    }
     emit_state(&app);
     let sv = &c.0.servers[srv];
     if c.1 && !sv.project.is_empty() && jar_count(&sv.deps_dir) == 0 {
@@ -2750,7 +2810,7 @@ fn set_server(app: AppHandle, srv: usize, edit: ServerEdit) -> Result<bool, Stri
     Ok(c.1)
 }
 
-// 서버를 더한다 — 서버마다 상태 · 감시 · 컴파일 줄이 실행기를 켤 때 만들어지므로, 실행기를 다시 열면 보인다
+// 서버를 더한다 — 실행 상태 · 컴파일 줄을 함께 늘려 바로 보인다. 저장 감시는 프로젝트 폴더를 정하면 걸린다.
 #[tauri::command]
 fn add_server(app: AppHandle) -> Result<(), String> {
     let mut c = shared(&app).cfg.lock().unwrap().clone();
@@ -2767,7 +2827,11 @@ fn add_server(app: AppHandle) -> Result<(), String> {
         (sv.http_port, sv.ajp_port, sv.shutdown_port, sv.debug_port) = (t.http_port, t.ajp_port, t.shutdown_port, t.debug_port);
     }
     c.servers.push(sv);
-    save_config(&c).map_err(|e| format!("설정을 저장하지 못했습니다: {e}"))
+    save_config(&c).map_err(|e| format!("설정을 저장하지 못했습니다: {e}"))?;
+    grow_rts(&app, c.servers.len());
+    *shared(&app).cfg.lock().unwrap() = c;
+    emit_state(&app);
+    Ok(())
 }
 
 // 「설정 › 서버 › 프로젝트 폴더 › 고르기」 — Windows 폴더 고르기 창. 고른 폴더나 그 바로 아래에서 src/main/webapp 이 있는 폴더를 돌려준다.
@@ -2817,17 +2881,17 @@ async fn eclipse_scan(app: AppHandle, dir: Option<String>) -> Result<Vec<eclipse
 }
 
 // 이클립스 서버를 실행기 서버로 — 같은 프로젝트를 쓰는 서버가 있으면 그것을, 프로젝트가 빈 서버가 있으면 그것을 채우고, 없으면 더한다.
-// 의존 jar 는 이클립스 배포본에서 옮긴다. 돌려주는 bool 은 서버 수가 바뀌어 실행기를 다시 열어야 하는지.
-fn import_servers(app: &AppHandle, picked: &[eclipse::EServer]) -> Result<(String, bool), String> {
+// 의존 jar 는 이클립스 배포본에서 옮긴다. 늘어난 서버 · 바뀐 프로젝트 폴더는 실행기를 다시 열지 않아도 바로 쓴다.
+// 2026-10-29 : 서버 수가 바뀔 때만 실행기를 다시 열었다. 빈 서버를 채우거나 프로젝트를 바꾼 경우는 저장 감시가 옛 폴더에 남아 껐다 켜야 반영됐다.
+fn import_servers(app: &AppHandle, picked: &[eclipse::EServer]) -> Result<String, String> {
     if picked.is_empty() {
         return Err("가져올 서버가 없습니다 (프로젝트 폴더를 찾지 못했습니다).".into());
     }
-    for (i, r) in shared(app).rts.iter().enumerate() {
-        if r.inner.lock().unwrap().status != Status::Stopped {
+    for i in 0..rt_count(app) {
+        if rt(app, i).inner.lock().unwrap().status != Status::Stopped {
             return Err(format!("{} 톰캣을 끈 뒤에 가져오세요.", cfgs(app, i).1.name));
         }
     }
-    let before = shared(app).rts.len();
     let mut c = shared(app).cfg.lock().unwrap().clone();
     let mut jobs = Vec::new();
     for es in picked {
@@ -2854,8 +2918,9 @@ fn import_servers(app: &AppHandle, picked: &[eclipse::EServer]) -> Result<(Strin
         if !es.lib_dir.is_empty() { jobs.push((sv.name.clone(), es.lib_dir.clone(), es.project.clone(), PathBuf::from(&sv.deps_dir))); }
     }
     save_config(&c).map_err(|e| format!("설정을 저장하지 못했습니다: {e}"))?;
-    let restart = c.servers.len() != before;
+    grow_rts(app, c.servers.len());
     *shared(app).cfg.lock().unwrap() = c;
+    start_watchers(app);
     let mut notes = Vec::new();
     for (name, lib, project, deps) in jobs {
         match eclipse::copy_deps(&lib, &project, &deps) {
@@ -2874,23 +2939,17 @@ fn import_servers(app: &AppHandle, picked: &[eclipse::EServer]) -> Result<(Strin
     let msg = format!("이클립스에서 서버 {}개를 가져왔습니다 · {}", picked.len(), notes.join(" · "));
     log(app, None, "app", "ok", msg.clone());
     emit_state(app);
-    Ok((msg, restart))
+    Ok(msg)
 }
 
 #[tauri::command]
 async fn eclipse_import(app: AppHandle, ws: String, ids: Vec<String>) -> Result<String, String> {
-    let a = app.clone();
-    let (msg, restart) = tauri::async_runtime::spawn_blocking(move || {
+    tauri::async_runtime::spawn_blocking(move || {
         let picked: Vec<_> = eclipse::read_workspace(Path::new(&ws)).servers.into_iter().filter(|s| ids.contains(&s.id) && !s.project.is_empty()).collect();
-        import_servers(&a, &picked)
+        import_servers(&app, &picked)
     })
     .await
-    .map_err(|e| e.to_string())??;
-    if restart {
-        // 서버 수가 바뀌었다 — 새 설정으로 다시 연다
-        app.restart();
-    }
-    Ok(msg)
+    .map_err(|e| e.to_string())?
 }
 
 fn jar_count(dir: &str) -> usize {
@@ -2951,11 +3010,8 @@ fn auto_setup(app: AppHandle) {
             return;
         }
         match import_servers(&app, &found) {
-            Ok((msg, restart)) => {
+            Ok(msg) => {
                 let _ = app.emit("toast", format!("{msg} · 시작을 누르면 됩니다"));
-                if restart {
-                    app.restart();
-                }
             }
             Err(e) => {
                 log(&app, None, "app", "err", e);
@@ -2992,6 +3048,7 @@ async fn quick_project(app: AppHandle, srv: usize, project: String) -> Result<St
         }
         save_config(&c).map_err(|e| format!("설정을 저장하지 못했습니다: {e}"))?;
     }
+    start_watchers(&app);
     emit_state(&app);
     let a = app.clone();
     let r = tauri::async_runtime::spawn_blocking(move || auto_deps_blocking(&a, srv)).await.map_err(|e| e.to_string())?;
@@ -3413,50 +3470,10 @@ fn main() {
     let (cfg, cfg_note) = load_config();
     let (log_tx, log_rx) = mpsc::channel();
     let (change_tx, change_rx) = mpsc::channel();
-    let mut compile_rxs = Vec::new();
-    let rts: Vec<Rt> = cfg
-        .servers
-        .iter()
-        .map(|_| {
-            let (tx, rx) = mpsc::channel();
-            compile_rxs.push(rx);
-            Rt {
-                last_reload: Mutex::new(String::new()),
-                inner: Mutex::new(Inner {
-                    child: None,
-                    status: Status::Stopped,
-                    started_at_ms: None,
-                    startup_ms: None,
-                    spawn_ms: 0,
-                    marks: Vec::new(),
-                    phases: Vec::new(),
-                    mode: String::new(),
-                    java: String::new(),
-                    waiting: false,
-                    generation: 0,
-                    mapper_hotswap: false,
-                    mapper_wait: None,
-                    session_had: None,
-                    session_err: None,
-                    mem: Mem::default(),
-                    compiling: false,
-                    last_compile: None,
-                    restart_needed: Vec::new(),
-                }),
-                compile_lock: Mutex::new(()),
-                compile_tx: tx,
-                console: Mutex::new(None),
-                deps_busy: AtomicBool::new(false),
-                live_mappers: Mutex::new(Vec::new()),
-                svn_stamp: AtomicU64::new(0),
-                git_stamp: AtomicU64::new(0),
-            }
-        })
-        .collect();
     let shared = Shared {
         auto_compile: AtomicBool::new(cfg.auto_compile),
         cfg: Mutex::new(cfg),
-        rts,
+        rts: RwLock::new(Vec::new()), // 화면이 뜨기 전 setup 에서 채운다 (컴파일 줄은 앱 핸들이 있어야 띄운다)
         log_tx,
         change_tx,
         watchers: Mutex::new(Vec::new()),
@@ -3488,10 +3505,8 @@ fn main() {
             let h = app.handle().clone();
             let h2 = h.clone();
             thread::spawn(move || log_pump(h2, log_rx));
-            for (i, rx) in compile_rxs.into_iter().enumerate() {
-                let hc = h.clone();
-                thread::spawn(move || compile_worker(hc, i, rx));
-            }
+            let n = h.state::<Shared>().cfg.lock().unwrap().servers.len();
+            grow_rts(&h, n);
             let h4 = h.clone();
             thread::spawn(move || change_worker(h4, change_rx));
             if let Some(note) = &cfg_note {
