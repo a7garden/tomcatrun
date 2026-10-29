@@ -14,6 +14,8 @@
 //   JSP · JS · CSS              소스 폴더를 그대로 읽으므로 저장하면 끝
 //   매퍼 XML                    앱이 묶음 전체를 다시 해석한다 (2~3초) · 「매퍼 하나만 다시 읽기」를 켜면 HotswapAgent 가 그 파일만
 //   자바                        저장 → 감시 → 상주 컴파일러(ECJ · 바뀐 파일만) → HotswapAgent 가 실행 중인 JVM 에 교체
+//                               → 빈 클래스면 Spring 이 빈을 다시 등록하고 URL 매핑을 새로 만든다 (컨트롤러는 7~10초 · JavaWait)
+//                               상수 값 · 시그니처가 바뀌면 쓰는 소스도 컴파일한다 (classapi.rs) · 지운 소스의 클래스는 지운다
 //   Spring 설정 · web.xml 등    기동 때만 읽는다 → 「재시작해야 반영」 목록에 올린다
 //
 // 원본은 건드리지 않는다 — 프로젝트 소스 · IDE 설정에는 읽기만 한다.
@@ -23,12 +25,14 @@
 // 개발에서만 바꾸는 앱 설정은 overlay/ 의 별도 파일로 덧붙이고(tomcatrun.DevTweaks), 쓰는 것은 모두 이 폴더 안이다.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod classapi;
 mod commitmsg;
 mod eclipse;
 mod filtering;
 mod git;
 mod gitwrite;
 mod jarcheck;
+mod scancheck;
 mod svn;
 mod svncli;
 mod svnweb;
@@ -217,6 +221,7 @@ struct Config {
     lazy_init: bool,      // 빈을 처음 쓸 때 만든다 (실험)
     mapper_hotswap: bool, // 바뀐 매퍼 하나만 다시 읽는다 (실험 · HotswapAgent MyBatis 플러그인)
     keep_session: bool,   // 재시작해도 로그인 유지 (톰캣 기본값과 같다)
+    profile_start: bool,  // 기동 표본 — 켜는 동안 2초마다 스레드를 떠서 어디서 시간을 쓰는지 남긴다 (start_sampler)
     update_check: bool,   // 켤 때 · 6시간마다 GitHub 릴리스에서 새 판을 확인한다
     tld_scan: String,     // TLD 를 찾을 jar (쉼표로 · 비우면 모든 jar) — server.xml 의 JarScanFilter
     ignore: Vec<String>,  // 저장 감시에서 뺄 파일 · 폴더 · 모든 서버 공통 · 프로젝트 기준 (「폴더/」 · 「*.sql」 · 「src/**/tmp」 꼴 · ignored() 참고)
@@ -321,6 +326,8 @@ impl Default for Config {
             lazy_init: false,
             mapper_hotswap: false,
             keep_session: true,
+            // jstack 이 붙을 때마다 JVM 이 잠깐 멈춰 기동이 조금 늘어난다 — 잴 때만 켠다
+            profile_start: false,
             update_check: true,
             tld_scan: String::new(),
             ignore: vec![],
@@ -530,6 +537,7 @@ struct Inner {
     generation: u64,                // 시작할 때마다 하나씩 는다. 기다리던 옛 기동이 새 기동을 제 것으로 알고 이어 띄우지 않게 한다
     mapper_hotswap: bool,           // 이번 기동이 「매퍼 하나만 다시 읽기」로 떴는가
     mapper_wait: Option<(u64, String)>, // 매퍼를 저장하고 다시 읽었다는 로그를 기다리는 중 (시각, 파일)
+    java_wait: Option<JavaWait>,    // 컴파일한 자바가 실행 중인 앱에 다 들어가기를 기다리는 중 (watch_java)
     session_had: Option<u64>,       // 이번 기동 전에 남아 있던 세션 파일 크기 (없었거나 로그인 유지를 껐으면 None)
     session_err: Option<String>,    // 톰캣이 세션을 저장 · 되살리다 낸 오류의 첫 예외 줄 (빈 값이면 그 줄을 기다리는 중)
     mem: Mem,
@@ -538,17 +546,30 @@ struct Inner {
     restart_needed: Vec<Pending>,
 }
 
+/// 자바 반영의 진행 — 컴파일 → 클래스 교체(HotswapAgent) → Spring 이 빈을 다시 등록하고 URL 매핑을 새로 만든다.
+/// 컨트롤러는 마지막 단계가 교체 뒤 7~10초 걸린다 (2026-10-27 로그). 그 끝을 알리지 않으면 먼저 눌러 보고 「안 들어갔다」고 본다.
+struct JavaWait {
+    id: u64,                 // 컴파일마다 새로 — 지켜보는 스레드가 제 것인지 가린다
+    since: Instant,          // 컴파일을 시작한 때
+    reloaded: bool,          // 「Reloading classes」 를 받았다
+    beans: Vec<String>,      // 다시 등록한 Spring 빈
+    last: Instant,           // 마지막으로 관련 줄을 받은 때
+}
+
 /// 서버 하나의 실행 상태
 struct Rt {
     last_reload: Mutex<String>, // 마지막 「Reloading classes [...]」 의 클래스 (교체 실패 알림에 이름을 붙인다)
     inner: Mutex<Inner>,
     compile_lock: Mutex<()>,
     compile_tx: Sender<bool>, // true = 전체 컴파일
-    console: Mutex<Option<File>>,
+    // 2026.10.29 : 줄마다 파일에 쓰던 것을 버퍼로 — 기동 때 수천 줄이 줄마다 시스템 호출이 되었다. monitor 가 3초마다 비운다
+    console: Mutex<Option<std::io::BufWriter<File>>>,
     deps_busy: AtomicBool,
     live_mappers: Mutex<Vec<String>>,
     res_gen: AtomicU64, // src/main 의 java · webapp 밖을 저장할 때마다 올린다 — 리소스 필터링 점검을 다시 세는 표지
     filter_check: Mutex<Option<(String, Option<Check>)>>, // 리소스 필터링 점검 (pom · m2e 설정 시각 · res_gen 이 같으면 다시 세지 않는다)
+    scan_jars: Mutex<Option<(String, scancheck::JarReport)>>, // 기동 탐색 점검의 jar 쪽 (jar 이름 · 크기 · 시각이 같으면 다시 열지 않는다)
+    scan_src: Mutex<Option<(u64, Vec<String>)>>,              // 같은 점검의 소스 쪽 (컴파일 표지가 같으면 다시 읽지 않는다)
     svn_stamp: AtomicU64, // 작업복사본 .svn/wc.db 의 수정 시각 — 바뀌면(커밋 · 업데이트) 버전 관리 화면을 다시 읽게 한다
     git_stamp: AtomicU64, // .git 의 index · HEAD · FETCH_HEAD 중 가장 늦은 수정 시각 — 같은 용도
     vcs_busy: AtomicBool, // Commit · Update 같은 쓰기가 도는 중 — 한 서버에 하나씩, 그동안 위 두 표지로 다시 읽게 하지 않는다
@@ -630,6 +651,7 @@ fn new_rt() -> (&'static Rt, Receiver<bool>) {
             generation: 0,
             mapper_hotswap: false,
             mapper_wait: None,
+            java_wait: None,
             session_had: None,
             session_err: None,
             mem: Mem::default(),
@@ -644,6 +666,8 @@ fn new_rt() -> (&'static Rt, Receiver<bool>) {
         live_mappers: Mutex::new(Vec::new()),
         res_gen: AtomicU64::new(0),
         filter_check: Mutex::new(None),
+        scan_jars: Mutex::new(None),
+        scan_src: Mutex::new(None),
         svn_stamp: AtomicU64::new(0),
         git_stamp: AtomicU64::new(0),
         vcs_busy: AtomicBool::new(false),
@@ -786,6 +810,7 @@ struct Snapshot {
     lazy_init: bool,
     mapper_hotswap: bool,
     keep_session: bool,
+    profile_start: bool,
     ignore: Vec<String>,
     paths: Paths,
     update_check: bool,
@@ -867,6 +892,34 @@ fn launch_java(c: &Config, s: &ServerCfg) -> String {
 /// 핫리로드를 끄고 띄울 java — 서버의 java, 비었으면 「설정 › 경로」의 java
 fn plain_java(c: &Config, s: &ServerCfg) -> String {
     if s.java.trim().is_empty() { c.java_plain.clone() } else { s.java.trim().replace('\\', "/") }
+}
+
+/// 핫리로드 모드의 인증서 목록 — DCEVM 의 cacerts 에 Windows 루트 인증서 저장소를 더해 <base>/temp/cacerts 로 만든다.
+/// 2026.10.29 : DCEVM 8u181 의 cacerts 는 2018년 판이라 GlobalSign Root R3 가 없어 브이월드(api.vworld.kr) 호출이 PKIX 오류로 막혔다.
+/// Windows 저장소만 쓰지 않는 것은 Windows 가 루트를 쓸 때가 되어서야 내려받아 채워서 cacerts 에 있던 것이 빠질 수 있어서다.
+/// Windows 저장소가 기동마다 바뀔 수 있으니 기동마다 다시 만든다 (1초 안쪽). 돌려주는 값은 (경로 · 더한 수) 이고, 못 만들면 Err 의 까닭과 함께 기본 cacerts 로 뜬다.
+fn merged_trust_store(java_hot: &str, base: &str) -> Result<(String, usize), String> {
+    let bin = Path::new(java_hot).parent().ok_or("java 경로가 비었습니다")?;
+    let src = bin.parent().ok_or("JDK 폴더를 찾지 못했습니다")?.join("jre/lib/security/cacerts");
+    let dst = Path::new(base).join("temp/cacerts");
+    // 다 만든 뒤에만 바꿔 넣는다 — 도중에 실패한 반쪽 목록으로 뜨면 기본보다 못하다
+    let tmp = Path::new(base).join("temp/cacerts.tmp");
+    fs::copy(&src, &tmp).map_err(|e| format!("{} 을 복사하지 못했습니다: {e}", p(&src)))?;
+    let out = Command::new(bin.join("keytool.exe"))
+        .args(["-J-Duser.language=en", "-importkeystore", "-srcstoretype", "Windows-ROOT", "-srckeystore", "NONE", "-destkeystore"])
+        .arg(&tmp)
+        .args(["-deststorepass", "changeit", "-noprompt"])
+        .stdin(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map_err(|e| format!("keytool 을 실행하지 못했습니다: {e}"))?;
+    let text = String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
+    if !out.status.success() {
+        let _ = fs::remove_file(&tmp);
+        return Err(format!("keytool 이 실패했습니다: {}", text.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim()));
+    }
+    fs::rename(&tmp, &dst).map_err(|e| format!("{} 을 쓰지 못했습니다: {e}", p(&dst)))?;
+    Ok((p(&dst), text.matches("successfully imported").count()))
 }
 
 /// java.exe 의 판 (주 번호 · 보일 글자) — JDK 의 release 파일에서 읽는다. JDK 8 은 jre/bin/java.exe 일 수도 있어 한 단계 더 올라가 본다.
@@ -979,6 +1032,142 @@ fn filter_check(s: &ServerCfg, r: &Rt) -> Option<Check> {
     c
 }
 
+// 기동 탐색 점검의 재료 — jar 쪽은 jar 이름 · 크기 · 시각이, 소스 쪽은 컴파일 표지가 같으면 지난 결과를 쓴다
+fn scan_report(s: &ServerCfg, r: &Rt) -> (scancheck::JarReport, Vec<String>) {
+    let own = own_lib(&s.project);
+    let deps = PathBuf::from(&s.deps_dir);
+    let mut key = String::new();
+    for dir in [&own, &deps] {
+        let Ok(rd) = fs::read_dir(dir) else { continue };
+        for e in rd.filter_map(Result::ok) {
+            let n = e.file_name().to_string_lossy().to_string();
+            if n.to_ascii_lowercase().ends_with(".jar") {
+                let m = e.metadata().ok();
+                let t = m.as_ref().and_then(|m| m.modified().ok()).and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map_or(0, |d| d.as_millis());
+                key.push_str(&format!("{n}|{}|{t};", m.map_or(0, |m| m.len())));
+            }
+        }
+    }
+    let jars = {
+        let mut cache = r.scan_jars.lock().unwrap();
+        match cache.as_ref() {
+            Some((k, j)) if *k == key => j.clone(),
+            _ => {
+                let j = scancheck::scan_jars(&[&own, &deps]);
+                *cache = Some((key, j.clone()));
+                j
+            }
+        }
+    };
+    let stamp = read_stamp(&s.classes_dir);
+    let src = {
+        let mut cache = r.scan_src.lock().unwrap();
+        match cache.as_ref() {
+            Some((k, v)) if *k == stamp => v.clone(),
+            _ => {
+                let v = scancheck::src_hits(&Path::new(&s.project).join("src/main/java"));
+                *cache = Some((stamp, v.clone()));
+                v
+            }
+        }
+    };
+    (jars, src)
+}
+
+// 「TLD jar」 칸 · 「클래스 전체 탐색 건너뛰기」를 이 서버의 jar · 소스와 견준다.
+// 2026-10-29 실측 : 둘 다 꺼 둔 서버는 웹앱 준비가 17~36초, 켠 서버는 2초 안팎이었다 (같은 앱).
+// 줄이 생기는 것은 좁힐 수 있을 때(scanHint · 「탐색 줄이기」 단추)와 지금 값이 이 서버에 맞지 않을 때(scanWarn)뿐이다.
+fn scan_check(c: &Config, s: &ServerCfg, r: &Rt) -> Option<Check> {
+    if s.project.trim().is_empty() {
+        return None;
+    }
+    let (jars, src) = scan_report(s, r);
+    let mut lines: Vec<String> = Vec::new();
+    let mut can_narrow = false;
+    let cfg_pats: Vec<String> = c.tld_scan.split(',').map(|x| x.trim().to_ascii_lowercase()).filter(|x| !x.is_empty()).collect();
+    let mut pats: Vec<String> = jars.tld.iter().map(|j| scancheck::tld_pattern(j)).collect();
+    pats.sort();
+    pats.dedup();
+    if cfg_pats.is_empty() {
+        if !pats.is_empty() {
+            lines.push(format!("TLD jar 칸이 비어 있어 기동마다 jar {}개를 모두 훑습니다 · 태그 라이브러리가 든 jar 는 {}개입니다: {}", jars.total, pats.len(), pats.join(", ")));
+            can_narrow = true;
+        }
+    } else {
+        let missing: Vec<&String> = jars.tld.iter().filter(|j| !cfg_pats.iter().any(|p| glob(p, &j.to_ascii_lowercase()))).collect();
+        if !missing.is_empty() {
+            let names: Vec<&str> = missing.iter().map(|m| m.as_str()).collect();
+            lines.push(format!("TLD jar 칸에 빠진 jar: {} · 그 태그를 쓰는 JSP 가 「태그를 찾을 수 없다」로 깨집니다", names.join(", ")));
+            can_narrow = true;
+        }
+    }
+    let blockers = scancheck::skip_blockers(&jars, &src);
+    if !c.skip_scan {
+        if blockers.is_empty() {
+            lines.push("클래스 전체 탐색 건너뛰기를 켜도 됩니다 · 애너테이션으로 등록하는 서블릿 · 필터 · 초기화 클래스가 소스와 jar 에 없습니다".into());
+            can_narrow = true;
+        }
+    } else if !blockers.is_empty() {
+        lines.push("클래스 전체 탐색 건너뛰기가 켜져 있지만, 이 서버에서는 건너뛰면 빠지는 것이 있습니다 · 기동이 되어도 그 서블릿 · 필터가 없을 수 있으니 끄세요".into());
+        lines.extend(blockers);
+    }
+    if lines.is_empty() {
+        return None;
+    }
+    if can_narrow {
+        lines.push("「탐색 줄이기」를 누르면 다음 기동부터 들어갑니다 · 두 값은 모든 서버가 함께 씁니다".into());
+    }
+    Some(Check { key: if can_narrow { "scanHint" } else { "scanWarn" }, label: "기동 탐색", ok: true, detail: lines.join("\n"), warn: true })
+}
+
+// 「탐색 줄이기」 — 모든 서버의 TLD jar 를 칸에 모으고, 모든 서버가 건너뛰어도 되면 클래스 전체 탐색 건너뛰기를 켠다.
+// 두 값이 서버 공통이라 한 서버만 보고 좁히면 다른 서버의 JSP 가 깨진다.
+#[tauri::command]
+fn apply_scan_hint(app: AppHandle) -> Result<String, String> {
+    let servers = shared(&app).cfg.lock().unwrap().servers.clone();
+    let mut tld: Vec<String> = Vec::new(); // TLD 가 든 jar 이름 (모든 서버)
+    let mut all_safe = true;
+    for (i, s) in servers.iter().enumerate() {
+        if s.project.trim().is_empty() {
+            continue;
+        }
+        let (jars, src) = scan_report(s, rt(&app, i));
+        tld.extend(jars.tld.iter().map(|j| j.to_ascii_lowercase()));
+        all_safe &= scancheck::skip_blockers(&jars, &src).is_empty();
+    }
+    let mut done: Vec<String> = Vec::new();
+    {
+        let mut c = shared(&app).cfg.lock().unwrap();
+        let mut cur: Vec<String> = c.tld_scan.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect();
+        // 비어 있으면 모든 jar 를 보는 것이라 빠진 것이 없다 — 그때는 찾은 것으로 좁히고, 적혀 있으면 빠진 것만 더한다
+        let was_all = cur.is_empty();
+        let mut added: Vec<String> = Vec::new();
+        for j in tld.iter().filter(|j| was_all || !cur.iter().any(|q| glob(&q.to_ascii_lowercase(), j))) {
+            let pat = scancheck::tld_pattern(j);
+            if !added.contains(&pat) {
+                added.push(pat);
+            }
+        }
+        if !added.is_empty() {
+            cur.extend(added.iter().cloned());
+            c.tld_scan = cur.join(",");
+            done.push(if was_all { format!("TLD jar 를 {}개로 좁혔습니다", cur.len()) } else { format!("TLD jar 칸에 {}개를 더했습니다", added.len()) });
+        }
+        if all_safe && !c.skip_scan {
+            c.skip_scan = true;
+            done.push("클래스 전체 탐색 건너뛰기를 켰습니다".into());
+        }
+        if done.is_empty() {
+            return Ok("바꿀 것이 없습니다.".into());
+        }
+        save_config(&c).map_err(|e| format!("설정을 저장하지 못했습니다: {e}"))?;
+    }
+    emit_state(&app);
+    let msg = format!("{} · 다음 기동부터 들어갑니다.", done.join(" · "));
+    log(&app, None, "app", "", msg.clone());
+    Ok(msg)
+}
+
 // 프로젝트 WEB-INF/lib — 프로젝트를 정하지 않았으면 빈 경로 (실행기 폴더 기준 상대 경로를 읽지 않게 한다)
 fn own_lib(project: &str) -> PathBuf {
     if project.trim().is_empty() { PathBuf::new() } else { Path::new(project).join("src/main/webapp/WEB-INF/lib") }
@@ -1042,6 +1231,7 @@ fn server_checks(c: &Config, s: &ServerCfg, r: &Rt, dups: &[jarcheck::Dup], asid
         out.push(Check { key: "svn", label: "svn.exe (SVN 쓰기)", ok: block.is_none(), detail, warn: false });
     }
     out.extend(filter_check(s, r));
+    out.extend(scan_check(c, s, r));
     // 이클립스와 다르게 도는 것 — 가져올 때 남긴 서버 설정 쪽 + 지금 프로젝트 폴더의 .settings (pom 리소스 필터링은 위 줄이 따로 센다)
     let mut diff = s.eclipse_warnings.clone();
     diff.extend(java_diff(c, s));
@@ -1076,9 +1266,11 @@ fn snapshot(app: &AppHandle) -> Snapshot {
         .enumerate()
         .map(|(n, s)| {
             let r = rt(app, n);
-            let i = r.inner.lock().unwrap();
+            // 2026.10.29 : 폴더 · 파일을 읽는 점검을 상태 잠금 밖에서 먼저 한다 — 쥔 채로 읽으면 그동안 로그 읽기 · 컴파일이 기다린다
             let dups = jarcheck::duplicates(&own_lib(&s.project), Path::new(&s.deps_dir));
             let dedup = dedup_snap(s, &dups);
+            let checks = server_checks(&c, s, r, &dups, &dedup.aside);
+            let i = r.inner.lock().unwrap();
             ServerSnap {
                 id: s.id.clone(),
                 name: s.name.clone(),
@@ -1103,7 +1295,7 @@ fn snapshot(app: &AppHandle) -> Snapshot {
                 last_compile: i.last_compile.clone(),
                 restart_needed: i.restart_needed.clone(),
                 deps_busy: r.deps_busy.load(Ordering::Relaxed),
-                checks: server_checks(&c, s, r, &dups, &dedup.aside),
+                checks,
                 java: s.java.clone(),
                 java_label: java_label(&plain_java(&c, s)),
                 eclipse_java: s.eclipse_java.clone(),
@@ -1139,6 +1331,7 @@ fn snapshot(app: &AppHandle) -> Snapshot {
         lazy_init: c.lazy_init,
         mapper_hotswap: c.mapper_hotswap,
         keep_session: c.keep_session,
+        profile_start: c.profile_start,
         ignore: c.ignore.clone(),
         paths: Paths {
             tomcat_home: c.tomcat_home.clone(),
@@ -1195,6 +1388,82 @@ fn reload_names(t: &str) -> Option<String> {
         1 => Some(names[0].clone()),
         n => Some(format!("{} 외 {}개", names[0], n - 1)),
     }
+}
+
+// 「Registering Spring bean 'fdrController'」 → fdrController
+fn bean_name(t: &str) -> Option<&str> {
+    let at = t.find("Registering Spring bean '")? + "Registering Spring bean '".len();
+    let end = t[at..].find('\'')?;
+    Some(&t[at..at + end])
+}
+
+// 「a 외 n개」 — 반영 기록 한 줄에 이름을 다 늘어놓지 않는다
+fn some_names(v: &[String]) -> String {
+    match v.len() {
+        0 => String::new(),
+        1 => v[0].clone(),
+        n => format!("{} 외 {}개", v[0], n - 1),
+    }
+}
+
+/// 톰캣 로그 한 줄로 자바 반영 단계를 넘긴다 (JavaWait). 교체를 받으면 그 자리에서 한 줄 남기고, 끝은 watch_java 가 알린다.
+fn note_java_line(app: &AppHandle, i: usize, text: &str) {
+    let is_agent = text.starts_with("HOTSWAP AGENT");
+    // URL 매핑을 다시 만드는 동안 Spring 이 「Mapped "{[/a.do]}" …」 를 수백 줄 남긴다 — 그동안은 아직 끝나지 않은 것이다
+    if !is_agent && !text.contains("Mapped \"{") {
+        return;
+    }
+    let mut inner = rt(app, i).inner.lock().unwrap();
+    let Some(w) = inner.java_wait.as_mut() else { return };
+    let mut first = None;
+    if let Some(names) = reload_names(text) {
+        if !w.reloaded {
+            w.reloaded = true;
+            first = Some(format!("자바 교체 · {names} · {:.1}초", w.since.elapsed().as_secs_f64()));
+        }
+    } else if let Some(bean) = bean_name(text) {
+        if !w.beans.iter().any(|b| b == bean) {
+            w.beans.push(bean.to_string());
+        }
+    } else if !w.reloaded || (!is_agent && w.beans.is_empty()) {
+        return;
+    }
+    w.last = Instant::now();
+    drop(inner);
+    if let Some(msg) = first {
+        log(app, Some(i), "app", "hot", msg);
+    }
+}
+
+/// 컴파일이 끝난 뒤 자바 반영의 끝을 지켜본다. 빈을 다시 등록했으면 조용해진 뒤 「Spring 반영」 을 한 줄 남긴다.
+fn watch_java(app: AppHandle, i: usize, id: u64) {
+    thread::spawn(move || loop {
+        thread::sleep(Duration::from_millis(300));
+        let r = rt(&app, i);
+        let mut inner = r.inner.lock().unwrap();
+        let Some(w) = inner.java_wait.as_ref().filter(|w| w.id == id) else { return };
+        // 2026.10.29 : 교체 뒤 빈 다시 등록까지 7~10초 빈 줄 없이 지나기도 했다 (같은 날 로그). 빈을 받은 뒤에는 3초 조용하면 끝으로 본다.
+        let quiet = w.last.elapsed();
+        let msg = if !w.beans.is_empty() {
+            if quiet < Duration::from_secs(3) {
+                continue;
+            }
+            let secs = (w.last - w.since).as_secs_f64();
+            Some(format!("Spring 반영 · {} · 빈 다시 등록 · URL 매핑 새로 만듦 · {secs:.1}초", some_names(&w.beans)))
+        } else if w.reloaded && quiet > Duration::from_secs(20) {
+            None // 빈이 아닌 클래스(VO · 유틸)는 교체로 끝이다
+        } else if !w.reloaded && w.since.elapsed() > Duration::from_secs(60) {
+            None
+        } else {
+            continue;
+        };
+        inner.java_wait = None;
+        drop(inner);
+        if let Some(msg) = msg {
+            log(&app, Some(i), "app", "hot", msg);
+        }
+        return;
+    });
 }
 
 fn add_pending(app: &AppHandle, i: usize, path: String, why: &'static str) {
@@ -1287,6 +1556,7 @@ fn pipe_reader(app: AppHandle, i: usize, src: &'static str, r: impl Read + Send 
                 if let Some(names) = reload_names(&text) {
                     *r.last_reload.lock().unwrap() = names;
                 }
+                note_java_line(&app, i, &text);
                 if is_redefine_failure(&text) && text.contains("Unable to redefine classes") {
                     let names = r.last_reload.lock().unwrap().clone();
                     let what = if names.is_empty() { "자바 클래스".to_string() } else { names };
@@ -1442,7 +1712,7 @@ fn record_mark(app: &AppHandle, i: usize, k: usize, text: &str) {
     let r = rt(app, i);
     let now = now_ms();
     let last = k == PHASE_MARKS.len() - 1;
-    let (phases, opts) = {
+    let (phases, opts, marks, java, pid) = {
         let mut inner = r.inner.lock().unwrap();
         if inner.marks.iter().any(|(m, _)| *m == k) {
             return;
@@ -1454,35 +1724,244 @@ fn record_mark(app: &AppHandle, i: usize, k: usize, text: &str) {
         inner.status = Status::Running;
         inner.startup_ms = text.find("Server startup in").and_then(|pos| text[pos..].chars().filter(|c| c.is_ascii_digit()).collect::<String>().parse().ok());
         inner.phases = phases_from(inner.spawn_ms, &inner.marks);
-        (inner.phases.clone(), inner.mode.clone())
+        let mut m = inner.marks.clone();
+        m.sort();
+        (inner.phases.clone(), inner.mode.clone(), m, inner.java.clone(), inner.child.as_ref().map(|c| c.id()))
     };
-    let total: u64 = phases.iter().map(|p| p.ms).sum();
-    let detail: Vec<String> = phases.iter().map(|p| format!("{} {:.1}초", p.label, p.ms as f64 / 1000.0)).collect();
-    log(app, Some(i), "app", "ok", format!("기동 {:.1}초 · {} · {}", total as f64 / 1000.0, detail.join(" · "), opts));
-    // 옵션을 바꿔 가며 비교할 수 있게 기동마다 한 줄씩 쌓는다
-    let (_, sv) = cfgs(app, i);
-    let csv = Path::new(&sv.catalina_base).join("logs/startup-history.csv");
-    let new_file = !csv.exists();
-    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&csv) {
-        if new_file {
-            let head: Vec<&str> = PHASE_MARKS.iter().map(|(_, l)| *l).collect();
-            let _ = writeln!(f, "시각(ms),옵션,합계(ms),{}", head.join(","));
-        }
-        let mut cols = vec![String::new(); PHASE_MARKS.len()];
-        let sorted = {
-            let mut m = r.inner.lock().unwrap().marks.clone();
-            m.sort();
-            m
-        };
-        for (n, (k, _)) in sorted.iter().enumerate() {
-            cols[*k] = phases.get(n).map(|p| p.ms.to_string()).unwrap_or_default();
-        }
-        let _ = writeln!(f, "{now},{},{total},{}", opts.replace(',', " "), cols.join(","));
-    }
     report_session_restore(app, i);
     emit_state(app);
+    // jstat 이 붙는 데 0.5초쯤 걸린다 — 이 함수는 톰캣 출력을 읽는 스레드에서 돌므로 따로 띄워 출력이 밀리지 않게 한다
+    let app = app.clone();
+    thread::spawn(move || {
+        let app = &app;
+        let jvm = pid.and_then(|pid| jvm_stats(&java, pid));
+        let total: u64 = phases.iter().map(|p| p.ms).sum();
+        let mut detail: Vec<String> = phases.iter().map(|p| format!("{} {:.1}초", p.label, p.ms as f64 / 1000.0)).collect();
+        if let Some(j) = &jvm {
+            detail.push(format!("GC {:.1}초 ({}회) · 클래스 {}개 적재 {:.1}초", j.gc_ms as f64 / 1000.0, j.gc_count, j.classes, j.class_ms as f64 / 1000.0));
+        }
+        log(app, Some(i), "app", "ok", format!("기동 {:.1}초 · {} · {}", total as f64 / 1000.0, detail.join(" · "), opts));
+        // 옵션을 바꿔 가며 비교할 수 있게 기동마다 한 줄씩 쌓는다
+        let (_, sv) = cfgs(app, i);
+        let csv = Path::new(&sv.catalina_base).join("logs/startup-history.csv");
+        let head: Vec<&str> = PHASE_MARKS.iter().map(|(_, l)| *l).collect();
+        let head = format!("시각(ms),옵션,합계(ms),{},{}", head.join(","), JVM_COLS.join(","));
+        // 2026.10.29 : GC · 클래스 열을 더했다 — 열 머리가 다른 옛 파일은 옆으로 옮기고 새로 쓴다 (한 파일에 열 수가 다른 줄이 섞이지 않게)
+        let old_head = fs::read_to_string(&csv).ok().and_then(|t| t.lines().next().map(str::to_string));
+        if old_head.as_deref().map_or(false, |h| h != head) {
+            let prev = csv.with_file_name("startup-history.prev.csv");
+            let _ = fs::remove_file(&prev);
+            let _ = fs::rename(&csv, &prev);
+        }
+        let new_file = !csv.exists();
+        if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&csv) {
+            if new_file {
+                let _ = writeln!(f, "{head}");
+            }
+            let mut cols = vec![String::new(); PHASE_MARKS.len()];
+            for (n, (k, _)) in marks.iter().enumerate() {
+                cols[*k] = phases.get(n).map(|p| p.ms.to_string()).unwrap_or_default();
+            }
+            let jcols = jvm.map(|j| [j.gc_ms, j.gc_count, j.classes, j.class_ms].map(|v| v.to_string()).join(",")).unwrap_or_else(|| ",,,".into());
+            let _ = writeln!(f, "{now},{},{total},{},{jcols}", opts.replace(',', " "), cols.join(","));
+        }
+    });
 }
 
+// 기동 기록 CSV 의 JVM 열 — jvm_stats 의 순서와 같다
+const JVM_COLS: [&str; 4] = ["GC(ms)", "GC 횟수", "클래스 수", "클래스 적재(ms)"];
+
+/// 기동이 끝난 순간 JVM 의 누적 수치 — GC 에 쓴 시간 · 횟수, 읽은 클래스 수 · 그 시간
+struct JvmStats {
+    gc_ms: u64,
+    gc_count: u64,
+    classes: u64,
+    class_ms: u64,
+}
+
+// 띄운 java 와 같은 JDK 의 도구 (jstat · jstack). JRE 의 java(…/jre/bin/java.exe) 면 그 위 JDK 의 bin 을 본다. JRE 만 있으면 없다
+fn jdk_tool(java: &str, name: &str) -> Option<PathBuf> {
+    let bin = Path::new(java).parent()?;
+    [Some(bin.join(name)), bin.parent().and_then(Path::parent).map(|jdk| jdk.join("bin").join(name))].into_iter().flatten().find(|p| p.is_file())
+}
+
+// 도구를 띄워 표준 출력을 받는다. 멈춘 JVM 에는 붙지 못하고 기다리기만 하므로 시간을 넘기면 끊는다
+fn tool_output(exe: &Path, args: &[&str], limit: Duration) -> Option<String> {
+    let mut child = Command::new(exe).args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).creation_flags(CREATE_NO_WINDOW).spawn().ok()?;
+    let mut out = child.stdout.take()?;
+    let reader = thread::spawn(move || {
+        let mut b = Vec::new();
+        let _ = out.read_to_end(&mut b);
+        b
+    });
+    let until = Instant::now() + limit;
+    loop {
+        match child.try_wait() {
+            Ok(Some(st)) => {
+                let b = reader.join().ok()?;
+                return st.success().then(|| decode(&b));
+            }
+            Ok(None) if Instant::now() < until => thread::sleep(Duration::from_millis(50)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+}
+
+fn jvm_stats(java: &str, pid: u32) -> Option<JvmStats> {
+    let jstat = jdk_tool(java, "jstat.exe")?;
+    let pid = pid.to_string();
+    let gc = tool_output(&jstat, &["-gcutil", &pid], Duration::from_secs(5))?;
+    let cls = tool_output(&jstat, &["-class", &pid], Duration::from_secs(5))?;
+    parse_jstat(&gc, &cls)
+}
+
+// jstat -gcutil : 「S0 S1 E O M CCS YGC YGCT FGC FGCT GCT」 · -class : 「Loaded Bytes Unloaded Bytes Time」 (시간은 초)
+fn parse_jstat(gc: &str, cls: &str) -> Option<JvmStats> {
+    let rows = |t: &str| -> Option<(Vec<String>, Vec<String>)> {
+        let mut l = t.lines().filter(|l| !l.trim().is_empty());
+        let h = l.next()?.split_whitespace().map(str::to_string).collect();
+        let v = l.next()?.split_whitespace().map(str::to_string).collect();
+        Some((h, v))
+    };
+    let (gh, gv) = rows(gc)?;
+    let g = |name: &str| gh.iter().position(|h| h == name).and_then(|k| gv.get(k)).and_then(|v| v.parse::<f64>().ok());
+    let (_, cv) = rows(cls)?;
+    let ms = |s: f64| (s * 1000.0).round() as u64;
+    Some(JvmStats {
+        gc_ms: ms(g("GCT")?),
+        gc_count: (g("YGC")? + g("FGC")?) as u64,
+        classes: cv.first()?.parse().ok()?,
+        class_ms: ms(cv.last()?.parse().ok()?),
+    })
+}
+
+/* ---------- 기동 표본 (「설정 › 기동 › 기동 표본 남기기」) ---------- */
+
+// 「Spring 루트 설정」 · 「Spring MVC」 처럼 로그 한 줄 없이 10초 넘게 지나가는 구간이 있다 (2026-10-29 · 10.1초 · 13.5초).
+// 켜는 동안 2초마다 jstack 으로 기동 스레드의 호출 스택을 떠서, 어디에 가장 자주 머물렀는지 세어 파일로 남긴다.
+const SAMPLE_EVERY: Duration = Duration::from_secs(2);
+// JDK 안쪽 프레임은 건너뛰고 그것을 부른 쪽으로 센다 — 「ZipFile.read」 보다 「그것을 부른 jar 스캐너」가 단서다
+const JDK_FRAMES: [&str; 5] = ["java.", "javax.", "sun.", "jdk.", "com.sun."];
+const INCLUSIVE_DEPTH: usize = 12;
+
+fn start_sampler(app: AppHandle, i: usize, generation: u64, java: String, pid: u32, base: String) {
+    thread::spawn(move || {
+        let app = &app;
+        let Some(jstack) = jdk_tool(&java, "jstack.exe") else {
+            log(app, Some(i), "app", "warn", format!("기동 표본을 뜨지 못합니다 · jstack.exe 가 없습니다 (JRE 로 띄움): {java}"));
+            return;
+        };
+        let r = rt(app, i);
+        let pid_s = pid.to_string();
+        let mut samples: Vec<(u64, Vec<Vec<String>>)> = Vec::new();
+        loop {
+            thread::sleep(SAMPLE_EVERY);
+            {
+                let inner = r.inner.lock().unwrap();
+                if inner.generation != generation || inner.status != Status::Starting {
+                    break;
+                }
+            }
+            let at = now_ms();
+            if let Some(text) = tool_output(&jstack, &[&pid_s], Duration::from_secs(10)) {
+                samples.push((at, startup_stacks(&text)));
+            }
+        }
+        if samples.is_empty() {
+            return;
+        }
+        let (marks, name) = {
+            let mut m = r.inner.lock().unwrap().marks.clone();
+            m.sort_by_key(|x| x.1);
+            (m, cfgs(app, i).1.name)
+        };
+        let path = Path::new(&base).join("logs").join(format!("startup-profile-{}.txt", now_ms()));
+        let report = profile_report(&name, &samples, &marks);
+        match fs::write(&path, report) {
+            Ok(_) => log(app, Some(i), "app", "", format!("기동 표본 {}개를 남겼습니다: {}", samples.len(), p(&path))),
+            Err(e) => log(app, Some(i), "app", "warn", format!("기동 표본을 쓰지 못했습니다: {e}")),
+        }
+    });
+}
+
+// jstack 출력에서 기동 스레드(localhost-startStop-*)의 JDK 바깥 프레임만 — 그 스레드가 없으면(웹앱 준비 전) main.
+// main 은 웹앱이 뜨는 동안 그 스레드를 기다리기만 하므로 함께 세면 「기다림」이 절반을 차지한다.
+fn startup_stacks(text: &str) -> Vec<Vec<String>> {
+    let mut threads: Vec<(String, Vec<String>)> = Vec::new();
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix('"') {
+            threads.push((rest.split('"').next().unwrap_or("").to_string(), Vec::new()));
+        } else if let Some(f) = line.trim_start().strip_prefix("at ") {
+            if let Some(t) = threads.last_mut() {
+                let frame = f.split('(').next().unwrap_or(f).to_string();
+                if !JDK_FRAMES.iter().any(|j| frame.starts_with(j)) {
+                    t.1.push(frame);
+                }
+            }
+        }
+    }
+    let pick = |want: &dyn Fn(&str) -> bool| threads.iter().filter(|t| want(&t.0) && !t.1.is_empty()).map(|t| t.1.clone()).collect::<Vec<_>>();
+    let work = pick(&|n| n.starts_with("localhost-startStop"));
+    if work.is_empty() { pick(&|n| n == "main") } else { work }
+}
+
+fn profile_report(name: &str, samples: &[(u64, Vec<Vec<String>>)], marks: &[(usize, u64)]) -> String {
+    fn top(counts: Vec<(String, usize)>, n: usize, of: usize) -> String {
+        let mut v = counts;
+        v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        v.iter().take(n).map(|(f, c)| format!("  {c:>4}회 ({:>3}%)  {f}\n", c * 100 / of.max(1))).collect()
+    }
+    fn bump(m: &mut Vec<(String, usize)>, f: &str) {
+        match m.iter_mut().find(|x| x.0 == f) {
+            Some(x) => x.1 += 1,
+            None => m.push((f.to_string(), 1)),
+        }
+    }
+    // 표본 시각 다음에 처음 잡힌 표지가 그 표본의 단계다 (단계 이름은 그 표지에서 끝나는 구간)
+    let phase_of = |at: u64| marks.iter().find(|(_, t)| *t >= at).map_or("기동 뒤", |(k, _)| PHASE_MARKS[*k].1);
+    let stacks: usize = samples.iter().map(|s| s.1.len()).sum();
+    let (mut self_c, mut incl) = (Vec::new(), Vec::new());
+    let mut phases: Vec<(&str, usize, Vec<(String, usize)>)> = Vec::new();
+    for (at, list) in samples {
+        let ph = phase_of(*at);
+        if !phases.iter().any(|p| p.0 == ph) {
+            phases.push((ph, 0, Vec::new()));
+        }
+        let slot = phases.iter_mut().find(|p| p.0 == ph).unwrap();
+        for st in list {
+            bump(&mut self_c, &st[0]);
+            bump(&mut slot.2, &st[0]);
+            slot.1 += 1;
+            let mut seen: Vec<&str> = Vec::new();
+            for f in st.iter().take(INCLUSIVE_DEPTH) {
+                if !seen.contains(&f.as_str()) {
+                    seen.push(f);
+                    bump(&mut incl, f);
+                }
+            }
+        }
+    }
+    let mut out = format!(
+        "기동 표본 · {name}\n표본 {}개 · {}초마다 · 기동 스레드 스택 {stacks}개 (localhost-startStop-*, 없으면 main)\n\
+         jstack 이 붙는 동안 JVM 이 잠깐 멈추므로, 이 기동의 시간은 표본 없이 뜬 기동과 견주지 않는다.\n\n",
+        samples.len(),
+        SAMPLE_EVERY.as_secs()
+    );
+    out.push_str("[맨 위] 그 자리에서 머문 곳 (JDK 바깥 첫 프레임)\n");
+    out.push_str(&top(self_c, 20, stacks));
+    out.push_str(&format!("\n[포함] 그 아래 호출까지 포함 (JDK 바깥 프레임 위 {INCLUSIVE_DEPTH}단)\n"));
+    out.push_str(&top(incl, 20, stacks));
+    out.push_str("\n[단계별 맨 위]\n");
+    for (ph, n, c) in phases {
+        out.push_str(&format!("{ph} · 스택 {n}개\n"));
+        out.push_str(&top(c, 8, n));
+    }
+    out
+}
 /* ---------- 톰캣 ---------- */
 
 fn port_busy(port: u16) -> bool {
@@ -1626,6 +2105,10 @@ fn monitor(app: AppHandle) {
         let mut changed = false;
         for i in 0..rt_count(&app) {
             let r = rt(&app, i);
+            // 콘솔 로그 버퍼를 비운다 — 실행기가 죽어도 잃는 것은 길어야 이 주기만큼이다
+            if let Some(f) = r.console.lock().unwrap().as_mut() {
+                let _ = f.flush();
+            }
             let (m, overdue) = {
                 let mut inner = r.inner.lock().unwrap();
                 let m = inner.child.as_ref().map(child_mem).unwrap_or_default();
@@ -1879,12 +2362,12 @@ fn write_dev_web_xml(sv: &ServerCfg, skip: bool) -> Result<(), String> {
     fs::write(&dst, out).map_err(|e| format!("web.xml 사본을 쓰지 못했습니다 ({}): {e}", p(&dst)))
 }
 
-fn open_console_log(base: &str) -> Option<File> {
+fn open_console_log(base: &str) -> Option<std::io::BufWriter<File>> {
     let dir = Path::new(base).join("logs");
     let _ = fs::create_dir_all(&dir);
     let cur = dir.join("console.log");
     let _ = fs::rename(&cur, dir.join("console.prev.log"));
-    OpenOptions::new().create(true).write(true).truncate(true).open(cur).ok()
+    OpenOptions::new().create(true).write(true).truncate(true).open(cur).ok().map(std::io::BufWriter::new)
 }
 
 fn start_server(app: &AppHandle, i: usize) -> Result<(), String> {
@@ -1948,7 +2431,8 @@ fn start_server(app: &AppHandle, i: usize) -> Result<(), String> {
         inner.restart_needed.clear();
         inner.mapper_hotswap = mapper_hotswap;
         inner.mapper_wait = None;
-        let heap = format!("힙 {}MB", cfg.heap_mb);
+        inner.java_wait = None;
+        let heap =format!("힙 {}MB", cfg.heap_mb);
         let mut mode = vec![if cfg.hot_reload { "핫리로드" } else { "일반" }];
         if cfg.fast_jvm {
             mode.push("빠른 JVM");
@@ -1970,6 +2454,9 @@ fn start_server(app: &AppHandle, i: usize) -> Result<(), String> {
         }
         if mapper_hotswap {
             mode.push("매퍼 하나씩");
+        }
+        if cfg.profile_start {
+            mode.push("표본");
         }
         inner.mode = mode.join(" · ");
         inner.java = java.clone();
@@ -2035,7 +2522,26 @@ fn start_server(app: &AppHandle, i: usize) -> Result<(), String> {
             if !mapper_hotswap {
                 disabled.push("disablePlugin=MyBatis".into());
             }
-            args.push(format!("-javaagent:{}=autoHotswap=true,{}", cfg.hotswap_agent, disabled.join(",")));
+            // 2026.10.29 : JSP 클래스 로더(JasperLoader)는 HotswapAgent 가 맡지 않게 한다 — JSP 는 Jasper 가 스스로 다시 컴파일하는데,
+            // 화면을 처음 열 때마다 로더가 하나씩 생겨 그때마다 폴더 다섯 곳 감시를 다시 걸었다 (콘솔에 「Registering directory」 다섯 줄씩)
+            let props = Path::new(base).join("temp/hotswap-agent.properties");
+            let _ = fs::create_dir_all(props.parent().unwrap());
+            let extra = match fs::write(&props, "# tomcatrun 이 기동마다 쓴다 (손으로 고쳐도 다음 기동에 덮인다)\nexcludedClassLoaderPatterns=org.apache.jasper.*\n") {
+                Ok(_) => format!(",propertiesFilePath={}", p(&props)),
+                Err(_) => String::new(),
+            };
+            args.push(format!("-javaagent:{}=autoHotswap=true,{}{extra}", cfg.hotswap_agent, disabled.join(",")));
+            // 서버 JVM 인자에 인증서 목록을 직접 준 사람은 그것을 따른다
+            if !sv.jvm_args.iter().any(|a| a.starts_with("-Djavax.net.ssl.trustStore=")) {
+                match merged_trust_store(&java, base) {
+                    Ok((store, added)) => {
+                        log(app, Some(i), "app", "", format!("인증서 목록: DCEVM 기본에 Windows 루트 인증서 {added}개를 더했습니다."));
+                        args.push(format!("-Djavax.net.ssl.trustStore={store}"));
+                        args.push("-Djavax.net.ssl.trustStorePassword=changeit".into());
+                    }
+                    Err(e) => log(app, Some(i), "app", "warn", format!("인증서 목록을 만들지 못해 DCEVM 기본 목록으로 뜹니다. 외부 HTTPS 호출이 PKIX 오류로 막힐 수 있습니다 · {e}")),
+                }
+            }
         }
         if cfg.debug {
             args.push(format!("-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address={}", sv.debug_port));
@@ -2125,8 +2631,12 @@ fn start_server(app: &AppHandle, i: usize) -> Result<(), String> {
         if let Some(e) = child.stderr.take() {
             pipe_reader(app.clone(), i, "tomcat", e);
         }
+        let pid = child.id();
         r.inner.lock().unwrap().child = Some(child);
         emit_state(app);
+        if cfg.profile_start {
+            start_sampler(app.clone(), i, generation, java.clone(), pid, base.clone());
+        }
         watch_exit(app, i, gate);
     });
     Ok(())
@@ -2282,9 +2792,11 @@ fn run_compile(app: &AppHandle, i: usize, full: bool) -> Option<CompileResult> {
 
     let src = Path::new(&sv.project).join("src/main/java");
     let mut files = Vec::new();
+    // 2026.10.29 : 저장마다 소스 폴더 전체를 훑어 바뀐 파일을 찾는다 — 그 시간을 완료 줄에 따로 보인다 (크면 저장 감시가 준 경로를 먼저 쓰는 쪽으로)
     collect_java(&src, if full { 0 } else { stamp }, &mut files);
+    let find_ms = began.elapsed().as_millis();
     if files.is_empty() {
-        log(app, Some(i), "compile", "", "바뀐 자바 파일이 없습니다.");
+        log(app, Some(i), "compile", "", format!("바뀐 자바 파일이 없습니다 (찾기 {find_ms}ms)."));
         return None;
     }
     r.inner.lock().unwrap().compiling = true;
@@ -2298,13 +2810,18 @@ fn run_compile(app: &AppHandle, i: usize, full: bool) -> Option<CompileResult> {
     }
     let _ = fs::create_dir_all(&classes);
 
-    // javac 인자 파일 안에서 역슬래시는 이스케이프로 읽히므로 / 로 적는다
     let argfile = Path::new(&sv.catalina_base).join("temp/javac-files.txt");
     let _ = fs::create_dir_all(argfile.parent().unwrap());
-    let list: String = files.iter().map(|f| format!("\"{}\"\n", p(f))).collect();
-    let _ = fs::write(&argfile, list);
-
     let cp = build_cp(&cfg, &sv);
+    // 핫리로드로 켜져 있으면 교체 → Spring 반영까지 지켜본다. 교체 줄이 컴파일 완료보다 먼저 올 수 있어 컴파일 전에 건다.
+    let wait_id = {
+        let mut inner = r.inner.lock().unwrap();
+        (inner.status == Status::Running && inner.mode.starts_with("핫리로드")).then(|| {
+            let id = now_ms();
+            inner.java_wait = Some(JavaWait { id, since: began, reloaded: false, beans: Vec::new(), last: Instant::now() });
+            id
+        })
+    };
     log(
         app,
         Some(i),
@@ -2312,19 +2829,58 @@ fn run_compile(app: &AppHandle, i: usize, full: bool) -> Option<CompileResult> {
         "",
         if full { format!("전체 컴파일 시작 · {}개 파일", files.len()) } else { format!("컴파일 시작 · {}", names(&files)) },
     );
-    // 띄워 둔 상주 컴파일러가 먼저다. 없거나 응답이 없으면 javac 를 새로 띄워 같은 일을 한다.
-    let request = compile_request(&sv.classes_dir, &cp, &argfile, &sv);
     let on_diag = |t: String| {
         let kind = if t.contains(": error:") || t.contains(": 오류:") { "err" } else { classify(&t) };
         log(app, Some(i), "compile", kind, t);
     };
-    let (ok, errors, via) = match daemon_call(app, &request, on_diag) {
-        Some((ok, errors)) => (ok, errors, format!("상주 {}", app.state::<Shared>().daemon_kind.lock().unwrap())),
-        None => {
-            let (ok, errors) = javac_process(app, i, &cfg, &sv, &cp, &argfile);
-            (ok, errors, "javac 프로세스".to_string())
+    let compile = |list: &[PathBuf]| -> (bool, usize, String) {
+        // javac 인자 파일 안에서 역슬래시는 이스케이프로 읽히므로 / 로 적는다
+        let _ = fs::write(&argfile, list.iter().map(|f| format!("\"{}\"\n", p(f))).collect::<String>());
+        // 띄워 둔 상주 컴파일러가 먼저다. 없거나 응답이 없으면 javac 를 새로 띄워 같은 일을 한다.
+        let request = compile_request(&sv.classes_dir, &cp, &argfile, &sv);
+        match daemon_call(app, &request, &on_diag) {
+            Some((ok, errors)) => (ok, errors, format!("상주 {}", app.state::<Shared>().daemon_kind.lock().unwrap())),
+            None => {
+                let (ok, errors) = javac_process(app, i, &cfg, &sv, &cp, &argfile);
+                (ok, errors, "javac 프로세스".to_string())
+            }
         }
     };
+    let rels = |list: &[PathBuf]| list.iter().map(|f| f.strip_prefix(&src).unwrap_or(f).to_string_lossy().replace('\\', "/")).collect::<Vec<_>>();
+    let mut before = if full { Default::default() } else { classapi::snapshot(&classes, &rels(&files)) };
+    let (mut ok, mut errors, via) = compile(&files);
+    // 상수 값 · 메서드 시그니처가 바뀌었으면 쓰는 소스도 컴파일한다 (classapi.rs 머리말).
+    // 그 소스가 가진 상수가 바뀐 상수로 셈한 것일 수 있어 몇 번 거듭한다. 전체 컴파일이면 이미 다 했다.
+    let mut compiled = files.clone();
+    let mut round = files.clone();
+    for _ in 0..3 {
+        if !ok || full {
+            break;
+        }
+        let shapes = classapi::changed(&before, &classapi::snapshot(&classes, &rels(&round)));
+        let skip: HashSet<PathBuf> = compiled.iter().cloned().collect();
+        let users = classapi::users(&src, &shapes, &skip);
+        if users.is_empty() {
+            break;
+        }
+        // 「컴파일」 로 시작해야 반영 기록에도 남는다 (ui 의 isEvent)
+        log(app, Some(i), "compile", "", format!("컴파일 더함 · {} 의 상수 · 메서드 시그니처가 바뀌어 쓰는 곳 {}개 · {}", some_names(&shapes), users.len(), names(&users)));
+        before = classapi::snapshot(&classes, &rels(&users));
+        let (o, e, _) = compile(&users);
+        (ok, errors) = (o, errors + e);
+        compiled.extend(users.iter().cloned());
+        round = users;
+    }
+    let files = compiled;
+    if let Some(id) = wait_id {
+        let mut inner = r.inner.lock().unwrap();
+        if !ok && inner.java_wait.as_ref().map_or(false, |w| w.id == id) {
+            inner.java_wait = None;
+        } else if ok {
+            drop(inner);
+            watch_java(app.clone(), i, id);
+        }
+    }
     if ok {
         // 시작 시각을 남긴다 — 컴파일하는 동안 고친 파일은 다음에 다시 잡힌다
         let _ = fs::write(classes.join(STAMP_FILE), begin_ms.to_string());
@@ -2353,7 +2909,7 @@ fn run_compile(app: &AppHandle, i: usize, full: bool) -> Option<CompileResult> {
                 add_pending(app, i, rel_to(&sv.project, f), "일반 모드라 자바는 재시작해야 들어감");
             }
         }
-        log(app, Some(i), "compile", "ok", format!("컴파일 완료 · {}개 · {secs:.1}초 ({via}){tail}", result.files));
+        log(app, Some(i), "compile", "ok", format!("컴파일 완료 · {}개 · {secs:.1}초 (바뀐 파일 찾기 {find_ms}ms · {via}){tail}", result.files));
     } else {
         log(app, Some(i), "compile", "err", format!("컴파일 실패 · 오류 {}개 · {secs:.1}초 · 오류 줄을 누르면 편집기로 엽니다", result.errors));
     }
@@ -2864,6 +3420,24 @@ fn change_worker(app: AppHandle, rx: Receiver<(usize, PathBuf)>) {
     }
 }
 
+// 자바 소스를 지웠거나 옮겼다 — 컴파일 결과의 클래스도 지운다.
+// 2026.10.29 : 바뀐 파일만 컴파일하므로 지운 소스의 .class 가 남아, 재시작해도 Spring 이 그 클래스를 빈으로 다시 읽었다.
+// 실행 중인 앱에는 이미 올라가 있어 빼지 못한다 — 재시작 알림에 올린다.
+fn removed_java(app: &AppHandle, i: usize, sv: &ServerCfg, path: &Path, running: bool) {
+    let rel = rel_to(&sv.project, path);
+    let Some(in_src) = rel.get("src/main/java/".len()..) else { return };
+    let n = classapi::remove(Path::new(&sv.classes_dir), in_src);
+    if n == 0 {
+        return;
+    }
+    let name = in_src.rsplit('/').next().unwrap_or(in_src);
+    if running {
+        add_pending(app, i, rel.clone(), "자바 소스를 지움 · 실행 중인 앱에는 그 클래스가 남아 있음");
+    }
+    let (kind, tail) = if running { ("warn", " · 재시작해야 앱에서 빠집니다") } else { ("", "") };
+    log(app, Some(i), "app", kind, format!("{name} 을 지워 컴파일 결과의 클래스 {n}개도 지웠습니다{tail}"));
+}
+
 fn apply_changes(app: &AppHandle, i: usize, paths: &[&PathBuf]) {
     let (c, sv) = cfgs(app, i);
     // resources · filters 파일이 바뀌었으면 리소스 필터링 점검을 다시 세게 한다 (무시 목록에 걸린 파일도 톰캣은 올린다)
@@ -2888,6 +3462,7 @@ fn apply_changes(app: &AppHandle, i: usize, paths: &[&PathBuf]) {
     let mut restart: Vec<String> = Vec::new();
     for path in paths {
         match classify_path(&sv.project, &live_list, path) {
+            Some(Change::Java) if !path.exists() => removed_java(app, i, &sv, path, running),
             Some(Change::Java) => java = true,
             Some(Change::Pom) => pom = true,
             Some(Change::Live("매퍼", name)) => mappers.push(name),
@@ -3256,6 +3831,7 @@ fn set_option(app: AppHandle, key: String, value: bool) -> Result<(), String> {
             "lazyInit" => c.lazy_init = value,
             "mapperHotswap" => c.mapper_hotswap = value,
             "keepSession" => c.keep_session = value,
+            "profileStart" => c.profile_start = value,
             "updateCheck" => c.update_check = value,
             _ => return Err(format!("모르는 옵션: {key}")),
         }
@@ -4723,7 +5299,7 @@ fn main() {
             git_status, git_diff, git_incoming, git_log, git_rev_diff,
             vcs_commit, vcs_update, vcs_revert, vcs_resolve, vcs_revert_revision, vcs_blame, vcs_conflict, vcs_conflict_diff, set_vcs, set_paths, set_server, add_server, pick_project,
             vcs_fetch, vcs_push, git_outgoing, gen_commit_msg, check_commit_msg,
-            update_check, update_install, changelog, eclipse_scan, eclipse_import, quick_project, pick_dir, auto_deps, dedup_deps, undo_dedup
+            update_check, update_install, changelog, eclipse_scan, eclipse_import, quick_project, pick_dir, auto_deps, dedup_deps, undo_dedup, apply_scan_hint
         ])
         .run(tauri::generate_context!())
         .expect("실행기를 띄우지 못했습니다");
@@ -5124,6 +5700,17 @@ mod tests {
     }
 
     #[test]
+    fn spring_빈_다시_등록_줄에서_이름을_뽑는다() {
+        // 실제 로그 그대로 (HotswapAgent 1.4.1)
+        let line = "HOTSWAP AGENT: 17:56:29.875 RELOAD (org.hotswap.agent.plugin.spring.scanner.ClassPathBeanDefinitionScannerAgent) - Registering Spring bean 'fdrController'";
+        assert_eq!(bean_name(line), Some("fdrController"));
+        assert_eq!(bean_name("HOTSWAP AGENT: 17:56:29.894 INFO (x) - Spring: clearing HandlerMapping for class a.B"), None);
+        assert_eq!(some_names(&["a".into()]), "a");
+        assert_eq!(some_names(&["a".into(), "b".into(), "c".into()]), "a 외 2개");
+        assert_eq!(some_names(&[]), "");
+    }
+
+    #[test]
     fn 클래스_교체_실패를_잡고_이름을_붙인다() {
         // 실제 로그 그대로 — 실패 줄에는 「HOTSWAP AGENT」 머리가 없다
         assert!(is_redefine_failure(r#"Exception in thread "Thread-352" java.lang.IllegalStateException: Unable to redefine classes"#));
@@ -5149,5 +5736,28 @@ mod tests {
         let (ms949, _, _) = encoding_rs::EUC_KR.encode("컴파일 완료");
         assert_eq!(decode(&ms949), "컴파일 완료");
         assert_eq!(decode("교체됨\r".as_bytes()), "교체됨");
+    }
+
+    #[test]
+    fn jstat_columns() {
+        let gc = "  S0     S1     E      O      M     CCS    YGC     YGCT    FGC    FGCT     GCT   \n  0.00  99.12  41.20  63.05  97.11  93.40     41    1.234     3    0.766    2.000\n";
+        let cls = "Loaded  Bytes  Unloaded  Bytes     Time   \n 41233 80412.3       12    20.1       6.12\n";
+        let j = parse_jstat(gc, cls).expect("읽힌다");
+        assert_eq!((j.gc_ms, j.gc_count, j.classes, j.class_ms), (2000, 44, 41233, 6120));
+        assert!(parse_jstat("", cls).is_none());
+    }
+
+    #[test]
+    fn startup_stacks_pick_webapp_thread() {
+        let dump = "\"main\" #1 prio=5\n   java.lang.Thread.State: WAITING\n\tat java.util.concurrent.FutureTask.get(FutureTask.java:191)\n\tat org.apache.catalina.core.ContainerBase.startInternal(ContainerBase.java:942)\n\n\
+                    \"localhost-startStop-1\" #20 daemon\n\tat java.util.zip.ZipFile.read(Native Method)\n\tat org.apache.tomcat.util.scan.StandardJarScanner.process(StandardJarScanner.java:350)\n\tat org.apache.catalina.startup.ContextConfig.webConfig(ContextConfig.java:1144)\n";
+        let s = startup_stacks(dump);
+        assert_eq!(s, vec![vec!["org.apache.tomcat.util.scan.StandardJarScanner.process".to_string(), "org.apache.catalina.startup.ContextConfig.webConfig".to_string()]]);
+        // 기동 스레드가 아직 없으면 main
+        let only_main = "\"main\" #1\n\tat org.apache.catalina.startup.Catalina.load(Catalina.java:600)\n";
+        assert_eq!(startup_stacks(only_main)[0][0], "org.apache.catalina.startup.Catalina.load");
+        let report = profile_report("앱", &[(1000, s.clone()), (3000, s)], &[(2, 2000), (4, 5000)]);
+        assert!(report.contains("2회 (100%)  org.apache.tomcat.util.scan.StandardJarScanner.process"), "{report}");
+        assert!(report.contains("웹앱 준비 (jar 스캔 등) · 스택 1개") && report.contains("Spring MVC · 마무리 · 스택 1개"), "{report}");
     }
 }

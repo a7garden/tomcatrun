@@ -79,10 +79,16 @@ GitHub 연결은 Windows 인증서 저장소를 쓰고 `HTTPS_PROXY` 환경 변�
 | JSP | 저장 후 1초 안 | 톰캣이 `src/main/webapp` 을 직접 읽는다 · JSP 확인 주기 1초 |
 | JS · CSS | 새로고침하면 바로 | 브라우저가 매번 서버에 다시 확인한다 (`conf/web.xml` 의 DevNoCache) |
 | 매퍼 XML (스스로 다시 읽는 묶음) | 저장 후 몇 초 | 앱의 `RefreshableSqlSessionFactoryBean` 이 원본을 보고 그 묶음을 다시 해석한다. 「매퍼 하나만 다시 읽기」(실험)를 켜면 바뀐 파일만 |
-| 자바 | 저장 후 1초 안 | 바뀐 파일만 상주 ECJ 로 컴파일 → HotswapAgent 가 실행 중인 JVM 에 교체 |
-| Spring 설정 · web.xml · 그 밖의 매퍼 · 메시지 · pom 의존성 | 재시작 | 기동 때 한 번만 읽는다 |
+| 자바 — 메서드 안 내용 | 저장 후 1초 안 | 바뀐 파일만 상주 ECJ 로 컴파일 → HotswapAgent 가 실행 중인 JVM 에 교체 · 반영 기록에 「자바 교체」 |
+| 자바 — 컨트롤러 · 서비스 같은 빈의 새 URL · 메서드 · 주입 필드 | 저장 후 10초 안팎 | 교체 뒤 Spring 이 빈을 다시 등록하고 URL 매핑을 새로 만든다. 끝나면 반영 기록에 「Spring 반영」 이 붙는다. 그 전에 누르면 옛 매핑이 응답한다 |
+| 자바 — 상수 값 · 메서드 시그니처 | 저장 후 몇 초 | 그 상수 · 메서드를 쓰는 소스도 함께 컴파일한다 (반영 기록 「컴파일 더함」). 자바는 다른 클래스의 상수를 값으로 박아 넣어서, 바뀐 파일만 컴파일하면 쓰는 쪽에 옛 값이 남는다 |
+| 자바 — 상속 · 인터페이스 · 안쪽 · 익명 클래스 구조 | 재시작 | 교체가 실패하면 재시작 알림에 올라온다 |
+| 자바 — static 초기값 · 생성자 · `@PostConstruct` · 필드 초기값 | 재시작 | 클래스는 바뀌어도 이미 만들어진 객체의 초기화는 다시 돌지 않는다. 실행기가 가려내지 못해 알림이 뜨지 않는다 |
+| 자바 소스 지움 · 옮김 | 재시작 | 컴파일 결과의 클래스를 지우고 재시작 알림에 올린다 (켜진 앱에는 남아 있다) |
+| Spring 설정 · XML 로 정의한 빈 · web.xml · 그 밖의 매퍼 · 메시지 · pom 의존성 | 재시작 | 기동 때 한 번만 읽는다 |
 
 재시작이 필요한 것은 서버 줄 아래 노란 알림 줄에 서버별로 모이고 그 서버의 재시작 단추에 개수가 붙는다. HotswapAgent 가 교체에 실패해도 여기에 올라온다.
+HotswapAgent 의 원문 줄(`Reloading classes …` · `Registering Spring bean …`)은 서버 로그 탭에만 남고, 반영 기록에는 「자바 교체」 · 「Spring 반영」 두 줄로 묶여 보인다.
 스스로 다시 읽는 매퍼 묶음은 프로젝트의 `src/main/resources/spring/context-datasource.xml` 에서 `RefreshableSqlSessionFactoryBean` 의 `mapperLocations` 를 읽어 정한다 (서버를 켤 때마다).
 
 실행기는 `src/main/resources` 를 Maven 처럼 걸러 넣지 않고 원본 그대로 읽는다. 그래서 pom 에 `<filtering>true</filtering>` 가 있으면 이클립스(Maven)가 값으로 바꾸는 `${key}` · `@key@` 자리에 글자가 그대로 들어간다. 「상태」 탭 서버 점검의 「리소스 필터링」 줄은 그런 자리가 몇 곳, 어느 파일에 있는지 보여 준다. 세는 것은 Maven 이 값을 아는 키뿐이다(pom · 프로필 `<properties>` · `<filters>` 파일 · `project.*` · `env.*`). Spring 이 기동할 때 채우는 `${db.url}` 같은 키는 세지 않는다. 프로필은 이클립스가 쓰는 것을 따른다(프로젝트 `.settings/org.eclipse.m2e.core.prefs` 의 `activeProfiles`, 없으면 `activeByDefault`). 조건으로 켜지는 프로필이나 상위 pom 의 속성처럼 판단하지 못한 것은 「판단 못 함」으로 덧붙인다. pom 에 필터링이 없으면 이 줄은 보이지 않는다.
@@ -110,8 +116,9 @@ GitHub 연결은 Windows 인증서 저장소를 쓰고 `HTTPS_PROXY` 환경 변�
 | 디버거 연결 허용 | 끔 | 서버의 디버거 포트로 IDE 가 원격 디버그로 붙는다 |
 | 톰캣 힙 상한 | 1.5GB | `-Xmx` + SerialGC · 남은 힙을 운영체제에 돌려준다 |
 | 빠른 기동 JVM 옵션 | 켬 | `-XX:TieredStopAtLevel=1 -Xverify:none` |
-| 클래스 전체 탐색 건너뛰기 | 끔 | web.xml 사본에 `metadata-complete="true"` 와 빈 `<absolute-ordering/>` 를 더하고 웹소켓 초기화를 거른다. 서블릿 3.0 애너테이션 · 초기화 클래스를 쓰지 않는 앱에서만 켠다 |
+| 클래스 전체 탐색 건너뛰기 | 끔 | web.xml 사본에 `metadata-complete="true"` 와 빈 `<absolute-ordering/>` 를 더하고 웹소켓 초기화를 거른다. 서블릿 3.0 애너테이션 · 초기화 클래스를 쓰지 않는 앱에서만 켠다. 켜도 되는지는 「상태」 탭의 「기동 탐색」 줄이 알려 준다 (아래) |
 | 서버를 차례로 띄우기 | 켬 | 먼저 누른 서버가 다 뜬 뒤 다음 서버를 띄운다 |
+| 기동 표본 남기기 | 끔 | 켜는 동안 2초마다 jstack 으로 기동 스레드를 떠서, 어디에 오래 머물렀는지 서버의 `logs/startup-profile-<시각>.txt` 에 남긴다. 뜨는 동안 JVM 이 잠깐씩 멈춰 기동이 조금 늘어나므로 잴 때만 켠다 |
 | DB 연결 미리 열기 1개 | 켬 | commons-dbcp `BasicDataSource` 의 처음 연결 수를 1로 |
 | 예약 작업 멈추기 | 끔 | `@Scheduled` 를 돌리지 않는다 |
 | 지연 초기화 (실험) | 끔 | 빈을 처음 쓸 때 만든다 |
@@ -121,7 +128,9 @@ GitHub 연결은 Windows 인증서 저장소를 쓰고 `HTTPS_PROXY` 환경 변�
 **개발 전용 앱 설정** (`overlay/`): `tomcatrun.DevTweaks` 가 실행기가 주는 시스템 속성(`tomcatrun.*`)에 따라 Spring 빈 정의만 고친다. 속성이 없으면 아무것도 하지 않는다.
 앱이 `classpath*:spring/context-*.xml` · `classpath*:egovframework/springmvc/*.xml` 로 설정을 읽는 구성(전자정부 표준프레임워크 꼴)에서 원본과 함께 읽힌다. 다른 구성이면 위 네 옵션(DB 연결 · 예약 작업 · 지연 초기화 · 매퍼 하나만)이 동작하지 않을 뿐 나머지는 그대로다.
 
-**기동 단계 측정**: 기동이 끝나면 반영 기록에 단계별 시간이 남고, `logs/startup-history.csv` 에 기동마다 한 줄씩 쌓인다.
+**기동 단계 측정**: 기동이 끝나면 반영 기록에 단계별 시간과 GC 시간 · 횟수, 읽은 클래스 수 · 그 시간이 남고, `logs/startup-history.csv` 에 기동마다 한 줄씩 쌓인다. GC · 클래스 수치는 띄운 java 옆의 `jstat` 으로 재므로 JRE 로 띄우면 빈칸이다. 열이 바뀐 옛 파일은 `startup-history.prev.csv` 로 옮겨 둔다. 「기동 표본 남기기」를 켜고 띄운 기동은 옵션 열에 「표본」이 붙는다. 표본 파일에는 「맨 위」(그 자리에서 머문 곳) · 「포함」(그 아래 호출까지) · 「단계별 맨 위」가 횟수와 비율로 적힌다. JDK 안쪽 프레임은 건너뛰고 그것을 부른 쪽으로 센다.
+
+**기동 탐색 점검**: 「상태」 탭 서버 점검의 「기동 탐색」 줄은 jar 목록과 소스를 읽어 두 설정을 견준다. 「TLD jar」 칸이 비어 모든 jar 를 훑고 있으면 태그 라이브러리가 든 jar 를, 「클래스 전체 탐색 건너뛰기」가 꺼져 있는데 켜도 되면 그렇다고 알린다. 켜도 되는 것은 소스에 `@WebServlet` · `@WebFilter` · `@WebListener` · `@HandlesTypes` · `WebApplicationInitializer` · `ServletContainerInitializer` 가 없고, jar 에 spring-web 말고는 web-fragment · 초기화 클래스가 없을 때다. 「탐색 줄이기」를 누르면 모든 서버의 TLD jar 를 칸에 모으고, 모든 서버가 켜도 될 때만 건너뛰기를 켠다 (두 값은 모든 서버가 함께 쓴다). 다음 기동부터 들어간다. 저절로 바꾸지는 않는다. 이름을 바꾼 jar 나 리플렉션으로 등록하는 서블릿처럼 여기서 못 보는 길이 있어서다. 칸에 적힌 패턴이 TLD 가 든 jar 를 빠뜨리거나, 건너뛰기가 켜져 있는데 건너뛰면 빠지는 것이 있으면 같은 줄이 노란 경고로 알린다.
 
 ## 버전 관리 (SVN · Git)
 
@@ -185,7 +194,8 @@ SVN 상태는 `.svn/wc.db` 를 읽기 전용(immutable)으로 열어 계산하�
 - static 초기화 블록은 다시 돌지 않는다. 이미 만들어진 객체에 새 필드 초깃값은 채워지지 않는다.
 - 자바 파일을 지우면 그 클래스가 컴파일 폴더에 남는다. 톰캣을 끈 상태에서 「전체」 컴파일을 하면 비우고 다시 만든다.
 - 톰캣 8.5 · 자바 8 앱을 대상으로 만들었다 (DCEVM 8u181).
-- **외부 연계 호출에서 `SSLHandshakeException` 이 나면 핫리로드를 끄고 띄워 본다.** 핫리로드 모드의 DCEVM 8u181 은 2018년 판이라 TLS 1.3 이 없고 루트 인증서(cacerts)가 오래되었다. 더 높은 자바로 만든 jar 의 `UnsupportedClassVersionError` 도 같다. 핫리로드를 끄면 서버 › java 칸의 자바(이클립스에서 가져왔으면 이클립스와 같은 JRE)로 뜬다. 핫리로드는 DCEVM 에 묶여 있어 그 모드의 자바는 바꿀 수 없다.
+- 핫리로드 모드는 DCEVM 8u181(2018년 판)의 루트 인증서(cacerts)에 이 PC 의 Windows 루트 인증서 저장소를 더한 목록으로 뜬다. 목록은 기동마다 `<서버 폴더>/temp/cacerts` 에 새로 만든다. 그래서 2018년 뒤에 바뀐 인증서를 쓰는 외부 HTTPS(예: 브이월드 `api.vworld.kr`)도 이클립스처럼 호출된다. 기동 로그에 「인증서 목록: … n개를 더했습니다」가 남는다. 서버 JVM 인자에 `-Djavax.net.ssl.trustStore=` 를 직접 주었으면 그것을 따른다.
+- **외부 연계 호출에서 그래도 `SSLHandshakeException` 이 나면 핫리로드를 끄고 띄워 본다.** DCEVM 8u181 에는 TLS 1.3 이 없다. Windows 가 아직 내려받지 않은 루트 인증서도 목록에 없다 — 같은 주소를 Edge 로 한 번 열면 Windows 가 받아 둔다. 더 높은 자바로 만든 jar 의 `UnsupportedClassVersionError` 도 핫리로드를 꺼야 풀린다. 핫리로드를 끄면 서버 › java 칸의 자바(이클립스에서 가져왔으면 이클립스와 같은 JRE)로 뜬다. 핫리로드는 DCEVM 에 묶여 있어 그 모드의 자바는 바꿀 수 없다.
 - 실행 자바를 바꿔도 컴파일은 그대로 javac(JDK 8) · ECJ 가 1.8 기준으로 한다. 더 높은 자바로 만든 jar 의 클래스를 소스에서 직접 쓰면 컴파일에서 막힐 수 있다.
 - 자바 9 이상으로 띄우면 `-Djava.endorsed.dirs` 를 빼고 톰캣 catalina.bat 와 같은 `--add-opens` 를 더한다 (13 이상은 `-Xverify:none` 도 뺀다). 판은 JDK 의 `release` 파일로, 없으면 폴더 이름(`jdk-17` 등)으로 가린다.
 

@@ -1,6 +1,6 @@
 [package]
 name = "tomcatrun"
-version = "0.17.0"  # 버전은 여기 한 곳 — tauri.conf.json · 설치 파일 · 화면이 이 값을 따른다 (CHANGELOG.md)
+version = "0.18.0"  # 버전은 여기 한 곳 — tauri.conf.json · 설치 파일 · 화면이 이 값을 따른다 (CHANGELOG.md)
 edition = "2021"
 # 2026.10.29 : 1.99 아래는 받지 않는다 — 1.99.1 에서 cargo test 를 통과했다. 판을 못박지 않아 CI 는 그날의 stable 로 빌드한다
 rust-version = "1.99"
