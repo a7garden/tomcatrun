@@ -1,10 +1,10 @@
-// 읽기 전용 SVN 저장소 조회 — TortoiseSVN 의 「업데이트 확인 · 로그 보기 · 저장소 최신본과 비교」 몫.
+// 읽기 전용 SVN 저장소 조회 — TortoiseSVN 의 「Check for modifications · Show log · Compare with HEAD」 몫.
 //
 // 저장소 서버(Apache mod_dav_svn)에 HTTP 로 읽기 요청만 보낸다.
 //   OPTIONS  저장소 최신 리비전 (SVN-Youngest-Rev) · 리비전 경로 꼴 (SVN-Rev-Root-Stub)
 //   REPORT   로그 (log-report · svn log 과 같은 것)
 //   GET      어느 리비전의 파일 내용 (svn cat 과 같은 것)
-// 업데이트 · 커밋처럼 저장소나 작업복사본을 바꾸는 요청은 보내지 않는다 (전역 규칙 · 화면은 명령을 복사만 한다).
+// 이 파일은 저장소나 작업복사본을 바꾸는 요청을 보내지 않는다. Commit · Update 같은 쓰기는 svncli.rs 가 svn.exe 로 한다 (2026.10.29~).
 //
 // 저장소 주소는 작업복사본(.svn/wc.db)에서 읽는다 — 코드 · 설정에 적지 않는다.
 // 서버가 Basic 인증을 요구하면 처음 한 번 화면에서 계정을 묻는다.
@@ -270,7 +270,7 @@ pub fn parse_log(xml: &str, wc_repos_path: &str) -> Result<Vec<LogEntry>, String
 }
 
 // 「2026-10-27T05:56:21.123456Z」 → 밀리초 (UTC)
-fn parse_date(s: &str) -> Option<i64> {
+pub fn parse_date(s: &str) -> Option<i64> {
     let s = s.trim();
     let (date, time) = s.split_once('T')?;
     let mut d = date.split('-').map(|x| x.parse::<i64>().ok());

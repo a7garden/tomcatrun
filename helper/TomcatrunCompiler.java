@@ -12,6 +12,7 @@ import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
@@ -35,13 +36,18 @@ import java.util.Map;
  *   javac : JDK 의 tools.jar. ecj-*.jar 를 못 찾으면 이쪽으로 간다. 클래스패스마다 파일 관리자를 하나씩 두고 다시 쓴다.
  *
  * 주고받는 말 (한 줄에 하나 · 탭으로 나눈다 · UTF-8)
- *   받음  COMPILE <출력 폴더> <클래스패스> <인자 파일>     인자 파일에는 소스 경로가 한 줄에 하나
+ *   받음  COMPILE <출력 폴더> <클래스패스> <인자 파일> <소스 인코딩> <-parameters true|false>
+ *         인자 파일에는 소스 경로가 한 줄에 하나. 인코딩 · -parameters 는 서버마다 달라 요청마다 싣는다 (컴파일러 하나를 여러 서버가 같이 쓴다).
+ *         둘이 없는 옛 꼴이면 UTF-8 · 끔으로 읽는다.
  *   보냄  D <줄>                                            진단 한 줄 (「파일:줄: error: 내용」 꼴과 그 아래 코드 · 위치 표시 줄)
  *         END <성공 true|false> <오류 수> <밀리초>
  */
 public class TomcatrunCompiler {
 
-	/** javac — 클래스패스마다 파일 관리자를 하나씩 둔다. jar 색인을 다시 읽지 않는 것이 빨라지는 까닭이다 */
+	/**
+	 * javac — 클래스패스 · 인코딩마다 파일 관리자를 하나씩 둔다. jar 색인을 다시 읽지 않는 것이 빨라지는 까닭이다.
+	 * 인코딩도 열쇠에 넣는다 — 파일 관리자가 읽은 소스를 캐시하므로, 인코딩만 바꾸면 옛 인코딩으로 푼 내용을 다시 쓸 수 있다.
+	 */
 	private static final Map<String, StandardJavaFileManager> MANAGERS = new HashMap<String, StandardJavaFileManager>();
 	/** 펼친 클래스패스. jar 가 바뀌면(의존 jar 다시 받기) 실행기가 이 프로세스를 내리고 새로 띄운다 */
 	private static final Map<String, String> EXPANDED = new HashMap<String, String>();
@@ -89,8 +95,12 @@ public class TomcatrunCompiler {
 							files.add(new File(f));
 						}
 					}
+					String encoding = a.length >= 6 && !a[4].isEmpty() ? a[4] : "UTF-8";
+					boolean parameters = a.length >= 6 && "true".equals(a[5]);
 					long t0 = System.nanoTime();
-					int[] result = ecjMain != null ? compileEcj(out, a[1], a[2], files) : compileJavac(out, a[1], a[2], files);
+					int[] result = ecjMain != null
+							? compileEcj(out, a[1], a[2], files, encoding, parameters)
+							: compileJavac(out, a[1], a[2], files, encoding, parameters);
 					out.println("END\t" + (result[0] == 1) + "\t" + result[1] + "\t" + (System.nanoTime() - t0) / 1000000L);
 				} else {
 					out.println("D\t알 수 없는 요청: " + a[0]);
@@ -104,12 +114,17 @@ public class TomcatrunCompiler {
 	}
 
 	/** @return {성공 1|0, 오류 수} */
-	private static int[] compileEcj(PrintStream out, String outDir, String cp, List<File> files) throws Exception {
+	private static int[] compileEcj(PrintStream out, String outDir, String cp, List<File> files, String encoding, boolean parameters)
+			throws Exception {
 		// -Xemacs : 오류를 「파일:줄: error: 내용」 꼴로 낸다 (실행기 화면이 이 꼴을 눌러 편집기로 연다)
 		// -proc:none : 이 프로젝트는 애너테이션 처리기를 쓰지 않는다. jar 마다 처리기를 찾지 않게 한다.
 		// -g : Spring 이 @RequestParam 이름을 지역 변수 정보에서 읽는다. 빼면 이름 없는 파라미터가 깨진다.
-		List<String> args = new ArrayList<String>(Arrays.asList("-1.8", "-nowarn", "-g", "-encoding", "UTF-8", "-proc:none",
+		// -parameters : 이클립스 「Store information about method parameters」 — @Param 없는 MyBatis 매퍼가 이름으로 찾는다 (ECJ 4.6.3 도 받는다)
+		List<String> args = new ArrayList<String>(Arrays.asList("-1.8", "-nowarn", "-g", "-encoding", encoding, "-proc:none",
 				"-Xemacs", "-d", outDir, "-cp", expand(cp)));
+		if (parameters) {
+			args.add("-parameters");
+		}
 		for (File f : files) {
 			args.add(f.getPath());
 		}
@@ -132,14 +147,18 @@ public class TomcatrunCompiler {
 	}
 
 	/** @return {성공 1|0, 오류 수} */
-	private static int[] compileJavac(PrintStream out, String outDir, String cp, List<File> files) {
-		StandardJavaFileManager fm = MANAGERS.get(cp);
+	private static int[] compileJavac(PrintStream out, String outDir, String cp, List<File> files, String encoding, boolean parameters) {
+		String key = cp + "\t" + encoding;
+		StandardJavaFileManager fm = MANAGERS.get(key);
 		if (fm == null) {
-			fm = javac.getStandardFileManager(null, Locale.getDefault(), StandardCharsets.UTF_8);
-			MANAGERS.put(cp, fm);
+			fm = javac.getStandardFileManager(null, Locale.getDefault(), Charset.forName(encoding));
+			MANAGERS.put(key, fm);
 		}
-		List<String> opts = Arrays.asList("-nowarn", "-g", "-encoding", "UTF-8", "-source", "1.8", "-target", "1.8", "-proc:none",
-				"-implicit:none", "-sourcepath", "", "-d", outDir, "-cp", expand(cp));
+		List<String> opts = new ArrayList<String>(Arrays.asList("-nowarn", "-g", "-encoding", encoding, "-source", "1.8", "-target", "1.8",
+				"-proc:none", "-implicit:none", "-sourcepath", "", "-d", outDir, "-cp", expand(cp)));
+		if (parameters) {
+			opts.add("-parameters");
+		}
 		DiagnosticCollector<JavaFileObject> dc = new DiagnosticCollector<JavaFileObject>();
 		Boolean ok = javac.getTask(null, fm, dc, opts, null, fm.getJavaFileObjectsFromFiles(files)).call();
 		int errors = 0;

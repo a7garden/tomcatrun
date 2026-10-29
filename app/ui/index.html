@@ -370,6 +370,9 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .checks .ic { color: var(--ok); align-self: center; }
 .checks li.bad .ic { color: var(--crit); }
 .checks li.bad span { color: var(--crit); }
+.checks li.warn .ic, .checks li.warn span { color: var(--warn); }
+.checks li.warn .ic { align-self: start; margin-top: 2px; }
+.checks li.warn small { white-space: pre-line; word-break: normal; font-family: var(--ui); line-height: 1.55; }
 .checks small { color: var(--muted); word-break: break-all; font-family: var(--mono); font-size: 12px; }
 .checks-sub { margin: 14px 0 4px; font-weight: 600; font-size: 12.5px; }
 .check-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 0 28px; }
@@ -419,6 +422,8 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .svn-foot { display: flex; gap: 8px; align-items: center; padding: 8px 14px; border-top: 1px solid var(--line); background: var(--panel); flex-wrap: wrap; }
 .svn-foot input { flex: 1; min-width: 240px; }
 .svn-note { color: var(--muted); font-size: 12px; }
+/* Commit message 규칙 경고 — 단추 줄 아래 한 줄. 막지 않으므로 오류색이 아니라 호박색 */
+.svn-foot .msg-warn { flex-basis: 100%; order: 9; color: var(--warn); font-size: 12px; }
 .svn-log { padding: 8px 12px; border-bottom: 1px solid var(--line-soft); }
 .svn-log .r { font-weight: 600; margin-right: 8px; font-family: var(--mono); }
 .svn-log .who { color: var(--muted); font-size: 12px; }
@@ -440,6 +445,23 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .svn-login .chk { margin-bottom: 14px; }
 .svn-login .err { color: var(--crit); margin-bottom: 10px; min-height: 0; }
 .svn-login .row-btns { display: flex; gap: 6px; }
+/* 쓰기 확인 · 충돌 판 · Blame (2026-10-29) */
+.dlg.vcs-dlg { max-width: 540px; }
+.dlg.vcs-dlg p { line-height: 1.55; white-space: pre-wrap; }
+.dlg.vcs-dlg p .flag { color: var(--crit); font-weight: 600; }
+.dlg.vcs-dlg ul { max-height: 280px; overflow: auto; }
+.dlg.vcs-dlg li span:first-child { font: 12px var(--mono); word-break: break-all; }
+.svn-conflict { margin-top: 8px; padding: 8px 10px; border-radius: 6px; background: var(--crit-weak); font-size: 12px; }
+.svn-conflict b { color: var(--crit); }
+.svn-conflict .acts { margin-top: 6px; }
+.svn-diff.busy .acts .btn, .svn-foot.busy .btn { pointer-events: none; opacity: .55; }
+.svn-diff table.blame td.g { width: 1%; white-space: nowrap; color: var(--muted); background: var(--panel-2); font-size: 11.5px; cursor: pointer; }
+.svn-diff table.blame td.g.none { cursor: default; }
+.svn-diff table.blame td.g:hover:not(.none) { color: var(--text); }
+.svn-diff table.blame tr.n td { border-top: 1px solid var(--line-soft); }
+.svn-log .undo { float: right; margin-left: 8px; }
+.vcs-srv .svn-note { word-break: break-all; }
+.vcs-srv .svn-note.flag { color: var(--crit); }
 .vcs-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 8px; }
 .vcs-srv { min-width: 0; padding: 10px 14px 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
 .vcs-srv .checks-sub { display: flex; align-items: center; gap: 6px; margin: 0 0 6px; font-size: 13px; }
@@ -542,8 +564,17 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .setup ul.pick li.off { cursor: default; opacity: .55; }
 .setup ul.pick li b { font-weight: 600; }
 .setup ul.pick li .meta { color: var(--muted); font-size: 12px; margin-left: auto; text-align: right; }
+/* 이클립스와 다르게 도는 것 — 서버 줄 아래로 내려 접히게 한다 */
+.setup ul.pick li { flex-wrap: wrap; }
+.setup ul.pick li .warns { flex-basis: 100%; margin: 2px 0 0 26px; color: var(--warn); font-size: 12px; line-height: 1.55; }
+.setup ul.pick li .warns div { display: flex; gap: 6px; align-items: flex-start; margin-top: 2px; }
+.setup ul.pick li .warns .ic { flex: none; width: 13px; height: 13px; margin-top: 3px; }
 .setup .tc { display: flex; align-items: center; gap: 8px; margin-top: 12px; padding: 8px 10px; border-radius: 6px; background: var(--warn-weak); color: var(--text); font-size: 12px; }
 .setup .tc span { flex: 1; }
+.setup .jndi { margin-top: 12px; padding: 8px 10px; border-radius: 6px; background: var(--warn-weak); font-size: 12px; line-height: 1.55; }
+.setup .jndi label { display: flex; align-items: center; gap: 8px; font-weight: 600; cursor: pointer; }
+.setup .jndi .names { font: 12px var(--mono); margin: 2px 0 4px 24px; word-break: break-all; }
+.setup .jndi p { margin: 0 0 0 24px; color: var(--muted); }
 .setup .acts .left { margin-right: auto; }
 </style>
 </head>
@@ -569,6 +600,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 	<symbol id="i-gauge" viewBox="0 0 24 24"><path d="M4.5 16.5a7.5 7.5 0 1 1 15 0"/><path d="M12 16.5l3.5-5"/></symbol>
 	<symbol id="i-eye-off" viewBox="0 0 24 24"><path d="M3.5 12s3-5.5 8.5-5.5S20.5 12 20.5 12s-3 5.5-8.5 5.5S3.5 12 3.5 12z"/><circle cx="12" cy="12" r="2.5"/><path d="M4.5 4.5l15 15"/></symbol>
 	<symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4.5v10.5M7.5 10.5l4.5 4.5 4.5-4.5"/><path d="M5 19.5h14"/></symbol>
+	<symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 15V4.5M7.5 9l4.5-4.5L16.5 9"/><path d="M5 19.5h14"/></symbol>
 	<symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8.5" r="3.5"/><path d="M5 19.5c1-3.3 3.8-5 7-5s6 1.7 7 5"/></symbol>
 </svg>
 
@@ -609,18 +641,18 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 		<div id="log"></div>
 	</section>
 
-	<!-- 버전 관리 (SVN · Git 읽기 전용 · 커밋 · 업데이트는 사용자가 직접) -->
+	<!-- 버전 관리 (SVN · Git · 쓰기는 「Allow write」를 켠 서버에서 사용자가 누를 때만) -->
 	<section class="pane" id="paneSvn" hidden>
 		<div class="toolbar svn-bar">
 			<div class="seg" id="svnSrv"></div>
 			<div class="seg" id="vcsKind" hidden></div>
 			<div class="seg" id="svnViews">
-				<button data-view="local" class="on" title="작업복사본에서 바뀐 파일 (저장소에 묻지 않습니다)">내 변경</button>
-				<button data-view="incoming" title="저장소에 새 커밋이 있는지, 업데이트하면 무엇이 들어오는지">업데이트 확인</button>
-				<button data-view="log">로그</button>
+				<button data-view="local" class="on" title="작업복사본에서 바뀐 파일 (저장소에 묻지 않습니다)">Changes</button>
+				<button data-view="incoming" title="저장소에 새 커밋이 있는지, Update 하면 무엇이 들어오는지">Incoming</button>
+				<button data-view="log">Log</button>
 			</div>
 			<span class="svn-info" id="svnInfo">읽는 중...</span>
-			<label class="chk" id="svnUnverBox"><input type="checkbox" id="svnUnver">추가 안 된 파일도</label>
+			<label class="chk" id="svnUnverBox"><input type="checkbox" id="svnUnver"><span id="svnUnverText">Show unversioned</span></label>
 			<button class="btn" id="svnAccount" title="저장소 계정 (Windows 자격 증명 관리자)"><svg class="ic"><use href="#i-user"/></svg>계정</button>
 			<button class="btn" id="svnRefresh"><svg class="ic"><use href="#i-restart"/></svg>새로 고침</button>
 		</div>
@@ -629,13 +661,20 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 			<div class="svn-diff" id="svnDiff"></div>
 		</div>
 		<div class="svn-foot" id="svnCommit">
-			<input type="text" id="svnMsg" placeholder="커밋 메시지">
+			<input type="text" id="svnMsg" placeholder="Commit message">
+			<button class="btn" id="svnGenMsg" hidden><svg class="ic"><use href="#i-bolt"/></svg><span>자동 생성</span></button>
+			<span class="msg-warn" id="svnMsgWarn" hidden></span>
 			<button class="btn" id="svnCopyList"><svg class="ic"><use href="#i-copy"/></svg>고른 파일 목록 복사</button>
-			<button class="btn" id="svnCopyCmd"><svg class="ic"><use href="#i-copy"/></svg>커밋 명령 복사</button>
+			<button class="btn" id="svnCopyCmd"><svg class="ic"><use href="#i-copy"/></svg>Commit 명령 복사</button>
+			<button class="btn" id="svnRevert" hidden title="고른 파일의 고친 내용을 버리고 BASE 로 되돌립니다">Revert…</button>
+			<button class="btn primary" id="svnDoCommit" hidden><svg class="ic"><use href="#i-check"/></svg><span>Commit</span></button>
 		</div>
 		<div class="svn-foot" id="svnUpdateBar" style="display:none">
-			<button class="btn" id="svnCopyUpdate"><svg class="ic"><use href="#i-copy"/></svg>업데이트 명령 복사</button>
-			<button class="btn" id="svnCopyFetch" hidden><svg class="ic"><use href="#i-copy"/></svg>fetch 명령 복사</button>
+			<button class="btn" id="svnCopyUpdate"><svg class="ic"><use href="#i-copy"/></svg>Update 명령 복사</button>
+			<button class="btn" id="svnCopyFetch" hidden><svg class="ic"><use href="#i-copy"/></svg>Fetch 명령 복사</button>
+			<button class="btn" id="svnDoFetch" hidden title="원격 추적 브랜치만 새로 고칩니다. 작업 파일은 바뀌지 않고 Incoming 이 최신이 됩니다."><svg class="ic"><use href="#i-restart"/></svg><span>Fetch</span></button>
+			<button class="btn primary" id="svnDoUpdate" hidden><svg class="ic"><use href="#i-download"/></svg><span>Update</span></button>
+			<button class="btn" id="svnDoPush" hidden title="올릴 커밋을 확인 창에서 본 뒤 원격 추적 브랜치에 올립니다."><svg class="ic"><use href="#i-upload"/></svg><span>Push</span></button>
 			<span class="svn-note" id="svnUpdateNote" style="width:auto;flex:1"></span>
 		</div>
 	</section>
@@ -732,7 +771,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 					<ul class="ign" id="ignList"></ul>
 					<div class="ign-add">
 						<input type="text" id="ignInput" spellcheck="false" placeholder="예) a.sql · *.sql · src/main/resources/db/deploy/"
-							title="여기 걸린 파일은 저장해도 반영 기록 · 재시작 알림 · 자동 컴파일에 넣지 않습니다. 버전 관리 「내 변경」 목록에는 그대로 나옵니다.&#10;탐색기에서 복사한 전체 경로도 프로젝트 기준으로 바뀌고, 여러 줄을 붙여 넣으면 줄마다 하나씩 들어갑니다.&#10;「/」 가 없으면 이름으로 맞춥니다. 같은 이름의 폴더가 있으면 그 아래도 빠집니다.">
+							title="여기 걸린 파일은 저장해도 반영 기록 · 재시작 알림 · 자동 컴파일에 넣지 않습니다. 버전 관리 「Changes」 목록에는 그대로 나옵니다.&#10;탐색기에서 복사한 전체 경로도 프로젝트 기준으로 바뀌고, 여러 줄을 붙여 넣으면 줄마다 하나씩 들어갑니다.&#10;「/」 가 없으면 이름으로 맞춥니다. 같은 이름의 폴더가 있으면 그 아래도 빠집니다.">
 						<button class="btn" id="ignAdd">추가</button>
 					</div>
 					<dl class="pat" title="누르면 입력칸에 넣습니다">
@@ -775,6 +814,17 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 		<div class="acts" id="quitActs">
 			<button class="btn" id="quitCancel">취소</button>
 			<button class="btn primary" id="quitOk">종료하고 닫기</button>
+		</div>
+	</div>
+</div>
+<div class="scrim" id="vcsScrim" hidden>
+	<div class="dlg vcs-dlg" role="alertdialog" aria-modal="true" aria-labelledby="vcsDlgTitle" aria-describedby="vcsDlgText">
+		<h2 id="vcsDlgTitle"></h2>
+		<p id="vcsDlgText"></p>
+		<ul id="vcsDlgList"></ul>
+		<div class="acts">
+			<button class="btn" id="vcsDlgCancel">취소</button>
+			<button class="btn primary" id="vcsDlgOk"></button>
 		</div>
 	</div>
 </div>
@@ -834,6 +884,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 	var errMsg = "";       // 실행기 명령이 돌려준 오류 — 닫을 때까지 알림 줄에 둔다
 	var alertOpen = {};    // 알림 줄 목록을 펼친 것
 	var updDismissed = ""; // 알림 줄에서 닫은 새 판 — 이번 실행에서는 다시 띄우지 않는다 (설정 › 업데이트에는 남는다)
+	var javaDismissed = {}; // 알림 줄에서 닫은 「이클립스와 다른 자바」 (서버 id → 그 문구) — 문구가 바뀌면 다시 띄운다 (상태 탭에는 남는다)
 	var lastTitle = "";
 	var errBuf = {}, lastErrs = {};   // 서버별 컴파일 오류 줄 — 모으는 중 · 직전 컴파일 것
 
@@ -1239,6 +1290,23 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 						invoke("auto_deps", { srv: i }).then(function (m) { showToast(m); }).catch(function (e) { showError(String(e)); });
 					}]] });
 			}
+			// 같은 jar 다른 판 — 시작은 되지만 켜기 전에 눈에 띄게 (설명 첫 줄이 요약이다)
+			var dup = sv.checks.filter(function (c) { return c.key === "depsDup"; })[0];
+			if (dup) {
+				var dl = dup.detail.split("\n");
+				rows.push({ key: "dd" + i, lv: "warn", text: "<b>" + esc(sv.name) + " · 같은 jar 다른 판 " + esc(dl[0].split(" · ")[0]) + "</b>" +
+					'<span class="sub">' + esc(dl[0].split(" · ").slice(1).join(" · ")) + " — 이클립스와 읽는 순서가 달라 이 실행기에서만 오류가 날 수 있습니다</span>",
+					acts: [["상태 보기", "", false, function () { go("status"); }]] });
+			}
+			// 이클립스와 다른 자바로 뜬다 — 「 — 」 앞이 요약, 뒤가 할 일. 핫리로드 모드면 끄는 단추를 붙인다 (끄면 이클립스와 같은 자바로 뜬다)
+			if (sv.javaDiff && javaDismissed[sv.id] !== sv.javaDiff) {
+				var jd = sv.javaDiff.split(" — ");
+				rows.push({ key: "j" + i, lv: "warn", close: function () { javaDismissed[sv.id] = sv.javaDiff; renderAlerts(); },
+					text: "<b>" + esc(sv.name) + " · " + esc(jd[0]) + "</b>" + '<span class="sub">' + esc(jd.slice(1).join(" — ")) + "</span>",
+					acts: state.hotReload
+						? [["핫리로드 끄기", "", false, function () { hideError(); call("set_option", { key: "hotReload", value: false }); showToast("핫리로드를 껐습니다 · 다음 기동부터 이클립스와 같은 자바로 뜹니다"); }]]
+						: [["설정 › 서버", "", false, function () { openSettings("setServers"); }]] });
+			}
 		});
 		var up = state.update, rel = up.release;
 		if (rel && updDismissed !== rel.version) {
@@ -1377,7 +1445,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 		return list.map(function (c) {
 			// 값이 경로인 항목은 우클릭으로 탐색기 · 경로 복사
 			var path = /^[A-Za-z]:[\\\/]/.test(c.detail) ? ' data-path="' + esc(c.detail) + '"' : "";
-			return '<li class="' + (c.ok ? "" : "bad") + '"' + path + ">" + ic(c.ok ? "check" : "error") + "<span>" + esc(c.label) + "</span><small>" + esc(c.detail) + "</small></li>";
+			return '<li class="' + (!c.ok ? "bad" : c.warn ? "warn" : "") + '"' + path + ">" + ic(!c.ok ? "error" : c.warn ? "warn" : "check") + "<span>" + esc(c.label) + "</span><small>" + esc(c.detail) + "</small></li>";
 		}).join("");
 	}
 
@@ -1544,6 +1612,8 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 			invoke("eclipse_scan", { dir: dir }).then(setupShow).catch(function (e) { showError(String(e)); });
 		});
 	}
+	// 옮길 수 있는 JNDI 항목 (가리키는 전역 설정이 없는 링크는 뺀다)
+	function jndiOf(sv) { return (sv.naming || []).filter(function (n) { return !n.missing; }); }
 	function setupShow(list) {
 		var servers = [];
 		list.forEach(function (w) { w.servers.forEach(function (sv) { servers.push({ ws: w.path, sv: sv }); }); });
@@ -1557,20 +1627,46 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 			]);
 			return;
 		}
-		var html = "<p>이클립스에서 쓰던 톰캣 서버를 찾았습니다. 고른 서버의 프로젝트 · 포트 · 톰캣 폴더 · 의존 jar 를 그대로 가져옵니다. 이클립스 설정은 바꾸지 않습니다.</p>";
+		var html = "<p>이클립스에서 쓰던 톰캣 서버를 찾았습니다. 고른 서버의 프로젝트 · 포트 · 톰캣 폴더 · 의존 jar · 자바(핫리로드를 끌 때)를 그대로 가져옵니다. 이클립스 설정은 바꾸지 않습니다.</p>";
 		var lastWs = "";
 		servers.forEach(function (x, k) {
 			if (x.ws !== lastWs) { html += (lastWs ? "</ul>" : "") + '<div class="ws">' + esc(x.ws) + '</div><ul class="pick">'; lastWs = x.ws; }
 			var ok = !!x.sv.project;
+			var jn = jndiOf(x.sv).length;
 			html += '<li class="' + (ok ? "" : "off") + '"><input type="checkbox" data-k="' + k + '"' + (ok ? " checked" : " disabled") + "><b>" + esc(x.sv.name) + "</b>" +
-				'<span class="meta">' + (ok ? esc(baseName(x.sv.project)) + " · " + x.sv.httpPort + (x.sv.jars ? " · jar " + x.sv.jars + "개" : " · jar 없음 (Maven 으로 받기)") : "프로젝트 폴더를 찾지 못함") + "</span></li>";
+				'<span class="meta">' + (ok ? esc(baseName(x.sv.project)) + " · " + x.sv.httpPort + esc(x.sv.contextPath || "") + (x.sv.jars ? " · jar " + x.sv.jars + "개" : " · jar 없음 (Maven 으로 받기)") + (jn ? " · JNDI " + jn + "개" : "") + (x.sv.java ? " · 자바 " + x.sv.javaVersion : "") : "프로젝트 폴더를 찾지 못함") + "</span>" +
+				(ok && x.sv.warnings.length ? '<div class="warns">' + x.sv.warnings.map(function (w) {
+					// {base} 는 가져올 때 그 서버의 톰캣 설정 폴더로 바뀐다
+					return "<div>" + ic("warn") + "<span>" + esc(w.split("{base}").join("<서버 폴더>/base")) + "</span></div>";
+				}).join("") + "</div>" : "") + "</li>";
 		});
-		html += "</ul>" + tomcatRow();
+		html += "</ul>" + '<div class="jndi" id="setupJndi" hidden></div>' + tomcatRow();
 		$("setupBody").innerHTML = html;
 		bindTomcat();
+		// JNDI 설정 옮기기 — DB 계정 · 비밀번호가 실행기 폴더로 복사되므로 기본은 꺼 둔다. 고른 서버가 바뀌면 개수를 다시 센다.
+		var jndiOn = false;
+		var drawJndi = function () {
+			var box = $("setupJndi");
+			var list = [], lost = [];
+			[].forEach.call($("setupBody").querySelectorAll("input[data-k]"), function (c) {
+				if (!c.checked) return;
+				var sv = servers[+c.getAttribute("data-k")].sv;
+				jndiOf(sv).forEach(function (n) { list.push(n.name); });
+				(sv.naming || []).forEach(function (n) { if (n.missing) lost.push(n.name); });
+			});
+			box.hidden = !list.length;
+			if (!list.length) return;
+			box.innerHTML = '<label><input type="checkbox" id="setupJndiOn"' + (jndiOn ? " checked" : "") + "> JNDI 설정 " + list.length + "개도 옮기기</label>" +
+				'<div class="names">' + esc(list.join(" · ")) + "</div>" +
+				"<p>이클립스 서버 설정의 DB 계정 · 비밀번호가 그 서버의 톰캣 설정 폴더(<code>conf/Catalina/localhost/context.xml.default</code>)에 그대로 복사됩니다. 다른 서버와 저장소에는 들어가지 않습니다.</p>" +
+				"<p>옮기지 않으면 앱이 이 이름을 찾지 못해 기동이 실패할 수 있습니다.</p>" +
+				(lost.length ? "<p>가리키는 전역 설정이 없어 옮기지 않는 링크: " + esc(lost.join(" · ")) + "</p>" : "");
+			$("setupJndiOn").onchange = function () { jndiOn = this.checked; };
+		};
 		[].forEach.call($("setupBody").querySelectorAll("ul.pick li:not(.off)"), function (li) {
-			li.onclick = function (e) { if (e.target.tagName !== "INPUT") { var c = li.querySelector("input"); c.checked = !c.checked; } };
+			li.onclick = function (e) { if (e.target.tagName !== "INPUT") { var c = li.querySelector("input"); c.checked = !c.checked; } drawJndi(); };
 		});
+		drawJndi();
 		setupActs([
 			{ label: "폴더 직접 고르기", cls: "ghost left", run: setupFolder },
 			{ label: "나중에", run: setupClose },
@@ -1581,7 +1677,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 				var ws = picked[0].ws;
 				var ids = picked.filter(function (x) { return x.ws === ws; }).map(function (x) { return x.sv.id; });
 				setupBusy("가져오는 중... 의존 jar 를 옮기고 있습니다.");
-				invoke("eclipse_import", { ws: ws, ids: ids }).then(function (msg) { setupClose(); showToast(msg); })
+				invoke("eclipse_import", { ws: ws, ids: ids, naming: jndiOn }).then(function (msg) { setupClose(); showToast(msg); })
 					.catch(function (e) { setupClose(); showError(String(e)); });
 			} }
 		]);
@@ -2035,26 +2131,40 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 		var out = /\//.test(path) && /\.\w+$/.test(path) ? fileItems(fullPath(srv, path), 1).concat([{ sep: true }]) : [];
 		return out.concat(ignoreChoices(path).map(function (c) { return { label: "무시 · " + c.label, sub: c.sub, run: c.run }; }));
 	}
-	// 버전 관리 「내 변경」 한 줄
+	// 버전 관리 「Changes」 한 줄
 	function vcsRowMenu(row) {
 		var p = row.getAttribute("data-p"), st = svn.data[K()];
 		var it = st && st.items.filter(function (x) { return x.path === p; })[0];
 		if (!it) return [];
 		var ck = svn.checked[K()] || (svn.checked[K()] = {});
 		var out = fileItems(rootOf(svn.srv) + "/" + p, 1, it.code === "D" || it.code === "!");
-		out.push({ sep: true }, { label: ck[p] ? "커밋할 파일에서 빼기" : "커밋할 파일로 고르기", run: function () { ck[p] = !ck[p]; svnRender(); } });
+		out.push({ sep: true }, { label: ck[p] ? "Commit 대상에서 빼기" : "Commit 대상으로 고르기", run: function () { ck[p] = !ck[p]; svnRender(); } });
 		if (!it.dir && p !== ".") {
-			if (isGit() ? st.upstream : true) out.push({ label: isGit() ? st.upstream + " 와 비교" : "저장소 최신본과 비교", run: function () { svn.sel = p; svnRender(); svnCompareHead(p); } });
-			if (it.code !== "?" && it.code !== "A") out.push({ label: "이 파일의 로그", run: function () { svnFileLog(p); } });
+			if (isGit() ? st.upstream : true) out.push({ label: isGit() ? "Compare with " + st.upstream : "Compare with HEAD", run: function () { svn.sel = p; svnRender(); svnCompareHead(p); } });
+			if (it.code !== "?" && it.code !== "A") {
+				out.push({ label: "Show log", run: function () { svnFileLog(p); } });
+				out.push({ label: "Blame", run: function () { svn.sel = p; svnRender(); svnBlame(p); } });
+			}
+		}
+		// 쓰기는 Allow write 를 켠 서버에서만 — svn.exe 판이 맞지 않으면 잠근 채 까닭을 보인다
+		if (canWrite()) {
+			var block = writeBlock();
+			if (it.conflict) {
+				out.push({ sep: true });
+				["mine", "theirs", "working"].forEach(function (a) {
+					out.push({ label: "Resolve · " + RESOLVE[a][0], disabled: !!block, run: function () { vcsResolve(p, a); } });
+				});
+			}
+			if (it.code !== "?") out.push({ sep: true }, { label: "Revert…", sub: block || "", disabled: !!block, run: function () { vcsRevertAsk([it]); } });
 		}
 		return out;
 	}
-	// 로그 · 업데이트 확인에서 커밋 아래 바뀐 경로 — 작업복사본 밖이면 저장소 경로를 복사할 뿐
+	// Log · Incoming 에서 커밋 아래 바뀐 경로 — 작업복사본 밖이면 저장소 경로를 복사할 뿐
 	function vcsPathMenu(el) {
 		var p = el.getAttribute("data-p");
 		if (el.classList.contains("out")) return [{ label: "경로 복사", sub: p, run: function () { copyText(p, "저장소 경로"); } }];
 		var gone = el.querySelector(".a").textContent === "D";
-		return [{ label: "차이 보기", run: function () { el.onclick(); } }, { sep: true }].concat(fileItems(rootOf(svn.srv) + "/" + p, 1, gone));
+		return [{ label: "Diff", run: function () { el.onclick(); } }, { sep: true }].concat(fileItems(rootOf(svn.srv) + "/" + p, 1, gone));
 	}
 	// 차이 보기 한 줄 — 새 쪽이 지금 내 파일일 때만 그 줄을 편집기로
 	function diffMenu(tr) {
@@ -2094,24 +2204,38 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 		if (items.length) openMenu({ x: e.clientX, y: e.clientY }, items); else closeMenu();
 	});
 
-	/* ---------- 버전 관리 (SVN · Git 읽기 전용 · 커밋 · 업데이트는 사용자가 직접) ---------- */
+	/* ---------- 버전 관리 (SVN · Git) ---------- */
 
 	// kind : svn · git — 서버마다 「설정 › 버전 관리」에서 정한다. 둘 다 쓰면 도구 줄에서 고른다.
-	// view : local(내 변경) · incoming(업데이트 확인) · log(로그)
-	//   SVN  내 변경은 .svn/wc.db 만 읽고, 뒤의 둘은 저장소에 읽기 요청을 보낸다
-	//   Git  모두 로컬 .git 만 읽는다. 업데이트 확인은 마지막으로 fetch 해 둔 원격 추적 브랜치와 견준다
+	// view : local(Changes) · incoming(Incoming) · log(Log)
+	//   SVN  Changes 는 .svn/wc.db 만 읽고, 뒤의 둘은 저장소에 읽기 요청을 보낸다
+	//   Git  모두 로컬 .git 만 읽는다. Incoming 은 마지막으로 fetch 해 둔 원격 추적 브랜치와 견준다
+	// 쓰기(Commit · Update · Revert · Resolve · 리비전 되돌리기)는 「Allow write」를 켠 서버에서 확인 창을 거쳐서만 (2026-10-29~).
+	//   끈 서버는 전처럼 명령을 복사만 해 준다.
+	// 용어는 영문 표준 용어 (DESIGN.md 「버전 관리 용어」) — TortoiseSVN · VS Code 와 같은 낱말로 찾게 한다
 	// 캐시(data · stale · checked · remote)는 「서버:종류」 열쇠로 나눈다
 	var svn = { srv: 0, kind: "svn", view: "local", data: {}, stale: {}, sel: null, checked: {}, timer: null, loading: false,
 		remote: {}, logRel: "", selRev: null, retry: null, sig: "",
-		diffFile: null };   // 차이 보기의 새 쪽이 지금 내 파일이면 그 절대 경로 — 우클릭 「편집기로 이 줄 열기」
+		busy: false,        // 쓰기가 도는 중 — 단추를 잠근다
+		blameFor: null,     // Blame 을 받는 중인 파일 — 그 사이 다른 것을 고르면 결과를 버린다
+		diffFile: null };   // Diff 의 새 쪽이 지금 내 파일이면 그 절대 경로 — 우클릭 「편집기로 이 줄 열기」
 	var KIND_NAME = { svn: "SVN", git: "Git" };
-	// 커밋 후보로 처음부터 골라 두는 것 — 추가 안 된 파일 · 없어진 파일 · 충돌은 사람이 보고 고른다
+	// Commit 후보로 처음부터 골라 두는 것 — Unversioned · Missing · Conflicted 는 사람이 보고 고른다
 	var SVN_DEFAULT = { M: true, A: true, D: true, P: true };
+	// Resolve 방법 — [단추 이름, 확인 창 설명]
+	var RESOLVE = {
+		mine: ["Use mine", "내 것(mine)으로 파일을 덮고 해결로 표시합니다. 저장소에서 들어온 변경은 이 파일에서 버려집니다."],
+		theirs: ["Use theirs", "저장소 것(theirs)으로 파일을 덮고 해결로 표시합니다. 내가 고친 내용은 이 파일에서 버려집니다."],
+		working: ["Mark as resolved", "지금 파일 그대로 해결로 표시합니다. 파일 안의 충돌 표시(<<<<<<< · ======= · >>>>>>>)를 다 정리했는지 먼저 보세요."]
+	};
 
 	function K() { return svn.srv + ":" + svn.kind; }
 	function kindsOf(i) { return state && state.servers[i] ? state.servers[i].vcsKinds || [] : []; }
 	function vcsOf(i) { return state.servers[i].vcs; }
 	function isGit() { return svn.kind === "git"; }
+	function canWrite() { var sv = state && state.servers[svn.srv]; return !!(sv && sv.vcs.write); }
+	// Allow write 를 켰어도 SVN 쓰기를 못 하는 까닭 (svn.exe 없음 · 판이 맞지 않음). Git 은 실행기가 따로 막지 않는다.
+	function writeBlock() { return isGit() ? null : state.servers[svn.srv].svnBlock || null; }
 	// 작업복사본 · 저장소 맨 위 폴더 — git 은 status 가 알려 준 맨 위 폴더 기준으로 경로가 온다
 	function rootOf(i) {
 		var st = svn.data[i + ":" + svn.kind];
@@ -2142,7 +2266,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 	}
 	// 설정에서 종류 · 폴더를 바꾸면 화면을 다시 세운다 (상태가 올 때마다 다시 그리면 보던 차이가 지워지므로 바뀐 때만)
 	function svnOnState(s) {
-		var sig = JSON.stringify(s.servers.map(function (sv) { return [sv.vcsKinds, sv.vcsRoot, sv.vcs]; }));
+		var sig = JSON.stringify(s.servers.map(function (sv) { return [sv.vcsKinds, sv.vcsRoot, sv.vcs, sv.svnBlock]; }));
 		if (sig === svn.sig) return;
 		var first = !svn.sig;
 		svn.sig = sig;
@@ -2164,23 +2288,47 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 		$("svnViews").hidden = none;
 		[].forEach.call($("svnViews").children, function (b) { b.classList.toggle("on", b.getAttribute("data-view") === svn.view); });
 		$("svnViews").children[0].title = git ? "마지막 커밋(HEAD) 뒤로 바뀐 파일" : "작업복사본에서 바뀐 파일 (저장소에 묻지 않습니다)";
-		$("svnViews").children[1].title = git ? "마지막으로 fetch 해 둔 원격 브랜치에 받을 커밋이 있는지 (원격에 묻지 않습니다)" : "저장소에 새 커밋이 있는지, 업데이트하면 무엇이 들어오는지";
+		$("svnViews").children[1].title = git ? "마지막으로 fetch 해 둔 원격 브랜치에 받을 커밋이 있는지 (원격에 묻지 않습니다)" : "저장소에 새 커밋이 있는지, Update 하면 무엇이 들어오는지";
 		$("svnAccount").hidden = git || none;
 		$("svnUnverBox").style.display = local && !none ? "" : "none";
+		$("svnUnverText").textContent = git ? "Show untracked" : "Show unversioned";
 		$("svnCommit").style.display = local && !none ? "" : "none";
 		$("svnUpdateBar").style.display = !local && !none ? "" : "none";
-		$("svnCopyFetch").hidden = !git;
 		if (!none) {
-			var v = vcsOf(svn.srv);
-			$("svnMsg").placeholder = v.commitHint || "커밋 메시지";
+			var v = vcsOf(svn.srv), w = canWrite(), block = writeBlock();
+			$("svnMsg").placeholder = v.commitHint || "Commit message";
 			$("svnCopyUpdate").title = updateCmd();
-			$("svnCopyUpdate").lastChild.textContent = git ? "받기 명령 복사" : "업데이트 명령 복사";
+			$("svnCopyUpdate").lastChild.textContent = git ? "Pull 명령 복사" : "Update 명령 복사";
+			// Allow write 를 켠 서버는 실행 단추가 복사 단추 자리를 갖는다 — 둘을 함께 두면 어느 쪽이 실제로 쓰는지 헷갈린다
+			$("svnCopyCmd").hidden = w;
+			$("svnCopyUpdate").hidden = w;
+			$("svnCopyFetch").hidden = !git || w;
+			$("svnRevert").hidden = $("svnDoCommit").hidden = $("svnDoUpdate").hidden = !w;
+			// 2026.10.29 : Fetch · Push 는 Git 만 (SVN 은 Update · Commit 이 곧 원격과 주고받는 것)
+			$("svnDoFetch").hidden = $("svnDoPush").hidden = !(w && git);
+			// 생성 명령을 적지 않았으면 숨긴다 — 적기 전에는 아무것도 밖으로 나가지 않는다
+			$("svnGenMsg").hidden = !(state.paths && state.paths.msgCmd);
+			$("svnGenMsg").title = "고른 파일의 Diff 를 「" + ((state.paths && state.paths.msgCmd) || "") + "」 에 넘겨 Commit message 를 만듭니다. 소스가 그 명령의 서비스로 나갑니다.";
+			msgCheck();
+			$("svnDoUpdate").lastChild.textContent = git ? "Pull" : "Update";
+			$("svnDoUpdate").title = git ? updateCmd() : "svn update · 들어온 변경이 내 변경과 겹치면 Conflicted 로 남습니다";
+			$("svnRevert").title = "고른 파일의 고친 내용을 버리고 " + (git ? "HEAD" : "BASE") + " 로 되돌립니다";
+			$("svnDoCommit").title = "고른 파일을 Commit 합니다";
+			[$("svnRevert"), $("svnDoCommit"), $("svnDoUpdate")].forEach(function (b) {
+				b.disabled = !!block;
+				if (block) b.title = block;
+			});
 			// 2026-10-28 : 「저장소에 쓰지 않습니다 · 직접 하세요」는 「… 명령 복사」 단추 이름이 이미 말해서 걷었다. 목록의 기준만 남긴다
-			$("svnUpdateNote").textContent = git ? "마지막 fetch 기준" : "업데이트가 끝나면 「내 변경」을 다시 읽습니다.";
+			$("svnUpdateNote").textContent = (block ? block + " " : "") + (git ? "마지막 fetch 기준" : "Update 가 끝나면 Changes 를 다시 읽습니다.");
+			svnCommitCount();
 		}
 		$("svnDiff").innerHTML = none ? "" : '<div class="empty">' + (local
-			? (git ? "파일을 고르면 마지막 커밋(HEAD)과의 차이를 보여 줍니다." : "파일을 고르면 마지막으로 받은 내용(기준본)과의 차이를 보여 줍니다.") + " 두 번 누르면 편집기로 엽니다."
+			? (git ? "파일을 고르면 마지막 커밋(HEAD)과의 Diff 를 보여 줍니다." : "파일을 고르면 마지막으로 받은 내용(BASE)과의 Diff 를 보여 줍니다.") + " 두 번 누르면 편집기로 엽니다."
 			: "커밋 아래의 파일을 고르면 그 커밋에서 무엇이 바뀌었는지 보여 줍니다.") + "</div>";
+	}
+	function svnCommitCount() {
+		var n = svnChecked().length;
+		$("svnDoCommit").lastChild.textContent = n ? "Commit (" + n + ")" : "Commit";
 	}
 	// 이 서버에서 볼 버전 관리가 없을 때 — 왜 없는지와 고칠 곳
 	function svnRenderNone() {
@@ -2246,7 +2394,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 		var changes = st.items.filter(function (it) { return it.code !== "?"; }).length;
 		var unver = st.items.length - changes;
 		var conflicts = st.items.filter(function (it) { return it.conflict; }).length;
-		var head = "변경 <b>" + changes + "</b>" + (conflicts ? ' · <b class="flag">충돌 ' + conflicts + "</b>" : "") + " · 추가 안 됨 " + unver;
+		var head = "Changes <b>" + changes + "</b>" + (conflicts ? ' · <b class="flag">Conflicted ' + conflicts + "</b>" : "") + " · " + (isGit() ? "Untracked " : "Unversioned ") + unver;
 		if (isGit()) {
 			$("svnInfo").innerHTML = head + " · <b>" + esc(st.branch || "분리된 HEAD") + '</b> <span class="num">' + esc(st.head) + "</span>" +
 				(st.upstream ? " · " + esc(st.upstream) + (st.ahead ? " 보다 " + st.ahead + "개 앞" : "") + (st.behind ? (st.ahead ? " · " : " 보다 ") + st.behind + "개 뒤" : (st.ahead ? "" : " 와 같음")) : " · 원격 추적 브랜치 없음") +
@@ -2259,27 +2407,30 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 		}
 		var list = svnVisible(st);
 		var ck = svn.checked[K()] || {};
+		svnCommitCount();
 		if (!list.length) {
-			$("svnList").innerHTML = '<div class="empty">바뀐 파일이 없습니다.' + (unver ? " (추가 안 된 파일 " + unver + "개는 위에서 켜면 보입니다)" : "") + "</div>";
+			$("svnList").innerHTML = '<div class="empty">바뀐 파일이 없습니다.' + (unver ? " (" + (isGit() ? "Untracked" : "Unversioned") + " " + unver + "개는 위에서 켜면 보입니다)" : "") + "</div>";
 			return;
 		}
-		$("svnList").innerHTML = list.map(function (it) {
+		// Update · 되돌리기로 생긴 Conflicted 는 맨 위에 모은다 — 풀기 전에는 Commit 되지 않는다
+		list = list.filter(function (it) { return it.conflict; }).concat(list.filter(function (it) { return !it.conflict; }));
+		$("svnList").innerHTML = (conflicts ? '<div class="svn-group">Conflicted ' + conflicts + "건 · 줄을 고르면 세 쪽 비교와 Resolve 가 보입니다. Resolve 하기 전에는 Commit 되지 않습니다.</div>" : "") + list.map(function (it) {
 			var slash = it.path.lastIndexOf("/");
 			var dirPart = slash >= 0 ? it.path.slice(0, slash + 1) : "";
 			var name = slash >= 0 ? it.path.slice(slash + 1) : it.path;
 			var meta = [];
-			if (it.conflict) meta.push('<span class="flag">충돌 · 먼저 풀어야 커밋된다</span>');
-			if (it.propChanged && it.code !== "P") meta.push("속성도 바뀜");
-			if (it.rev) meta.push("기준 r" + it.rev + (it.author ? " · " + esc(it.author) : "") + (it.dateMs ? " · " + fmtDate(it.dateMs) : ""));
+			if (it.conflict) meta.push('<span class="flag">Conflicted · Resolve 해야 Commit 됩니다</span>');
+			if (it.propChanged && it.code !== "P") meta.push("Properties 도 바뀜");
+			if (it.rev) meta.push("BASE r" + it.rev + (it.author ? " · " + esc(it.author) : "") + (it.dateMs ? " · " + fmtDate(it.dateMs) : ""));
 			return '<div class="row' + (it.path === svn.sel ? " on" : "") + '" data-p="' + esc(it.path) + '">' +
-				'<input type="checkbox"' + (ck[it.path] ? " checked" : "") + ' title="커밋할 파일로 고르기">' +
+				'<input type="checkbox"' + (ck[it.path] ? " checked" : "") + ' title="Commit 대상으로 고르기">' +
 				'<span class="code ' + esc(it.code) + '">' + esc(it.label) + "</span>" +
 				'<span class="p">' + esc(dirPart).replace(/\//g, "/<wbr>") + "<b>" + esc(name) + (it.dir ? "/" : "") + "</b>" +
 				(meta.length ? "<small>" + meta.join(" · ") + "</small>" : "") + "</span></div>";
 		}).join("");
 		[].forEach.call($("svnList").querySelectorAll(".row"), function (row) {
 			var p = row.getAttribute("data-p");
-			row.querySelector("input").onclick = function (e) { e.stopPropagation(); ck[p] = this.checked; };
+			row.querySelector("input").onclick = function (e) { e.stopPropagation(); ck[p] = this.checked; svnCommitCount(); };
 			row.onclick = function () { svn.sel = p; svnRender(); svnShowDiff(p); };
 			row.ondblclick = function () { invoke("open_source", { file: rootOf(svn.srv) + "/" + p, line: 1 }); };
 		});
@@ -2288,7 +2439,8 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 		var key = K(), git = isGit();
 		var st = svn.data[key];
 		var it = st && st.items.filter(function (x) { return x.path === path; })[0];
-		if (!quiet) $("svnDiff").innerHTML = '<div class="empty">차이를 계산하는 중...</div>';
+		svn.blameFor = null;
+		if (!quiet) $("svnDiff").innerHTML = '<div class="empty">Diff 를 계산하는 중...</div>';
 		var args = { srv: svn.srv, path: path === "." ? "" : path };
 		if (it && it.orig) args.orig = it.orig;
 		invoke(svn.kind + "_diff", args).then(function (d) {
@@ -2297,14 +2449,15 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 			svn.diffFile = file && it.code !== "D" && it.code !== "!" ? rootOf(svn.srv) + "/" + path : null;
 			var base = git
 				? (it && (it.code === "?" || it.code === "A") ? "HEAD 에 없음 (새 파일)" : "HEAD " + esc(st.head) + " 와 비교" + (it && it.orig ? " · HEAD 에서는 옛 이름" : ""))
-				: (it && it.rev ? "기준본 r" + it.rev + (it.author ? " · " + esc(it.author) : "") + (it.dateMs ? " · " + fmtDate(it.dateMs) : "") : "기준본 없음 (새 파일)");
+				: (it && it.rev ? "BASE r" + it.rev + (it.author ? " · " + esc(it.author) : "") + (it.dateMs ? " · " + fmtDate(it.dateMs) : "") : "BASE 없음 (새 파일)");
 			var canHead = git ? !!st.upstream : true;
+			var tracked = it && it.code !== "?" && it.code !== "A";
 			var head = '<div class="head"><b>' + esc(path).replace(/\//g, "/<wbr>") + "</b>" +
 				(it ? " · " + esc(it.label) : "") + (it && it.orig ? " (옛 이름 " + esc(it.orig) + ")" : "") + diffCount(d) +
 				"<small>" + base + " · 두 번 누르면 편집기로 엽니다</small>" +
 				(file ? '<div class="acts">' +
-					(canHead ? '<button class="btn sm" data-act="head">' + (git ? esc(st.upstream) + " 와 비교" : "저장소 최신본과 비교") + "</button>" : "") +
-					(it.code !== "?" && it.code !== "A" ? '<button class="btn sm" data-act="log">이 파일의 로그</button>' : "") + "</div>" : "") +
+					(canHead ? '<button class="btn sm" data-act="head">' + (git ? "Compare with " + esc(st.upstream) : "Compare with HEAD") + "</button>" : "") +
+					(tracked ? '<button class="btn sm" data-act="log">Show log</button><button class="btn sm" data-act="blame">Blame</button>' : "") + "</div>" : "") +
 				"</div>";
 			renderDiff(head, d);
 			var acts = $("svnDiff").querySelector(".acts");
@@ -2313,15 +2466,18 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 				if (hb) hb.onclick = function () { svnCompareHead(path); };
 				var lb = acts.querySelector('[data-act="log"]');
 				if (lb) lb.onclick = function () { svnFileLog(path); };
+				var bb = acts.querySelector('[data-act="blame"]');
+				if (bb) bb.onclick = function () { svnBlame(path); };
 			}
+			if (it && it.conflict && file) vcsConflictPanel(path);
 		}).catch(function (e) {
 			if (key === K() && svn.sel === path) $("svnDiff").innerHTML = '<div class="empty">' + esc(String(e)) + "</div>";
 		});
 	}
-	// 차이 보기 머리의 두 단추 · 「내 변경」 줄 우클릭 메뉴가 같이 쓴다
+	// Diff 머리의 단추 · 「Changes」 줄 우클릭 메뉴가 같이 쓴다
 	function svnCompareHead(path) {
 		var st = svn.data[K()];
-		svnRevDiff(path, "head", "local", isGit() ? st.upstream + " (마지막 fetch) → 지금 내 파일" : "저장소 최신본(HEAD) → 지금 내 파일");
+		svnRevDiff(path, "head", "local", isGit() ? st.upstream + " (마지막 fetch) → 지금 내 파일" : "HEAD (저장소 최신본) → 지금 내 파일");
 	}
 	function svnFileLog(path) { svn.view = "log"; svn.logRel = path; svn.sel = null; svnRenderSrv(); svnActivate(true); }
 	function diffCount(d) {
@@ -2336,7 +2492,92 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 		$("svnDiff").innerHTML = head + "<table>" + rows + "</table>";
 	}
 
-	/* --- 업데이트 확인 · 로그 · 커밋 차이 (읽기 전용) --- */
+	/* --- Blame · 충돌 세 쪽 (읽기) --- */
+
+	// 줄마다 마지막으로 고친 리비전 · 작성자. 같은 리비전이 이어지면 첫 줄에만 적는다. 왼쪽 칸을 누르면 그 리비전의 Diff.
+	function svnBlame(path) {
+		var key = K(), git = isGit();
+		svn.blameFor = path;
+		$("svnDiff").innerHTML = '<div class="empty">' + (git ? "Blame 을 계산하는 중..." : "저장소에서 Blame 을 받는 중... (오래된 큰 파일은 수십 초 걸립니다)") + "</div>";
+		invoke("vcs_blame", { srv: svn.srv, kind: svn.kind, path: path }).then(function (b) {
+			if (key !== K() || svn.blameFor !== path) return;
+			// git 은 지금 파일 기준이라 줄 번호가 편집기와 맞는다. svn 은 BASE 기준이라 맞지 않을 수 있다
+			svn.diffFile = git ? rootOf(svn.srv) + "/" + path : null;
+			renderBlame(path, b);
+		}).catch(function (e) {
+			if (key !== K() || svn.blameFor !== path) return;
+			if (!remoteErr(e, function () { svnBlame(path); })) $("svnDiff").innerHTML = '<div class="empty">' + esc(String(e)) + "</div>";
+		});
+	}
+	function renderBlame(path, b) {
+		var git = isGit();
+		var head = '<div class="head"><b>' + esc(path).replace(/\//g, "/<wbr>") + "</b> · Blame<small>" +
+			(git ? "지금 파일 기준 · 아직 Commit 안 된 줄은 「Commit 안 됨」" : "BASE 기준 · 내가 고친 줄은 들어 있지 않습니다") +
+			" · 왼쪽 칸을 누르면 그 " + (git ? "커밋" : "리비전") + "의 Diff</small></div>";
+		if (b.note) { $("svnDiff").innerHTML = head + '<div class="empty">' + esc(b.note) + "</div>"; return; }
+		var prev = null;
+		var rows = b.lines.map(function (l, i) {
+			var first = l.rev !== prev;
+			prev = l.rev;
+			var who = !first ? "" : l.rev
+				? (git ? l.rev.slice(0, 8) : "r" + l.rev) + " " + l.author + (l.dateMs ? " · " + fmtDate(l.dateMs).slice(0, 10) : "")
+				: "Commit 안 됨";
+			return '<tr class="ctx' + (first ? " n" : "") + '" data-n="' + (i + 1) + '"><td class="g' + (l.rev ? "" : " none") + '" data-r="' + esc(l.rev) + '">' + esc(who) +
+				'</td><td class="no">' + (i + 1) + '</td><td class="s">' + esc(l.s) + "</td></tr>";
+		}).join("");
+		$("svnDiff").innerHTML = head + '<table class="blame">' + rows + "</table>";
+		[].forEach.call($("svnDiff").querySelectorAll("td.g:not(.none)"), function (td) {
+			td.onclick = function () {
+				var r = td.getAttribute("data-r");
+				if (git) svnRevDiff(path, r + "^", r, r.slice(0, 8) + " 에서 바뀐 것");
+				else svnRevDiff(path, String(+r - 1), r, "r" + r + " 에서 바뀐 것 (r" + (+r - 1) + " → r" + r + ")");
+			};
+		});
+	}
+	// 고른 줄이 Conflicted 면 Diff 머리 아래에 세 쪽 비교 · Resolve 판을 붙인다
+	function vcsConflictPanel(path) {
+		var key = K();
+		invoke("vcs_conflict", { srv: svn.srv, kind: svn.kind, path: path }).then(function (c) {
+			if (key !== K() || svn.sel !== path) return;
+			var head = $("svnDiff").querySelector(".head");
+			if (!head) return;
+			var text = c.kinds.indexOf("text") >= 0, tree = c.kinds.indexOf("tree") >= 0, block = writeBlock();
+			var box = document.createElement("div");
+			box.className = "svn-conflict";
+			box.innerHTML = "<b>Conflicted</b> · " + esc(c.kinds.map(function (k) { return k + " conflict"; }).join(" · ")) + (c.operation ? " · " + esc(c.operation) + " 중에 생김" : "") +
+				'<div class="acts">' + (text ? '<button class="btn sm" data-c="mine">BASE ↔ mine</button><button class="btn sm" data-c="theirs">BASE ↔ theirs</button>' : "") +
+				'<button class="btn sm" data-c="edit">편집기로 열기</button></div>' +
+				(canWrite() && !block
+					? '<div class="acts">' + (tree ? "" : '<button class="btn sm" data-r="mine">Use mine</button><button class="btn sm" data-r="theirs">Use theirs</button>') +
+						'<button class="btn sm primary" data-r="working">Mark as resolved</button></div>'
+					: '<div class="svn-note">' + esc(block || "Resolve 는 「설정 › 버전 관리 › Allow write」를 켜면 여기서 합니다.") + "</div>") +
+				(tree ? '<div class="svn-note">tree conflict 은 파일을 맞춘 뒤 Mark as resolved 로 풉니다.</div>' : "");
+			head.appendChild(box);
+			[].forEach.call(box.querySelectorAll("[data-c]"), function (b) {
+				var c2 = b.getAttribute("data-c");
+				b.onclick = c2 === "edit"
+					? function () { invoke("open_source", { file: rootOf(svn.srv) + "/" + path, line: 1 }); }
+					: function () { vcsConflictDiff(path, c2); };
+			});
+			[].forEach.call(box.querySelectorAll("[data-r]"), function (b) { b.onclick = function () { vcsResolve(path, b.getAttribute("data-r")); }; });
+		}).catch(function () { /* 충돌 기록을 못 읽으면 판 없이 Diff 만 보인다 */ });
+	}
+	function vcsConflictDiff(path, side) {
+		var key = K();
+		$("svnDiff").innerHTML = '<div class="empty">Diff 를 계산하는 중...</div>';
+		invoke("vcs_conflict_diff", { srv: svn.srv, kind: svn.kind, path: path, side: side }).then(function (d) {
+			if (key !== K() || svn.sel !== path) return;
+			svn.diffFile = null;
+			renderDiff('<div class="head"><b>' + esc(path).replace(/\//g, "/<wbr>") + "</b> · Conflicted" + diffCount(d) + "<small>" +
+				(side === "mine" ? "BASE → mine (내가 고친 것)" : "BASE → theirs (저장소에서 들어온 것)") +
+				'</small><div class="acts"><button class="btn sm" data-act="back">Changes 의 Diff 로</button></div></div>', d);
+			$("svnDiff").querySelector('[data-act="back"]').onclick = function () { svnShowDiff(path); };
+		}).catch(function (e) {
+			if (key === K() && svn.sel === path) $("svnDiff").innerHTML = '<div class="empty">' + esc(String(e)) + "</div>";
+		});
+	}
+
+	/* --- Incoming · Log · 커밋 Diff (읽기) --- */
 
 	// SVN 계정이 없거나 틀리면 오른쪽에 로그인 칸을 띄우고, 확인되면 하던 일을 다시 한다
 	function remoteErr(e, retry) {
@@ -2402,6 +2643,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 		var overlap = inc.overlap.length ? ' · <b class="flag">내가 고친 파일과 겹침 ' + inc.overlap.length + "</b>" : "";
 		var count = n ? "<b>받을 커밋 " + n + (inc.more ? "개 넘음" : "개") + "</b>" : "<b>최신입니다</b>";
 		if (isGit()) {
+			$("svnDoPush").lastChild.textContent = "Push";
 			if (!inc.upstream) {
 				$("svnInfo").innerHTML = "<b>" + esc(inc.branch || "분리된 HEAD") + "</b> · 원격 추적 브랜치 없음";
 				$("svnList").innerHTML = '<div class="empty">이 브랜치에는 따라가는 원격 브랜치가 없어 받을 커밋을 셀 수 없습니다.</div>';
@@ -2411,26 +2653,27 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 				" · 마지막 fetch " + (inc.fetchedMs ? fmtDate(inc.fetchedMs) : "기록 없음") +
 				(inc.ahead ? " · 올리지 않은 내 커밋 " + inc.ahead + "개" : "");
 			$("svnInfo").title = $("svnInfo").textContent;
+			$("svnDoPush").lastChild.textContent = inc.ahead ? "Push · " + inc.ahead : "Push";
 			if (!n) {
 				$("svnList").innerHTML = '<div class="empty">받을 커밋이 없습니다. 마지막 fetch' + (inc.fetchedMs ? "(" + fmtDate(inc.fetchedMs) + ")" : "") +
-					" 기준입니다. 그 뒤 원격에 올라온 커밋을 보려면 아래 fetch 명령을 복사해 실행하세요.</div>";
+					" 기준입니다. 그 뒤 원격에 올라온 커밋을 보려면 " + (canWrite() ? "아래 Fetch 를 누르세요." : "아래 fetch 명령을 복사해 실행하세요.") + "</div>";
 				return;
 			}
 		} else {
 			$("svnInfo").innerHTML = '내 작업복사본 <span class="num">r' + inc.base + '</span> · 저장소 <span class="num">r' + inc.head + "</span> · " + count + overlap;
 			if (!n) {
-				$("svnList").innerHTML = '<div class="empty">업데이트할 것이 없습니다. 작업복사본이 저장소 r' + inc.head + " 까지 받았습니다.</div>";
+				$("svnList").innerHTML = '<div class="empty">Update 할 것이 없습니다. 작업복사본이 저장소 r' + inc.head + " 까지 받았습니다.</div>";
 				return;
 			}
 		}
 		var mine = {};
 		inc.overlap.forEach(function (p) { mine[p] = true; });
 		renderLogList(inc.entries, mine,
-			inc.overlap.length ? '<div class="svn-group">겹치는 파일은 받을 때 합쳐지거나 충돌합니다. 먼저 커밋하거나 내 변경을 따로 챙겨 두세요.</div>' : "");
+			inc.overlap.length ? '<div class="svn-group">겹치는 파일은 받을 때 합쳐지거나 Conflicted 가 됩니다. 먼저 Commit 하거나 내 변경을 따로 챙겨 두세요.</div>' : "");
 	}
 	function svnLogLoad() {
 		var key = K(), rel = svn.logRel;
-		$("svnInfo").textContent = "로그를 읽는 중...";
+		$("svnInfo").textContent = "Log 를 읽는 중...";
 		$("svnList").innerHTML = "";
 		invoke(svn.kind + "_log", { srv: svn.srv, rel: rel, limit: 100 }).then(function (entries) {
 			var r = (svn.remote[key] = svn.remote[key] || {});
@@ -2441,8 +2684,8 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 	function svnRenderLog() {
 		var r = svn.remote[K()] || {};
 		if (!r.log) return;
-		$("svnInfo").innerHTML = (r.logRel ? "<b>" + esc(r.logRel) + "</b> 의 로그" : "전체 로그") + " · 최근 " + r.log.length + "개" +
-			(r.logRel ? ' · <a href="#" id="svnLogAll">전체 로그</a>' : "");
+		$("svnInfo").innerHTML = (r.logRel ? "<b>" + esc(r.logRel) + "</b> 의 Log" : "전체 Log") + " · 최근 " + r.log.length + "개" +
+			(r.logRel ? ' · <a href="#" id="svnLogAll">전체 Log</a>' : "");
 		if ($("svnLogAll")) $("svnLogAll").onclick = function (ev) { ev.preventDefault(); svn.logRel = ""; svnActivate(true); };
 		renderLogList(r.log, {}, "");
 	}
@@ -2453,12 +2696,15 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 		return { key: "r" + e.rev, name: "r" + e.rev, old: String(e.rev - 1), now: String(e.rev),
 			title: "r" + e.rev + " 에서 바뀐 것 (r" + (e.rev - 1) + " → r" + e.rev + ")" };
 	}
-	// 커밋 목록 — 커밋 아래 바뀐 파일을 누르면 그 커밋의 차이
+	// 커밋 목록 — 커밋 아래 바뀐 파일을 누르면 그 커밋의 Diff.
+	// Log 보기에서 Allow write 를 켠 서버면 커밋마다 「그 변경을 거꾸로 적용」 단추 (Incoming 의 커밋은 아직 받지 않아 되돌릴 것이 없다)
 	function renderLogList(entries, mine, top) {
-		var refs = {};
+		var refs = {}, ents = {};
+		var undo = svn.view === "log" && canWrite() && !writeBlock();
 		$("svnList").innerHTML = top + entries.map(function (e) {
 			var c0 = commitRef(e);
 			refs[c0.key] = c0;
+			ents[c0.key] = e;
 			var paths = e.paths.map(function (c, k) {
 				var key = c0.key + ":" + k;
 				var on = svn.selRev === key ? " on" : "";
@@ -2467,9 +2713,13 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 					'<span class="a ' + c.action + '">' + c.action + "</span><span>" + esc(c.path) + (c.dir ? "/" : "") + "</span>" +
 					(mine[c.path] ? '<span class="mine">내가 고친 파일</span>' : "") + "</div>";
 			}).join("");
-			return '<div class="svn-log"><span class="r">' + esc(c0.name) + '</span><span class="who">' + esc(e.author) + " · " + fmtDate(e.dateMs) + "</span>" +
+			return '<div class="svn-log">' + (undo ? '<button class="btn sm undo" data-u="' + esc(c0.key) + '">' + (isGit() ? "Revert commit…" : "Revert changes from this revision…") + "</button>" : "") +
+				'<span class="r">' + esc(c0.name) + '</span><span class="who">' + esc(e.author) + " · " + fmtDate(e.dateMs) + "</span>" +
 				'<div class="msg">' + esc(e.msg || "(메시지 없음)") + "</div>" + paths + "</div>";
 		}).join("");
+		[].forEach.call($("svnList").querySelectorAll(".undo"), function (b) {
+			b.onclick = function () { vcsUndoAsk(ents[b.getAttribute("data-u")]); };
+		});
 		[].forEach.call($("svnList").querySelectorAll(".cp:not(.out)"), function (el) {
 			el.onclick = function () {
 				svn.selRev = el.getAttribute("data-k");
@@ -2482,6 +2732,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 	}
 	function svnRevDiff(rel, oldSpec, newSpec, title) {
 		var key = K();
+		svn.blameFor = null;
 		$("svnDiff").innerHTML = '<div class="empty">' + (isGit() ? "내용을 꺼내 견주는 중..." : "저장소에서 내용을 받아 견주는 중...") + "</div>";
 		invoke(svn.kind + "_rev_diff", { srv: svn.srv, rel: rel, old: oldSpec, new: newSpec }).then(function (d) {
 			if (key !== K()) return;
@@ -2515,13 +2766,13 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 		document.body.removeChild(ta);
 	}
 	function cdLine() { return 'cd /d "' + rootOf(svn.srv).replace(/\//g, "\\") + '"'; }
-	// 설정 › 버전 관리의 업데이트 명령 (비어 있으면 기본값)
+	// 설정 › 버전 관리의 Update · Pull 명령 (비어 있으면 기본값)
 	function updateCmd() {
 		var v = vcsOf(svn.srv);
 		return isGit() ? v.gitUpdate || "git pull --ff-only" : v.svnUpdate || "svn update";
 	}
 	$("svnRefresh").onclick = function () { if (svn.view === "local") svnLoad(); else svnActivate(true); };
-	// 업데이트도 사용자가 직접 한다 — 실행기는 이 명령을 실행하지 않는다 (전역 규칙)
+	// Allow write 를 끈 서버 — 사용자가 직접 실행할 명령을 복사해 줄 뿐이다
 	$("svnCopyUpdate").onclick = function () {
 		var inc = (svn.remote[K()] || {}).incoming;
 		var warn = inc && inc.overlap.length ? " (내가 고친 파일과 겹침 " + inc.overlap.length + "개)" : "";
@@ -2534,12 +2785,16 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 		if (!items.length) { showError("고른 파일이 없습니다."); return; }
 		copyText(items.map(function (it) { return it.path; }).join("\n"), "파일 " + items.length + "개 목록");
 	};
-	// 사용자가 직접 실행할 명령을 만들어 줄 뿐이다 — 실행기는 이 명령을 실행하지 않는다
+	// Allow write 를 끈 서버 — 사용자가 직접 실행할 명령을 만들어 줄 뿐이다. 메시지가 규칙에 어긋나면 한 번 더 묻는다
 	$("svnCopyCmd").onclick = function () {
+		if (!svnChecked().length || !$("svnMsg").value.trim()) { copyCommitCmd(); return; }
+		msgGate("복사", copyCommitCmd);
+	};
+	function copyCommitCmd() {
 		var items = svnChecked();
 		if (!items.length) { showError("고른 파일이 없습니다."); return; }
 		var msg = $("svnMsg").value.trim();
-		if (!msg) { showError("커밋 메시지를 먼저 적으세요."); $("svnMsg").focus(); return; }
+		if (!msg) { showError("Commit message 를 먼저 적으세요."); $("svnMsg").focus(); return; }
 		var q = function (p) { return '"' + p + '"'; };
 		var paths = items.map(function (it) { return q(it.path === "." ? "." : it.path); }).join(" ");
 		var lines = [cdLine()];
@@ -2556,14 +2811,260 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 			lines.push("svn commit -m " + q(msg.replace(/"/g, "'")) + " " + paths);
 		}
 		var conflicts = items.filter(function (it) { return it.conflict; }).length;
-		copyText(lines.join("\r\n"), (isGit() ? "git" : "svn") + " 커밋 명령" + (conflicts ? " (충돌 " + conflicts + "건은 먼저 풀어야 합니다)" : ""));
+		copyText(lines.join("\r\n"), (isGit() ? "git" : "svn") + " commit 명령" + (conflicts ? " (Conflicted " + conflicts + "건은 먼저 Resolve 해야 합니다)" : ""));
+	}
+
+	/* --- Commit message 자동 생성 · 규칙 (2026.10.29~) ---
+	   생성 명령은 「설정 › 경로」, 규칙은 서버마다 「설정 › 버전 관리」. 규칙은 막지 않고 알린다 —
+	   칸 아래에 까닭을 보이고, 어긴 채 Commit · 복사하려 하면 확인 창에서 「그래도 …」를 한 번 더 고른다.
+	   검사는 늘 실행기에 묻는다. 화면과 실행기의 정규식 엔진이 다르면 화면은 통과인데 Commit 이 거절되는 일이 생긴다. */
+
+	function msgCheck(done) {
+		var msg = $("svnMsg").value.trim(), srv = svn.srv;
+		if (!msg) { svn.msgProblems = []; msgWarn(); if (done) done([]); return; }
+		invoke("check_commit_msg", { srv: srv, msg: msg }).then(function (p) {
+			if (srv !== svn.srv) return;
+			svn.msgProblems = p;
+			msgWarn();
+			if (done) done(p);
+		}).catch(function (e) { showError(String(e)); });
+	}
+	function msgWarn() {
+		var p = svn.msgProblems || [];
+		$("svnMsgWarn").hidden = !p.length;
+		$("svnMsgWarn").textContent = p.length ? "규칙: " + p.join(" · ") : "";
+	}
+	$("svnMsg").addEventListener("input", function () {
+		clearTimeout(msgCheck.t);
+		msgCheck.t = setTimeout(function () { msgCheck(); }, 250);
+	});
+	// 규칙에 맞으면 바로 next(false), 어긋나면 확인 창에서 「그래도 …」를 고른 뒤 next(true)
+	function msgGate(what, next) {
+		msgCheck(function (p) {
+			if (!p.length) { next(false); return; }
+			vcsConfirm({
+				title: "Commit message 가 규칙에 맞지 않습니다",
+				html: "그래도 " + esc(what) + " 할 수 있습니다. 규칙은 설정 › 버전 관리에서 고칩니다.",
+				items: p.map(function (x) { return [x, ""]; }),
+				ok: "그래도 " + what,
+				run: function () { next(true); }
+			});
+		});
+	}
+	$("svnGenMsg").onclick = function () {
+		var items = svnChecked();
+		if (!items.length) { showError("메시지를 만들 파일을 먼저 고르세요."); return; }
+		var go = function () {
+			var b = $("svnGenMsg"), srv = svn.srv;
+			var reset = function () { b.disabled = false; b.lastChild.textContent = "자동 생성"; };
+			b.disabled = true;
+			b.lastChild.textContent = "만드는 중...";
+			invoke("gen_commit_msg", { srv: srv, kind: svn.kind, paths: items.map(function (it) { return it.path; }) }).then(function (r) {
+				reset();
+				if (srv !== svn.srv) return;
+				$("svnMsg").value = r.msg;
+				svn.msgProblems = r.problems;
+				msgWarn();
+				$("svnMsg").focus();
+			}).catch(function (e) { reset(); showError(String(e)); });
+		};
+		// 사람이 적어 둔 메시지를 말없이 덮지 않는다
+		if ($("svnMsg").value.trim()) {
+			vcsConfirm({ title: "Commit message 다시 만들기", html: "지금 적힌 메시지를 새로 만든 것으로 바꿉니다.", ok: "바꾸기", run: go });
+		} else go();
 	};
+
+	/* --- Git Fetch · Push (Allow write 를 켠 Git 서버) --- */
+
+	// 원격 추적 브랜치만 고치고 작업 파일은 그대로라 확인 창 없이 돈다
+	$("svnDoFetch").onclick = function () {
+		vcsRun("Fetch 하는 중...", "vcs_fetch", { srv: svn.srv }, function (m) { showToast(m); svnActivate(true); });
+	};
+	// 바깥 저장소에 남아 되돌리기 어렵다 — 올라갈 커밋을 늘 확인 창에 보이고, 초점은 「취소」에 둔다 (danger)
+	$("svnDoPush").onclick = function () {
+		if (svn.busy) return;
+		var srv = svn.srv;
+		invoke("git_outgoing", { srv: srv }).then(function (o) {
+			if (!o.upstream) { showError((o.branch || "분리된 HEAD") + " 에 원격 추적 브랜치가 없습니다. 처음 올리는 브랜치는 git push -u 로 직접 올리세요."); return; }
+			if (!o.entries.length) { showToast("올릴 커밋이 없습니다 · " + o.upstream); return; }
+			vcsConfirm({
+				title: state.servers[srv].name + " · Push " + o.entries.length + "개",
+				html: "<b>" + esc(o.branch) + " → " + esc(o.upstream) + "</b>\n" +
+					'<span class="flag">원격 저장소에 올라가면 실행기에서 되돌릴 수 없습니다.</span> 올릴 커밋을 한 번 더 보세요.',
+				items: o.entries.map(function (e) { return [e.short + "  " + (e.msg || "").split("\n")[0], e.author]; }),
+				ok: "Push",
+				danger: true,
+				run: function () {
+					vcsRun("Push 하는 중...", "vcs_push", { srv: srv }, function (m) { showToast(m); svnActivate(true); });
+				}
+			});
+		}).catch(function (e) { showError(String(e)); });
+	};
+
+	/* --- 쓰기 (Allow write 를 켠 서버 · 늘 확인 창을 거친다) --- */
+
+	// o : { title, html(설명 · 이미 esc 한 것), items([[경로, 상태]]), ok(단추 이름), danger, run }
+	function vcsConfirm(o) {
+		closeMenu();
+		$("vcsDlgTitle").textContent = o.title;
+		$("vcsDlgText").innerHTML = o.html || "";
+		var items = o.items || [];
+		$("vcsDlgList").innerHTML = items.map(function (x) { return "<li><span>" + esc(x[0]) + "</span><span>" + esc(x[1] || "") + "</span></li>"; }).join("");
+		$("vcsDlgList").hidden = !items.length;
+		var ok = $("vcsDlgOk");
+		ok.textContent = o.ok;
+		ok.className = "btn " + (o.danger ? "danger" : "primary");
+		ok.onclick = function () { vcsHide(); o.run(); };
+		$("vcsScrim").hidden = false;
+		// 되돌릴 수 없는 일이면 초점을 「취소」에 둔다 — Enter 한 번에 지워지지 않게
+		(o.danger ? $("vcsDlgCancel") : ok).focus();
+	}
+	function vcsHide() { $("vcsScrim").hidden = true; }
+	$("vcsDlgCancel").onclick = vcsHide;
+	$("vcsScrim").onclick = function (e) { if (e.target === this) vcsHide(); };
+	$("vcsScrim").addEventListener("keydown", function (e) {
+		if (e.key === "Escape") { vcsHide(); e.stopPropagation(); }
+		if (e.key === "Tab") {   // 확인 창 밖으로 초점이 새지 않게 두 단추 사이만 돈다
+			e.preventDefault();
+			(document.activeElement === $("vcsDlgOk") ? $("vcsDlgCancel") : $("vcsDlgOk")).focus();
+		}
+	});
+
+	// 쓰기 하나를 돌린다. 도는 동안 단추를 잠그고, 계정이 필요하면 로그인 칸을 띄운 뒤 같은 일을 다시 한다.
+	// 끝나면 실행기가 vcs-dirty 를 보내 Changes 를 다시 읽는다.
+	function vcsRun(busyText, cmd, args, done) {
+		if (svn.busy) return;
+		var setBusy = function (on) {
+			svn.busy = on;
+			$("svnCommit").classList.toggle("busy", on);
+			$("svnUpdateBar").classList.toggle("busy", on);
+			$("svnDiff").classList.toggle("busy", on);
+		};
+		setBusy(true);
+		$("svnInfo").textContent = busyText;
+		invoke(cmd, args).then(function (r) {
+			setBusy(false);
+			done(r);
+		}).catch(function (e) {
+			setBusy(false);
+			if (!remoteErr(e, function () { vcsRun(busyText, cmd, args, done); })) showError(String(e));
+		});
+	}
+	function vcsArgs(more) {
+		var a = { srv: svn.srv, kind: svn.kind };
+		Object.keys(more || {}).forEach(function (k) { a[k] = more[k]; });
+		return a;
+	}
+	function vcsTarget() {
+		var st = svn.data[K()];
+		return isGit() ? (st && st.branch ? "브랜치 " + esc(st.branch) : "지금 브랜치") : (st ? esc(st.url) : "저장소");
+	}
+	function vcsCommitAsk() {
+		var items = svnChecked();
+		if (!items.length) { showError("고른 파일이 없습니다."); return; }
+		var msg = $("svnMsg").value.trim();
+		if (!msg) { showError("Commit message 를 먼저 적으세요."); $("svnMsg").focus(); return; }
+		var conf = items.filter(function (it) { return it.conflict; });
+		if (conf.length) { showError("Conflicted 파일은 Resolve 한 뒤 Commit 합니다: " + conf.map(function (it) { return it.path; }).join(", ")); return; }
+		var adds = items.filter(function (it) { return it.code === "?"; }).length;
+		// 규칙에 어긋나면 같은 확인 창에 까닭을 붙이고 단추를 「그래도 Commit」으로 — 그 단추로만 실행기가 넘겨 준다
+		msgCheck(function (broken) {
+			vcsConfirm({
+				title: state.servers[svn.srv].name + " · Commit " + items.length + "개",
+				html: "<b>" + esc(msg) + "</b>\n" +
+					(broken.length ? '<span class="flag">메시지가 규칙에 맞지 않습니다: ' + esc(broken.join(" · ")) + "</span>\n" : "") +
+					vcsTarget() + " 에 올립니다. 올릴 파일을 한 번 더 보세요." +
+					(adds ? "\n" + (isGit() ? "Untracked" : "Unversioned") + " " + adds + "개는 먼저 더한 뒤 올립니다." : ""),
+				items: items.map(function (it) { return [it.path + (it.dir ? "/" : ""), it.label]; }),
+				ok: broken.length ? "그래도 Commit" : "Commit",
+				run: function () {
+					vcsRun("Commit 하는 중...", "vcs_commit", vcsArgs({ paths: items.map(function (it) { return it.path; }), msg: msg, allowRuleBreak: broken.length > 0 }), function (m) {
+						$("svnMsg").value = "";
+						svn.msgProblems = [];
+						msgWarn();
+						showToast(m);
+					});
+				}
+			});
+		});
+	}
+	// list 를 주면 그 줄만 (우클릭), 없으면 고른 파일
+	function vcsRevertAsk(list) {
+		var items = (list || svnChecked()).filter(function (it) { return it.code !== "?"; });
+		if (!items.length) { showError("Revert 할 것이 없습니다. " + (isGit() ? "Untracked" : "Unversioned") + " 파일은 되돌릴 것이 없습니다."); return; }
+		vcsConfirm({
+			title: state.servers[svn.srv].name + " · Revert " + items.length + "개",
+			html: '<span class="flag">Revert 하면 고친 내용이 사라지고 되살릴 수 없습니다.</span>\n' +
+				(isGit() ? "HEAD 내용으로 되돌립니다. Added 파일은 색인에서만 빠지고 파일은 남습니다." : "BASE 내용으로 되돌립니다. Added 파일은 Unversioned 로 돌아가고 파일은 남습니다."),
+			items: items.map(function (it) { return [it.path + (it.dir ? "/" : ""), it.label]; }),
+			ok: "Revert",
+			danger: true,
+			run: function () {
+				vcsRun("Revert 하는 중...", "vcs_revert", vcsArgs({ paths: items.map(function (it) { return it.path; }) }), showToast);
+			}
+		});
+	}
+	function vcsUpdateAsk() {
+		var git = isGit(), name = git ? "Pull" : "Update";
+		var inc = (svn.remote[K()] || {}).incoming;
+		var over = inc ? inc.overlap : [];
+		vcsConfirm({
+			title: state.servers[svn.srv].name + " · " + name,
+			html: (inc ? (inc.entries.length ? "들어올 커밋 " + inc.entries.length + (inc.more ? "개 넘음" : "개") + "." : "Incoming 으로는 받을 것이 없습니다.") + " " : "") +
+				(git ? "명령: " + esc(updateCmd()) + " · 갈라졌으면 합치지 않고 멈춥니다." : "svn update · 작업복사본 전체를 저장소 최신으로 받습니다.") +
+				(over.length ? '\n<span class="flag">아래 파일은 내가 고친 파일과 겹쳐 합쳐지거나 Conflicted 가 됩니다.</span>' : ""),
+			items: over.map(function (p) { return [p, "내가 고친 파일"]; }),
+			ok: name,
+			run: function () {
+				vcsRun(name + " 하는 중...", "vcs_update", vcsArgs(), function (d) {
+					showToast(d.msg + (d.conflicts.length ? " · Conflicted " + d.conflicts.length + "건 · Changes 에서 Resolve 하세요" : ""));
+					if (d.conflicts.length) { svn.view = "local"; svn.sel = null; svnRenderSrv(); }
+					svnActivate(true);
+				});
+			}
+		});
+	}
+	function vcsResolve(path, accept) {
+		var r = RESOLVE[accept];
+		vcsConfirm({
+			title: "Resolve · " + r[0],
+			html: esc(r[1]),
+			items: [[path, "Conflicted"]],
+			ok: r[0],
+			danger: accept !== "working",
+			run: function () { vcsRun("Resolve 하는 중...", "vcs_resolve", vcsArgs({ path: path, accept: accept }), showToast); }
+		});
+	}
+	// Log 의 커밋 하나를 거꾸로 적용 — 결과는 Changes 에 남고 Commit 은 따로 한다
+	function vcsUndoAsk(e) {
+		var git = isGit(), name = git ? e.short : "r" + e.rev;
+		var ACT = { A: "Added", M: "Modified", D: "Deleted", R: "Replaced" };
+		vcsConfirm({
+			title: name + " 의 변경 되돌리기",
+			html: "<b>" + esc((e.msg || "(메시지 없음)").split("\n")[0]) + "</b> · " + esc(e.author) + "\n" +
+				"이 " + (git ? "커밋" : "리비전") + "의 변경을 거꾸로 작업복사본에 적용합니다. 결과는 Changes 에 남고, Commit 은 확인한 뒤 따로 합니다." +
+				(git ? "" : " 작업복사본 밖 경로의 변경은 되돌아가지 않습니다."),
+			items: e.paths.filter(function (c) { return c.inside; }).map(function (c) { return [c.path + (c.dir ? "/" : ""), ACT[c.action] || c.action]; }),
+			ok: git ? "Revert commit" : "Revert changes",
+			run: function () {
+				vcsRun("되돌리는 중...", "vcs_revert_revision", vcsArgs({ rev: git ? e.id : String(e.rev) }), function (d) {
+					showToast(d.msg + (d.conflicts.length ? " · Conflicted " + d.conflicts.length + "건" : ""));
+					svn.view = "local"; svn.sel = null;
+					svnRenderSrv(); svnActivate(true);
+				});
+			}
+		});
+	}
+	$("svnDoCommit").onclick = vcsCommitAsk;
+	$("svnRevert").onclick = function () { vcsRevertAsk(null); };
+	$("svnDoUpdate").onclick = vcsUpdateAsk;
+
 	listen("vcs-dirty", function (e) {
 		var srv = e.payload;
 		["svn", "git"].forEach(function (k) {
 			var key = srv + ":" + k;
 			svn.stale[key] = true;
-			// 커밋 · 업데이트 · fetch 로 바뀌면 「업데이트 확인」 결과도 낡는다 — 다음에 그 보기를 열 때 다시 본다
+			// Commit · Update · fetch 로 바뀌면 Incoming 결과도 낡는다 — 다음에 그 보기를 열 때 다시 본다
 			if (svn.remote[key]) svn.remote[key].incoming = null;
 		});
 		if (tab === "svn" && srv === svn.srv && svn.view === "local" && kindsOf(srv).length) {
@@ -2582,7 +3083,15 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 		["ajpPort", "AJP 포트", "같은 PC 의 Apache(mod_jk) 등이 넘겨 주는 포트입니다. 127.0.0.1 에만 열립니다.", "number"],
 		["shutdownPort", "종료 포트", "톰캣을 정상 종료할 때 씁니다.", "number"],
 		["debugPort", "디버거 포트", "「디버거 연결 허용」을 켜면 IDE 가 이 포트로 붙습니다.", "number"],
-		["links", "바로가기", "서버 줄 「바로가기」 메뉴입니다. 「/」로 시작하는 주소는 이 서버의 HTTP 포트로 엽니다 (/ → http://localhost:<HTTP 포트>/). 앞단(Apache) 경유처럼 다른 포트는 http:// 부터 적습니다. 이름을 비우면 주소가 이름입니다.", "links"],
+		// 2026.10.29 : 자바 컴파일 옵션 — 「시작하기」가 이클립스 프로젝트 설정(.settings)으로 채운다. 켜진 서버에서는 잠근다 (srvFill)
+		["encoding", "소스 인코딩", "자바 소스를 읽는 인코딩입니다 (javac -encoding). 비우면 UTF-8. 이클립스 프로젝트 속성 › Resource › Text file encoding 과 같게 둡니다. 다르면 소스의 한글 문자열이 깨집니다. 톰캣을 끈 뒤에 바꿀 수 있고, 바꾸면 다음 컴파일 때 전체를 다시 만듭니다.", "encoding"],
+		["parameters", "매개변수 이름", "메서드 매개변수 이름을 클래스에 남깁니다 (javac -parameters). 이클립스 「Store information about method parameters」와 같습니다. @Param 없이 쓴 MyBatis 매퍼가 이름으로 찾으려면 켭니다. 톰캣을 끈 뒤에 바꿀 수 있고, 바꾸면 다음 컴파일 때 전체를 다시 만듭니다.", "check"],
+		// 2026.10.29 : server.xml 에 박혀 있던 두 값 — 「시작하기」가 이클립스 서버의 값으로 채운다
+		["contextPath", "접속 경로", "앱을 여는 경로입니다 (예: /shop). 비우면 / 입니다. 이클립스에서 /프로젝트명 으로 열던 앱은 같게 적어야 절대경로 링크 · 리다이렉트가 맞습니다. 다음 기동부터.", "text"],
+		["maxParameterCount", "파라미터 수 상한", "요청 하나에 받는 파라미터 수입니다 (톰캣 maxParameterCount). 넘으면 나머지가 잘립니다. 기본 10000 은 톰캣 8.5 기본이자 이클립스 서버에 값이 없을 때와 같습니다. -1 은 무제한. 다음 기동부터.", "count"],
+		["links", "바로가기", "서버 줄 「바로가기」 메뉴입니다. 「/」로 시작하는 주소는 이 서버의 HTTP 포트와 접속 경로로 엽니다 (/ → http://localhost:<HTTP 포트><접속 경로>/). 이미 접속 경로로 시작하는 주소에는 다시 붙이지 않습니다. 앞단(Apache) 경유처럼 다른 포트는 http:// 부터 적습니다. 이름을 비우면 주소가 이름입니다.", "links"],
+		// 2026.10.29 : 서버마다 — 「시작하기」가 이클립스 서버가 쓰던 JRE 로 채운다. 핫리로드 모드는 DCEVM 8u181 이라 이 칸을 보지 않는다
+		["java", "java (핫리로드 끔)", "핫리로드를 끄고 띄울 때 이 서버가 쓰는 java.exe 입니다. 「시작하기」가 이클립스 서버가 쓰던 JRE 로 채웁니다. 비우면 설정 › 경로의 java 를 씁니다. 핫리로드를 켜면 DCEVM 8u181 로 뜹니다.", "java"],
 		["jvmArgs", "JVM 인자", "이 서버에만 더할 인자입니다. 한 줄에 하나. 회사 · 팀 전용 시스템 속성(-D…)은 여기 둡니다.", "lines"]
 	];
 	function srvField(f) {
@@ -2596,14 +3105,29 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 			return '<div class="field">' + span + '<div class="pick"><input type="text" data-k="' + f[0] + '" spellcheck="false" title="' + esc(f[2]) + '">' +
 				'<button class="btn sm" data-k="pick" title="Windows 폴더 고르기 창을 엽니다">고르기</button></div></div>';
 		}
+		// java 칸은 아래에 지금 뜰 판과 이클립스가 쓰던 판을 흐리게 보인다 (srvFill)
+		if (f[3] === "java") {
+			return '<div class="field top">' + span + '<div><input type="text" data-k="' + f[0] + '" spellcheck="false" title="' + esc(f[2]) + '">' +
+				'<small class="svn-note" data-k="javaHint"></small></div></div>';
+		}
+		if (f[3] === "encoding") {
+			return '<label class="field">' + span + '<input type="text" data-k="' + f[0] + '" list="encList" placeholder="UTF-8" spellcheck="false" title="' + esc(f[2]) + '"></label>';
+		}
+		if (f[3] === "check") {
+			return '<div class="field">' + span + '<label class="chk" title="' + esc(f[2]) + '"><input type="checkbox" data-k="' + f[0] + '">남긴다 (-parameters)</label></div>';
+		}
 		var input = f[3] === "lines"
 			? '<textarea data-k="' + f[0] + '" spellcheck="false" title="' + esc(f[2]) + '"></textarea>'
-			: '<input type="' + f[3] + '" data-k="' + f[0] + '" spellcheck="false" title="' + esc(f[2]) + '"' + (f[3] === "number" ? ' min="1" max="65535"' : "") + ">";
+			: '<input type="' + (f[3] === "count" ? "number" : f[3]) + '" data-k="' + f[0] + '" spellcheck="false" title="' + esc(f[2]) + '"' + (f[3] === "number" ? ' min="1" max="65535"' : f[3] === "count" ? ' min="-1"' : "") + ">";
 		return '<label class="field' + (f[3] === "lines" ? " top" : "") + '">' + span + input + "</label>";
 	}
-	// 「/」로 시작하는 바로가기 주소는 그 서버의 HTTP 포트로 — 포트를 바꿔도 단추를 고치지 않아도 된다
+	// 「/」로 시작하는 바로가기 주소는 그 서버의 HTTP 포트 · 접속 경로로 — 포트나 경로를 바꿔도 단추를 고치지 않아도 된다.
+	// 이미 접속 경로까지 적은 주소(/shop/main.do)에는 다시 붙이지 않는다
 	function linkUrl(sv, url) {
-		return url.charAt(0) === "/" ? "http://localhost:" + sv.httpPort + url : url;
+		if (url.charAt(0) !== "/") return url;
+		var ctx = sv.contextPath || "";
+		var has = ctx && (url === ctx || url.indexOf(ctx + "/") === 0 || url.indexOf(ctx + "?") === 0);
+		return "http://localhost:" + sv.httpPort + (has ? "" : ctx) + url;
 	}
 	function linkRow(l) {
 		return '<div class="link-row">' +
@@ -2631,7 +3155,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 			return '<div class="vcs-srv" id="srv' + i + '"><div class="checks-sub">' + esc(sv.name) + "</div>" +
 				SRV_FIELDS.map(srvField).join("") +
 				'<div class="vcs-acts"><button class="btn" data-k="save">저장</button></div></div>';
-		}).join("");
+		}).join("") + '<datalist id="encList"><option value="UTF-8"><option value="MS949"><option value="EUC-KR"></datalist>';
 		s.servers.forEach(function (sv, i) {
 			var box = $("srv" + i);
 			var val = function (k) { return box.querySelector('[data-k="' + k + '"]').value; };
@@ -2639,8 +3163,13 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 				var edit = {
 					name: val("name"), project: val("project"),
 					httpPort: +val("httpPort"), ajpPort: +val("ajpPort"), shutdownPort: +val("shutdownPort"), debugPort: +val("debugPort"),
+					contextPath: val("contextPath"),
+					maxParameterCount: val("maxParameterCount").trim() === "" ? 10000 : +val("maxParameterCount"),
 					links: srvLinksRead(box),
-					jvmArgs: val("jvmArgs").split(/\r?\n/)
+					jvmArgs: val("jvmArgs").split(/\r?\n/),
+					java: val("java"),
+					encoding: val("encoding"),
+					parameters: box.querySelector('[data-k="parameters"]').checked
 				};
 				invoke("set_server", { srv: i, edit: edit }).then(function (moved) {
 					box._dirty = false;
@@ -2677,8 +3206,10 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 		var PATH_FIELDS = [
 			["tomcatHome", "톰캣 폴더", "톰캣 8.5 를 설치한 폴더입니다 (bin/bootstrap.jar 가 있는 곳).", "text"],
 			["javac", "javac", "자바 컴파일러입니다. 같은 JDK 의 lib/tools.jar 도 씁니다. 기본은 함께 설치된 JDK 8 입니다.", "text"],
-			["javaPlain", "java (핫리로드 끔)", "핫리로드를 끄고 띄울 때 쓰는 java 입니다.", "text"],
+			["javaPlain", "java (핫리로드 끔)", "핫리로드를 끄고 띄울 때 쓰는 기본 java 입니다. 설정 › 서버의 java 칸을 비운 서버만 이것을 씁니다.", "text"],
 			["editor", "편집기", "컴파일 오류를 누르면 「편집기 -g 파일:줄」 로 엽니다. 비우면 탐색기로 엽니다.", "text"],
+			// 2026.10.29 : 비워 두면 「자동 생성」이 숨는다. 채우면 누를 때마다 고른 파일의 Diff 가 이 명령(그 뒤의 서비스)으로 나간다
+			["msgCmd", "Commit message 생성 명령", "버전 관리 탭의 「자동 생성」이 부르는 언어 모델 CLI 입니다 (예: claude -p). 고른 파일의 Diff 와 그 서버의 메시지 규칙을 stdin 으로 넘기고 답의 첫 줄을 씁니다. 소스가 그 CLI 의 서비스로 나갑니다. 비우면 자동 생성을 쓰지 않습니다.", "text"],
 			["tldScan", "TLD jar", "태그 라이브러리를 찾을 jar 이름 (쉼표로 · * 가능). 비우면 모든 jar 를 봅니다. 좁히면 기동이 빨라집니다.", "text"]
 		];
 		var pf = $("pathForm");
@@ -2696,12 +3227,26 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 	function srvFill(s) {
 		s.servers.forEach(function (sv, i) {
 			var box = $("srv" + i);
-			if (!box || box._dirty) return;
+			if (!box) return;
+			// 켜진 서버는 컴파일 옵션을 잠근다 — 고치던 중에 서버가 켜져도 잠기도록 _dirty 보다 먼저 본다 (저장해도 set_server 가 막는다)
+			var lock = sv.status !== "stopped";
+			["encoding", "parameters"].forEach(function (k) {
+				var el = box.querySelector('[data-k="' + k + '"]');
+				el.disabled = lock;
+				el.closest(".field").title = lock ? "톰캣을 끈 뒤에 바꿀 수 있습니다" : "";
+			});
+			if (box._dirty) return;
 			var set = function (k, v) { box.querySelector('[data-k="' + k + '"]').value = v; };
+			set("encoding", sv.encoding);
+			box.querySelector('[data-k="parameters"]').checked = sv.parameters;
 			set("name", sv.name); set("project", sv.project);
 			set("httpPort", sv.httpPort); set("ajpPort", sv.ajpPort); set("shutdownPort", sv.shutdownPort); set("debugPort", sv.debugPort);
+			set("contextPath", sv.contextPath); set("maxParameterCount", sv.maxParameterCount);
 			box.querySelector(".links").innerHTML = sv.links.map(linkRow).join("");
 			set("jvmArgs", sv.jvmArgs.join("\n"));
+			set("java", sv.java);
+			box.querySelector('[data-k="javaHint"]').textContent = (sv.java ? "" : "비어 있어 설정 › 경로의 java · ") + "자바 " + sv.javaLabel +
+				(sv.eclipseJava ? " · 이클립스 자바 " + sv.eclipseJavaLabel + (sv.eclipseJava.toLowerCase() === sv.java.toLowerCase() ? " (같음)" : " · " + sv.eclipseJava) : "");
 		});
 		var pf = $("pathForm");
 		if (pf && !pf._dirty) {
@@ -2718,26 +3263,39 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 	// 2026-10-28 : 설명은 화면에서 걷어 title 로. SVN · Git 전용 칸은 그 종류일 때만 보인다 (숨겨도 저장 값에는 그대로 들어간다)
 	var VCS_FIELDS = [
 		["root", "작업 폴더", "비우면 프로젝트 폴더를 봅니다.", ""],
-		["commitHint", "커밋 메시지 예시", "커밋 메시지 칸에 흐리게 보입니다. 팀의 메시지 규칙을 적어 둡니다.", ""],
-		["svnUpdate", "업데이트 명령", "「업데이트 명령 복사」가 만드는 SVN 명령입니다. 앞에 cd 줄이 붙습니다.", "svn"],
-		["gitUpdate", "받기 명령", "「받기 명령 복사」가 만드는 git 명령입니다. 앞에 cd 줄이 붙습니다.", "git"]
+		["commitHint", "Commit message 예시", "Commit message 칸에 흐리게 보입니다. 팀의 메시지 규칙을 적어 둡니다. 「자동 생성」의 본보기로도 넘깁니다.", ""],
+		// 2026.10.29 : 메시지 규칙 — 빈 칸은 보지 않는다. 어겨도 막지 않고 Commit · 복사 때 확인 창에서 한 번 더 묻는다
+		["msgRule", "메시지 규칙", "「자동 생성」 때 모델에게 주는 팀 규칙입니다 (예: 이슈 키 뒤에 한 줄 평서문 「~한다」).", ""],
+		["issuePattern", "이슈 번호 찾기", "브랜치 이름(SVN 은 저장소 경로)에서 이슈 번호를 찾는 정규식입니다. 찾은 번호를 「자동 생성」에 넘깁니다. 기본 [A-Z][A-Z0-9]+-\\d+ (FDR-112 꼴).", ""],
+		["subjectPattern", "제목 규칙", "제목(첫 줄)이 맞아야 하는 정규식입니다. 예: ^[A-Z]+-\\d+ .+다$ . 비우면 보지 않습니다.", ""],
+		["subjectMax", "제목 최대 길이", "제목 글자 수 상한입니다 (한글도 한 글자). 비우거나 0 이면 보지 않습니다.", ""],
+		["svnUpdate", "Update 명령", "Allow write 를 끈 서버에서 「Update 명령 복사」가 만드는 SVN 명령입니다. 앞에 cd 줄이 붙습니다.", "svn"],
+		["gitUpdate", "Pull 명령", "「Pull」 단추와 「Pull 명령 복사」가 쓰는 git 명령입니다. 복사할 때는 앞에 cd 줄이 붙습니다.", "git"],
+		["svnExe", "svn.exe", "비우면 PATH → TortoiseSVN · SlikSVN 설치 폴더에서 찾습니다. SVN 의 Allow write 와 Blame 에 씁니다 (1.10 이상).", "svn"]
 	];
+	// 2026-10-29 : 저장소에 쓰는 것은 서버마다 켠다 — 기본은 꺼짐 (명령 복사만)
+	var WRITE_TIP = "켜면 이 서버의 버전 관리 탭에서 Commit · Update(Pull) · Revert · Resolve 를, Git 이면 Fetch · Push 도 실행합니다. Fetch 밖에는 실행 전에 늘 확인 창이 뜹니다. 끄면 명령을 복사만 해 줍니다.";
 	function vcsBuild(s) {
 		$("vcsForms").innerHTML = s.servers.map(function (sv, i) {
 			return '<div class="vcs-srv" id="vcs' + i + '"><div class="checks-sub">' + esc(sv.name) + '<span data-k="found"></span></div>' +
 				'<label class="field"><span title="자동 감지는 작업 폴더의 .svn · .git 을 보고 정합니다.">종류</span>' +
 				'<select data-k="kind"><option value="auto">자동 감지</option><option value="svn">SVN</option><option value="git">Git</option>' +
 				'<option value="both">SVN 과 Git</option><option value="none">쓰지 않음</option></select></label>' +
+				'<label class="field" data-for="any"><span title="' + esc(WRITE_TIP) + '">Allow write</span>' +
+				'<span class="chk" title="' + esc(WRITE_TIP) + '"><input type="checkbox" data-k="write">Commit · Update · Revert 를 이 창에서 실행</span></label>' +
 				VCS_FIELDS.map(function (f) {
 					return '<label class="field" data-for="' + f[3] + '"><span title="' + esc(f[2]) + '">' + f[1] + '</span><input type="text" data-k="' + f[0] + '" spellcheck="false" title="' + esc(f[2]) + '"></label>';
 				}).join("") +
+				'<div class="field" data-for="svn"><span>찾은 svn</span><small class="svn-note" data-k="svnCli"></small></div>' +
 				'<div class="vcs-acts"><button class="btn" data-k="save">저장</button></div></div>';
 		}).join("");
 		s.servers.forEach(function (sv, i) {
 			var box = $("vcs" + i);
 			box.querySelector('[data-k="save"]').onclick = function () {
-				var v = { kind: box.querySelector('[data-k="kind"]').value };
+				var v = { kind: box.querySelector('[data-k="kind"]').value, write: box.querySelector('[data-k="write"]').checked };
 				VCS_FIELDS.forEach(function (f) { v[f[0]] = box.querySelector('[data-k="' + f[0] + '"]').value; });
+				// 실행기는 숫자를 받는다 — 비우면 0 (보지 않음)
+				v.subjectMax = Math.max(0, parseInt(v.subjectMax, 10) || 0);
 				invoke("set_vcs", { srv: i, vcs: v }).then(function () {
 					box._dirty = false;
 					showToast("저장했습니다 · " + state.servers[i].name + " 버전 관리");
@@ -2754,7 +3312,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 			: kind === "both" ? ["svn", "git"] : kind === "none" ? [] : [kind];
 		[].forEach.call(box.querySelectorAll("[data-for]"), function (el) {
 			var f = el.getAttribute("data-for");
-			el.hidden = kind === "none" ? true : !!f && kinds.indexOf(f) < 0;
+			el.hidden = kind === "none" ? true : !!f && f !== "any" && kinds.indexOf(f) < 0;
 		});
 	}
 	function vcsFill(s) {
@@ -2764,7 +3322,11 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 			box.querySelector('[data-k="found"]').innerHTML = sv.vcsKinds.length
 				? sv.vcsKinds.map(function (k) { return '<span class="k" title="지금 보는 것">' + esc(KIND_NAME[k]) + "</span>"; }).join("")
 				: '<span class="k">없음</span>';
+			var cli = box.querySelector('[data-k="svnCli"]');
+			cli.textContent = sv.svnBlock ? sv.svnBlock : sv.svnCli;
+			cli.classList.toggle("flag", !!sv.svnBlock);
 			if (!box._dirty) {
+				box.querySelector('[data-k="write"]').checked = !!sv.vcs.write;
 				box.querySelector('[data-k="kind"]').value = sv.vcs.kind;
 				VCS_FIELDS.forEach(function (f) { box.querySelector('[data-k="' + f[0] + '"]').value = sv.vcs[f[0]] || ""; });
 				box.querySelector('[data-k="root"]').placeholder = sv.project;

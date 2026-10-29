@@ -1,12 +1,18 @@
-// 읽기 전용 SVN — 작업복사본의 .svn/wc.db 를 읽기 전용 · immutable 로 열어 상태와 차이를 계산한다.
+// 읽기 전용 SVN — 작업복사본의 .svn/wc.db 를 읽기 전용 · immutable 로 열어 상태 · 차이 · 충돌 내용을 계산한다.
 //
-// svn 명령을 쓰지 않고, 작업복사본(.svn 포함)에 아무것도 쓰지 않는다.
-// 커밋 · 업데이트 · 되돌리기 같은 쓰기는 하지 않는다 — 전역 규칙(SVN 반영 명령 실행 금지)이다. 화면은 명령을 복사해 줄 뿐이다.
+// 이 파일은 svn 명령을 쓰지 않고, 작업복사본(.svn 포함)에 아무것도 쓰지 않는다.
+// Commit · Update · Revert 같은 쓰기는 svncli.rs 에만 있다 (2026.10.29~ · 「Allow write」를 켠 서버에서 사용자가 누를 때만).
 //
 // 판정은 svn status 와 같은 순서다.
 //   기록된 크기 · 수정 시각(translated_size · last_mod_time)이 같으면 그대로, 다르면 내용 SHA1 을 기준본 체크섬과 견준다.
 //   이 저장소의 파일에는 svn:eol-style · svn:keywords 가 없어(2026-10-27 확인) 기준본과 바이트 그대로 견주면 된다.
-//   기준본은 .svn/pristine/<앞 두 글자>/<sha1>.svn-base 에 압축 없이 있다 (형식 31).
+//   기준본(BASE)은 .svn/pristine/<앞 두 글자>/<sha1>.svn-base 에 압축 없이 있다 (형식 31).
+//
+// 목차
+//   status       Changes 목록 (svn status 와 같은 판정)
+//   diff         BASE 와 지금 파일 · text_diff 는 SVN · Git 이 함께 쓴다
+//   wc_info      저장소 주소 · 리비전 범위 · wc_format 작업복사본 형식
+//   Blame · 충돌  화면에 주는 공통 꼴 · conflict_data 읽기 · 충돌 세 쪽 비교
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -230,16 +236,17 @@ fn mtime_us(meta: &fs::Metadata) -> Option<i64> {
     meta.modified().ok()?.duration_since(UNIX_EPOCH).ok().map(|d| d.as_micros() as i64)
 }
 
+// 2026.10.29 : 한국어 → TortoiseSVN · svn status 의 영문 표준 용어. 도구를 오가도 같은 낱말로 찾는다 (DESIGN.md 「버전 관리 용어」)
 fn label(code: &str) -> &'static str {
     match code {
-        "M" => "수정",
-        "A" => "추가",
-        "D" => "삭제",
-        "!" => "없어짐",
-        "C" => "충돌",
-        "P" => "속성 변경",
-        "~" => "종류 바뀜",
-        _ => "추가 안 됨",
+        "M" => "Modified",
+        "A" => "Added",
+        "D" => "Deleted",
+        "!" => "Missing",
+        "C" => "Conflicted",
+        "P" => "Properties",
+        "~" => "Obstructed",
+        _ => "Unversioned",
     }
 }
 
@@ -378,8 +385,8 @@ pub fn status(wc: &Path) -> Result<Status, String> {
     Ok(Status { url, rev_min, rev_max, nodes: nodes.len(), hashed, took_ms: began.elapsed().as_millis() as u64, items: list })
 }
 
-// UTF-8 이 아니면 MS949 로 읽는다 (로그와 같은 규칙)
-fn decode(b: &[u8]) -> String {
+// UTF-8 이 아니면 MS949 로 읽는다 (로그와 같은 규칙). svn.exe 의 출력(콘솔 코드페이지)도 같은 규칙으로 읽는다.
+pub fn decode(b: &[u8]) -> String {
     match std::str::from_utf8(b) {
         Ok(s) => s.to_string(),
         Err(_) => encoding_rs::EUC_KR.decode(b).0.into_owned(),
@@ -409,7 +416,7 @@ pub fn diff(wc: &Path, rel: &str) -> Result<Diff, String> {
         return Ok(out);
     }
     let old = match &base {
-        Some((_, Some(ck))) => pristine(wc, ck).ok_or("기준본 파일을 찾지 못했습니다 (.svn/pristine).")?,
+        Some((_, Some(ck))) => pristine(wc, ck).ok_or("BASE 파일을 찾지 못했습니다 (.svn/pristine).")?,
         _ => Vec::new(),
     };
     let new = if full.exists() {
@@ -423,7 +430,7 @@ pub fn diff(wc: &Path, rel: &str) -> Result<Diff, String> {
     };
     let mut out = text_diff(rel, &old, &new);
     if out.lines.is_empty() && out.note.is_none() {
-        out.note = Some("내용이 기준본과 같습니다 (수정 시각만 바뀜).".into());
+        out.note = Some("내용이 BASE 와 같습니다 (수정 시각만 바뀜).".into());
     }
     Ok(out)
 }
@@ -508,6 +515,99 @@ pub fn base_content(wc: &Path, rel: &str) -> Option<Vec<u8>> {
     pristine(wc, &ck?)
 }
 
+/// 작업복사본 형식 (wc.db 의 user_version · svn 1.8~1.14 는 31) — svncli 가 쓰기 전에 svn 판과 맞는지 본다
+pub fn wc_format(wc: &Path) -> Option<i64> {
+    open(wc).ok()?.query_row("PRAGMA user_version", [], |r| r.get(0)).ok()
+}
+
+/* ---------- Blame · 충돌 (SVN · Git 이 같은 꼴로 화면에 준다) ---------- */
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BlameLine {
+    pub rev: String, // SVN 리비전 번호 · Git 커밋 해시. 비면 아직 Commit 안 된 줄
+    pub author: String,
+    pub date_ms: Option<i64>,
+    pub s: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Blame {
+    pub path: String,
+    pub note: Option<String>,
+    pub lines: Vec<BlameLine>,
+}
+
+#[derive(Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ConflictInfo {
+    pub path: String,
+    pub kinds: Vec<&'static str>, // text · prop · tree — tree conflict 은 Use mine · Use theirs 로 풀리지 않는다
+    pub operation: String,        // update · merge · switch (Git 은 merge · revert · cherry-pick · rebase)
+    pub base: Option<String>,     // 세 쪽 내용이 있는 곳 — SVN 은 작업복사본 기준 파일 경로 (.rOLD · .mine · .rNEW)
+    pub mine: Option<String>,
+    pub theirs: Option<String>,
+}
+
+fn atom(s: &Skel) -> Option<String> {
+    match s {
+        Skel::Atom(b) if !b.is_empty() => Some(String::from_utf8_lossy(b).into_owned()),
+        _ => None,
+    }
+}
+
+/// ACTUAL_NODE.conflict_data — 「((작업 (위치…) …) ((text (OLD MINE THEIRS) …) (prop (REJECT) …) (tree () …)))」
+pub fn parse_conflict(rel: &str, blob: &[u8]) -> ConflictInfo {
+    let mut out = ConflictInfo { path: rel.to_string(), ..Default::default() };
+    let Some((Skel::List(top), _)) = parse_skel(blob, 0) else { return out };
+    if let Some(Skel::List(info)) = top.first() {
+        out.operation = info.first().and_then(atom).unwrap_or_default();
+    }
+    let Some(Skel::List(conflicts)) = top.get(1) else { return out };
+    for c in conflicts {
+        let Skel::List(parts) = c else { continue };
+        let kind = match parts.first().and_then(atom).as_deref() {
+            Some("text") => "text",
+            Some("prop") => "prop",
+            Some("tree") => "tree",
+            _ => continue,
+        };
+        out.kinds.push(kind);
+        if kind == "text" {
+            if let Some(Skel::List(m)) = parts.get(1) {
+                out.base = m.first().and_then(atom);
+                out.mine = m.get(1).and_then(atom);
+                out.theirs = m.get(2).and_then(atom);
+            }
+        }
+    }
+    out
+}
+
+pub fn conflict_info(wc: &Path, rel: &str) -> Result<ConflictInfo, String> {
+    let c = open(wc)?;
+    let blob: Option<Vec<u8>> = c
+        .query_row("SELECT conflict_data FROM ACTUAL_NODE WHERE local_relpath = ?1", [rel], |r| r.get(0))
+        .map_err(|_| format!("충돌 기록이 없습니다: {rel}"))?;
+    Ok(parse_conflict(rel, &blob.unwrap_or_default()))
+}
+
+/// BASE(.rOLD) 와 한쪽(mine · theirs)의 차이
+pub fn conflict_diff(wc: &Path, rel: &str, side: &str) -> Result<Diff, String> {
+    let ci = conflict_info(wc, rel)?;
+    let other = match side {
+        "mine" => &ci.mine,
+        "theirs" => &ci.theirs,
+        x => return Err(format!("비교할 쪽이 올바르지 않습니다: {x}")),
+    };
+    let read = |p: &Option<String>| p.as_ref().and_then(|p| fs::read(wc.join(p)).ok());
+    let (Some(a), Some(b)) = (read(&ci.base), read(other)) else {
+        return Err("충돌 파일(.rOLD · .mine · .rNEW)을 찾지 못했습니다. text conflict 이 아니거나 이미 지워졌습니다.".into());
+    };
+    Ok(text_diff(rel, &a, &b))
+}
+
 /// 작업복사본 변경을 알아채기 위한 표지 — IDE · svn 이 커밋 · 업데이트하면 wc.db 가 바뀐다
 pub fn db_stamp(wc: &Path) -> Option<u64> {
     let m = fs::metadata(wc.join(".svn").join("wc.db")).ok()?;
@@ -534,6 +634,18 @@ mod tests {
         assert_eq!(prop(&blob, "svn:ignore").as_deref(), Some(".classpath\ntarget\n"));
         assert_eq!(prop(&blob, "svn:eol-style"), None);
         assert_eq!(prop(&Some(b"()".to_vec()), "svn:ignore"), None);
+    }
+
+    #[test]
+    fn 충돌_기록을_읽는다() {
+        // 길이를 앞에 단 원자(「16 trunk/a/list.jsp」)와 맨 단어 원자가 섞여 온다. 숫자로 시작하는 원자는 늘 길이를 단다 (「4 3759」)
+        let blob = b"((update ((file svn rt 16 trunk/a/list.jsp 4 3759) (file svn rt 16 trunk/a/list.jsp 4 3760))) ((text (16 a/list.jsp.r3759 15 a/list.jsp.mine a/list.jsp.r3760))))";
+        let c = parse_conflict("a/list.jsp", blob);
+        assert_eq!(c.operation, "update");
+        assert_eq!(c.kinds, ["text"]);
+        assert_eq!((c.base.as_deref(), c.mine.as_deref(), c.theirs.as_deref()), (Some("a/list.jsp.r3759"), Some("a/list.jsp.mine"), Some("a/list.jsp.r3760")));
+        let t = parse_conflict("x", b"((merge ()) ((tree () edited deleted)))");
+        assert_eq!((t.kinds.as_slice(), t.base), (&["tree"][..], None));
     }
 
     // 실제 작업복사본을 읽기만 한다 — 환경 변수로 폴더를 줄 때만 (여럿이면 ; 로): TOMCATRUN_TEST_SVN_WC=<폴더> cargo test

@@ -16,13 +16,21 @@
 //   자바                        저장 → 감시 → 상주 컴파일러(ECJ · 바뀐 파일만) → HotswapAgent 가 실행 중인 JVM 에 교체
 //   Spring 설정 · web.xml 등    기동 때만 읽는다 → 「재시작해야 반영」 목록에 올린다
 //
-// 원본은 건드리지 않는다 — 프로젝트 소스 · IDE 설정 · SVN 작업복사본 · git 저장소에는 읽기만 한다.
+// 원본은 건드리지 않는다 — 프로젝트 소스 · IDE 설정에는 읽기만 한다.
+// SVN 작업복사본 · git 저장소도 읽기만 하고, 「설정 › 버전 관리 › Allow write」를 켠 서버에서만
+// 사용자가 누른 Commit · Update · Revert · Resolve (Git 은 Fetch · Push 도)를 svn.exe · git 으로 실행한다 (2026.10.29~ · svncli.rs · gitwrite.rs).
+// Commit message 자동 생성은 사용자가 정한 언어 모델 CLI 에 고른 파일의 Diff 를 넘긴다 — 명령 칸이 비면 하지 않는다 (commitmsg.rs).
 // 개발에서만 바꾸는 앱 설정은 overlay/ 의 별도 파일로 덧붙이고(tomcatrun.DevTweaks), 쓰는 것은 모두 이 폴더 안이다.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod commitmsg;
 mod eclipse;
+mod filtering;
 mod git;
+mod gitwrite;
+mod jarcheck;
 mod svn;
+mod svncli;
 mod svnweb;
 mod update;
 
@@ -46,6 +54,7 @@ use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const STAMP_FILE: &str = ".tomcatrun-stamp";
+const COMPILE_OPTS_FILE: &str = ".tomcatrun-javac"; // 지난 컴파일의 인코딩 · -parameters (compile_opts)
 
 /* ---------- 설정 ---------- */
 
@@ -66,17 +75,65 @@ struct ServerCfg {
     jvm_args: Vec<String>,
     links: Vec<Link>,
     vcs: VcsCfg,
+    // 2026-10-29~ : 가져올 때 이클립스 서버 설정(server.xml · .launch)에서 읽은 「실행기와 다른 점」. 작업 공간이 있어야 읽으므로 남겨 둔다.
+    // 이클립스에서 그 설정을 고쳤다면 다시 가져와야 바뀐다. 프로젝트 .settings 쪽은 남기지 않고 점검할 때마다 다시 읽는다 (server_checks).
+    eclipse_warnings: Vec<String>,
+    // 2026.10.29~ : 핫리로드를 끄고 띄울 때 쓰는 java. 비면 「설정 › 경로」의 java(전역 java_plain).
+    // 「시작하기」가 이클립스 서버가 쓰던 JRE 로 채운다 — 함께 까는 8u181 은 TLS 1.3 · 새 루트 인증서가 없어 외부 연계에서 SSL 오류가 났다.
+    // 핫리로드 모드는 DCEVM 에 묶여 있어 늘 java_hot 이다. 실행기 밖의 절대 경로라 path_fields 에 넣지 않는다 (넣으면 빈 값이 기본 경로로 채워진다)
+    java: String,
+    eclipse_java: String, // 가져올 때 이클립스가 쓰던 java.exe — 「이클립스와 다름」 점검에만 쓴다
+    // 2026.10.29~ : server.xml 에 박혀 있던 두 값을 서버 설정으로 옮겼다 — 이클립스에서는 되던 요청이 이 실행기에서만 잘리거나 404 가 났다.
+    // 접속 경로는 톰캣 표기 그대로 — 루트는 "", 그 밖은 "/이름" (clean_context_path)
+    context_path: String,
+    // 톰캣 HTTP Connector 의 maxParameterCount · -1 은 무제한. 옛 tomcatrun.json 에 없으면 0 이 아니라 10000 으로 읽는다 (0 이면 파라미터를 하나도 받지 않는다)
+    #[serde(default = "default_max_params")]
+    max_parameter_count: i32,
+    // 2026.10.29~ : 자바 컴파일 옵션을 이클립스 프로젝트 설정에 맞춘다 — 늘 UTF-8 · -parameters 없이 컴파일해서
+    // MS949 소스의 한글 상수가 깨지고, @Param 없는 MyBatis 매퍼가 이 실행기에서만 「Parameter 'x' not found」로 실패했다.
+    // 바꾸면 다음 컴파일이 전체를 다시 만든다 (COMPILE_OPTS_FILE). 톰캣이 켜져 있으면 바꾸지 못한다 (set_server).
+    encoding: String, // 자바 소스 인코딩 — 빈 값은 UTF-8
+    parameters: bool, // 매개변수 이름을 남긴다 (-parameters)
 }
 
-/// 서버(프로젝트)의 버전 관리 — 「설정 › 버전 관리」에서 고친다. 실행기는 읽기만 하고, 커밋 · 업데이트는 명령을 복사해 준다.
+// 톰캣 8.5 기본 · 이클립스 server.xml 에 값이 없을 때와 같다. 2026.10.29 : 1000(최근 톰캣의 기본 server.xml 값) → 10000.
+// 로컬 개발 톰캣이라 그리드 일괄 저장이 이클립스와 똑같이 되는 쪽을 골랐다.
+const DEFAULT_MAX_PARAMS: i32 = 10000;
+
+fn default_max_params() -> i32 {
+    DEFAULT_MAX_PARAMS
+}
+
+/// 「설정 › 서버 › 접속 경로」 입력을 톰캣 표기로 — 「/」 · 빈 값은 "", 앞 / 를 붙이고 끝 / 는 뗀다.
+/// 공백 · ? · # · \ 가 들어 있으면 주소가 되지 않으므로 받지 않는다.
+fn clean_context_path(raw: &str) -> Result<String, String> {
+    let t = raw.trim().trim_matches('/');
+    if t.is_empty() {
+        return Ok(String::new());
+    }
+    if t.chars().any(|c| c.is_whitespace() || ['?', '#', '\\', '%', ';'].contains(&c)) || t.split('/').any(|s| s.is_empty() || s == "." || s == "..") {
+        return Err(format!("접속 경로는 /shop 처럼 적으세요 (공백 · ? · # · \\ 는 쓸 수 없습니다): {raw}"));
+    }
+    Ok(format!("/{t}"))
+}
+
+/// 서버(프로젝트)의 버전 관리 — 「설정 › 버전 관리」에서 고친다.
+/// write 를 끄면(기본) 읽기만 하고 Commit · Update 는 명령을 복사해 준다. 켜면 사용자가 누를 때 실행기가 실행한다.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 struct VcsCfg {
     kind: String,         // auto(폴더를 보고 정한다) · svn · git · both · none
     root: String,         // 작업복사본 · 저장소 폴더. 비면 project
-    commit_hint: String,  // 커밋 메시지 칸에 흐리게 보일 예시 (팀의 메시지 규칙)
-    svn_update: String,   // 「업데이트 명령 복사」가 만드는 명령 — 앞에 cd 줄이 붙는다
-    git_update: String,
+    commit_hint: String,  // Commit message 칸에 흐리게 보일 예시 (팀의 메시지 규칙)
+    svn_update: String,   // 「Update 명령 복사」가 만드는 명령 — 앞에 cd 줄이 붙는다
+    git_update: String,   // 「Pull 명령 복사」 · Pull 단추가 쓰는 명령
+    write: bool,          // Allow write — 이 서버에서 Commit · Update · Revert · Resolve 를 실행한다 (2026.10.29~ · 기본 꺼짐)
+    svn_exe: String,      // 비면 PATH → TortoiseSVN · SlikSVN 설치 폴더에서 찾는다
+    // ↓ Commit message 규칙 (2026.10.29~ · commitmsg.rs) — 빈 칸은 보지 않는다. 어겨도 막지 않고 확인 창에서 한 번 더 묻는다
+    msg_rule: String,        // 자동 생성 때 모델에게 줄 팀 규칙 (자유 글)
+    issue_pattern: String,   // 브랜치 · 작업 폴더 이름에서 이슈 번호를 찾는 정규식
+    subject_pattern: String, // 제목이 맞아야 하는 정규식
+    subject_max: u32,        // 제목 최대 글자 수 (0 이면 보지 않는다)
 }
 
 impl Default for VcsCfg {
@@ -88,6 +145,26 @@ impl Default for VcsCfg {
             svn_update: "svn update".into(),
             // 원격과 갈라졌으면 합치지 않고 멈춘다 — 무엇이 들어올지 화면에서 먼저 본 뒤 사용자가 정한다
             git_update: "git pull --ff-only".into(),
+            // 작업복사본이 운영 저장소와 바로 이어져 있을 수 있어 쓰기는 사용자가 서버마다 켠다
+            write: false,
+            svn_exe: String::new(),
+            msg_rule: String::new(),
+            // 「FDR-112」 · 「ABC-7」 꼴 — Jira 같은 이슈 키
+            issue_pattern: r"[A-Z][A-Z0-9]+-\d+".into(),
+            subject_pattern: String::new(),
+            subject_max: 0,
+        }
+    }
+}
+
+impl VcsCfg {
+    fn rule(&self) -> commitmsg::Rule {
+        commitmsg::Rule {
+            text: self.msg_rule.clone(),
+            example: self.commit_hint.clone(),
+            issue_pattern: self.issue_pattern.clone(),
+            subject_pattern: self.subject_pattern.clone(),
+            subject_max: self.subject_max,
         }
     }
 }
@@ -122,6 +199,7 @@ struct Config {
     hotswap_agent: String,
     maven: String,
     editor: String,
+    msg_cmd: String,      // Commit message 생성 명령 (예: claude -p) — 비우면 자동 생성을 숨긴다. 고른 파일의 Diff 가 이 명령으로 나간다
     hot_reload: bool,
     auto_compile: bool,
     debug: bool,
@@ -158,6 +236,13 @@ const DISABLED_PLUGINS: [&str; 25] = [
 // 2026-10-27 실측 : 매퍼 해석(기동 때 두 번) 12.6초 → 6.0초.
 // 2026-10-27 : -Xms1g 를 뺐다. 힙을 처음부터 1GB 잡아 두는 것이 가볍게 하려는 쪽과 어긋난다 (힙 상한 heap_mb 로 다룬다).
 const FAST_JVM_ARGS: [&str; 2] = ["-XX:TieredStopAtLevel=1", "-Xverify:none"];
+
+// 자바 9 이상으로 띄울 때 — 톰캣 8.5 의 catalina.bat 와 같은 값 (JDK_JAVA_OPTIONS)
+const JDK9_ARGS: [&str; 3] = [
+    "--add-opens=java.base/java.lang=ALL-UNNAMED",
+    "--add-opens=java.base/java.io=ALL-UNNAMED",
+    "--add-opens=java.rmi/sun.rmi.transport=ALL-UNNAMED",
+];
 
 // 힙 상한을 둘 때 함께 주는 GC 옵션. SerialGC 는 GC 스레드를 따로 두지 않아 가장 가볍고(코어 4개 PC),
 // 쓰고 남은 힙을 운영체제에 돌려준다 (MaxHeapFreeRatio). DCEVM 이 지원하는 GC 이기도 하다.
@@ -217,6 +302,8 @@ impl Default for Config {
             hotswap_agent: p(&h.join("bin/hotswap-agent.jar")),
             maven: p(&h.join("bin/maven/bin/mvn.cmd")),
             editor: "code".into(),
+            // 2026.10.29 : 비워 둔다 — 소스가 밖으로 나가는 일이라 사용자가 명령을 적어야 켜진다
+            msg_cmd: String::new(),
             hot_reload: true,
             auto_compile: true,
             debug: false,
@@ -258,6 +345,13 @@ fn new_server(h: &Path, id: &str, name: &str, n: u16) -> ServerCfg {
         debug_port: 8000 + n,
         jvm_args: vec![],
         vcs: VcsCfg::default(),
+        eclipse_warnings: vec![],
+        java: String::new(),
+        eclipse_java: String::new(),
+        context_path: String::new(),
+        max_parameter_count: DEFAULT_MAX_PARAMS,
+        encoding: String::new(),
+        parameters: false,
         // 2026-10-28 : 「http://localhost:8080/」 대신 「/」. 「/」로 시작하는 주소는 화면이 열 때 그 서버의 HTTP 포트를 붙이므로
         // 포트를 바꿔도 바로가기가 따라간다 (서버를 더할 때 포트를 올려도 링크를 다시 만들 필요가 없다)
         links: vec![link("HTTP", "/")],
@@ -449,8 +543,11 @@ struct Rt {
     console: Mutex<Option<File>>,
     deps_busy: AtomicBool,
     live_mappers: Mutex<Vec<String>>,
+    res_gen: AtomicU64, // src/main 의 java · webapp 밖을 저장할 때마다 올린다 — 리소스 필터링 점검을 다시 세는 표지
+    filter_check: Mutex<Option<(String, Option<Check>)>>, // 리소스 필터링 점검 (pom · m2e 설정 시각 · res_gen 이 같으면 다시 세지 않는다)
     svn_stamp: AtomicU64, // 작업복사본 .svn/wc.db 의 수정 시각 — 바뀌면(커밋 · 업데이트) 버전 관리 화면을 다시 읽게 한다
     git_stamp: AtomicU64, // .git 의 index · HEAD · FETCH_HEAD 중 가장 늦은 수정 시각 — 같은 용도
+    vcs_busy: AtomicBool, // Commit · Update 같은 쓰기가 도는 중 — 한 서버에 하나씩, 그동안 위 두 표지로 다시 읽게 하지 않는다
 }
 
 struct Shared {
@@ -541,8 +638,11 @@ fn new_rt() -> (&'static Rt, Receiver<bool>) {
         console: Mutex::new(None),
         deps_busy: AtomicBool::new(false),
         live_mappers: Mutex::new(Vec::new()),
+        res_gen: AtomicU64::new(0),
+        filter_check: Mutex::new(None),
         svn_stamp: AtomicU64::new(0),
         git_stamp: AtomicU64::new(0),
+        vcs_busy: AtomicBool::new(false),
     };
     (Box::leak(Box::new(r)), rx)
 }
@@ -572,6 +672,7 @@ struct Check {
     label: &'static str,
     ok: bool,
     detail: String,
+    warn: bool, // 준비는 됐지만 사용자가 알아 둘 것 (ok 는 참) — 「준비 안 된 항목」에 세지 않고 시작도 막지 않는다
 }
 
 #[derive(Clone, Serialize)]
@@ -587,6 +688,10 @@ struct ServerSnap {
     debug_port: u16,
     jvm_args: Vec<String>,
     links: Vec<Link>,
+    context_path: String,        // 「/」로 시작하는 바로가기에 붙인다
+    max_parameter_count: i32,
+    encoding: String,
+    parameters: bool,
     status: Status,
     pid: Option<u32>,
     started_at_ms: Option<u64>,
@@ -603,6 +708,13 @@ struct ServerSnap {
     vcs: VcsCfg,
     vcs_kinds: Vec<&'static str>, // 실제로 볼 수 있는 것 (svn · git)
     vcs_root: String,
+    svn_cli: String,             // 찾은 svn.exe 와 판 (또는 못 찾은 까닭) — 설정 › 버전 관리에 보인다
+    svn_block: Option<String>,   // Allow write 를 켰어도 SVN 쓰기를 못 하는 까닭 — 있으면 쓰기 단추를 잠근다
+    java: String,                // 서버에 정한 java (핫리로드 끔) — 비면 전역
+    java_label: String,          // 핫리로드를 끄고 띄우면 쓰는 java 의 판 (설정 › 서버 › java 칸 아래에 보인다)
+    eclipse_java: String,        // 이클립스가 쓰던 java (가져올 때 찾았으면)
+    eclipse_java_label: String,
+    java_diff: Option<String>,   // 이클립스와 다른 자바로 뜨면 그 설명 — 알림 줄에 띄운다
 }
 
 /// 「설정 › 경로」 — 모든 서버가 함께 쓰는 것
@@ -613,6 +725,8 @@ struct Paths {
     javac: String,
     java_plain: String,
     editor: String,
+    #[serde(default)]
+    msg_cmd: String,
     tld_scan: String,
 }
 
@@ -628,6 +742,16 @@ struct ServerEdit {
     debug_port: u16,
     links: Vec<Link>,
     jvm_args: Vec<String>,
+    #[serde(default)]
+    java: String,
+    #[serde(default)]
+    context_path: String,
+    #[serde(default = "default_max_params")]
+    max_parameter_count: i32,
+    #[serde(default)]
+    encoding: String,
+    #[serde(default)]
+    parameters: bool,
 }
 
 #[derive(Clone, Serialize)]
@@ -681,21 +805,23 @@ fn common_checks(c: &Config) -> Vec<Check> {
         .map(|jdk| jdk.join("jre/bin/dcevm/jvm.dll").exists())
         .unwrap_or(false);
     vec![
-        Check { key: "tomcat", label: "톰캣 8.5", ok: ex(&format!("{}/bin/bootstrap.jar", c.tomcat_home)), detail: c.tomcat_home.clone() },
-        Check { key: "jdk", label: "JDK 8 (javac)", ok: ex(&c.javac) && ex(&c.java_plain), detail: c.javac.clone() },
-        Check { key: "dcevm", label: "DCEVM JDK 8", ok: ex(&c.java_hot) && dcevm, detail: c.java_hot.clone() },
-        Check { key: "agent", label: "HotswapAgent", ok: ex(&c.hotswap_agent), detail: c.hotswap_agent.clone() },
+        Check { key: "tomcat", label: "톰캣 8.5", ok: ex(&format!("{}/bin/bootstrap.jar", c.tomcat_home)), detail: c.tomcat_home.clone(), warn: false },
+        Check { key: "jdk", label: "JDK 8 (javac)", ok: ex(&c.javac) && ex(&c.java_plain), detail: c.javac.clone(), warn: false },
+        Check { key: "dcevm", label: "DCEVM JDK 8", ok: ex(&c.java_hot) && dcevm, detail: c.java_hot.clone(), warn: false },
+        Check { key: "agent", label: "HotswapAgent", ok: ex(&c.hotswap_agent), detail: c.hotswap_agent.clone(), warn: false },
         Check {
             key: "helper",
             label: "상주 컴파일러",
             ok: helper_dir().join("TomcatrunCompiler.class").exists(),
             detail: p(&helper_dir()),
+            warn: false,
         },
         Check {
             key: "ecj",
             label: "ECJ (이클립스 컴파일러)",
             ok: ecj_jar(c).is_some(),
             detail: ecj_jar(c).map(|j| p(&j)).unwrap_or_else(|| "톰캣 lib 에 없음 · javac 로 컴파일".into()),
+            warn: false,
         },
         Check {
             key: "overlay",
@@ -704,6 +830,7 @@ fn common_checks(c: &Config) -> Vec<Check> {
                 && overlay_dir().join("spring/context-zz-tomcatrun.xml").exists()
                 && overlay_dir().join("egovframework/springmvc/application-servlet.xml").exists(),
             detail: p(&overlay_dir()),
+            warn: false,
         },
     ]
 }
@@ -716,6 +843,94 @@ fn ecj_jar(c: &Config) -> Option<PathBuf> {
     })
 }
 
+/// 이 서버를 띄울 java — 핫리로드면 DCEVM, 아니면 plain_java
+fn launch_java(c: &Config, s: &ServerCfg) -> String {
+    if c.hot_reload { c.java_hot.clone() } else { plain_java(c, s) }
+}
+
+/// 핫리로드를 끄고 띄울 java — 서버의 java, 비었으면 「설정 › 경로」의 java
+fn plain_java(c: &Config, s: &ServerCfg) -> String {
+    if s.java.trim().is_empty() { c.java_plain.clone() } else { s.java.trim().replace('\\', "/") }
+}
+
+/// java.exe 의 판 (주 번호 · 보일 글자) — JDK 의 release 파일에서 읽는다. JDK 8 은 jre/bin/java.exe 일 수도 있어 한 단계 더 올라가 본다.
+/// 상태를 그릴 때마다 부르므로 java 를 띄우지 않고 파일만 읽는다 (경로 · 고친 시각으로 담아 둔다).
+fn java_version(java: &str) -> Option<(u32, String)> {
+    static CACHE: Mutex<Vec<(String, u64, Option<(u32, String)>)>> = Mutex::new(Vec::new());
+    let bin = Path::new(java).parent()?;
+    let release = [bin.parent()?.join("release"), bin.parent()?.parent()?.join("release")].into_iter().find(|f| f.is_file())?;
+    let stamp = mtime_ms(&release).unwrap_or(0);
+    let key = p(&release);
+    let mut cache = CACHE.lock().unwrap();
+    if let Some(hit) = cache.iter().find(|(k, t, _)| *k == key && *t == stamp) {
+        return hit.2.clone();
+    }
+    let text = fs::read_to_string(&release).unwrap_or_default();
+    let v = text.lines().find_map(|l| l.strip_prefix("JAVA_VERSION=")).map(|v| v.trim().trim_matches('"').to_string()).and_then(|v| parse_java_version(&v));
+    cache.retain(|(k, _, _)| *k != key);
+    cache.push((key, stamp, v.clone()));
+    v
+}
+
+// 「1.8.0_181」 → (8, 「8u181」) · 「17.0.8」 → (17, 「17.0.8」) · 「11」 → (11, 「11」)
+fn parse_java_version(v: &str) -> Option<(u32, String)> {
+    let num = |s: &str| s.chars().take_while(char::is_ascii_digit).collect::<String>().parse::<u32>().ok();
+    if let Some(rest) = v.strip_prefix("1.") {
+        let major = num(rest)?;
+        let update = v.split('_').nth(1).and_then(num);
+        return Some((major, update.map_or(format!("{major}"), |u| format!("{major}u{u}"))));
+    }
+    Some((num(v)?, v.to_string()))
+}
+
+/// 기동 인자를 고를 주 번호. release 가 없으면 폴더 이름(jdk-17 · jre11 · temurin-21…)으로 짐작하고, 그래도 모르면 8 로 본다 (지금까지와 같은 인자).
+fn java_major(java: &str) -> u32 {
+    if let Some((m, _)) = java_version(java) {
+        return m;
+    }
+    Path::new(java)
+        .components()
+        .filter_map(|c| {
+            let name = c.as_os_str().to_string_lossy().to_ascii_lowercase();
+            let at = name.find(|ch: char| ch.is_ascii_digit())?;
+            let head = &name[..at];
+            if !["jdk", "jre", "java", "temurin", "openjdk", "zulu", "corretto"].iter().any(|x| head.trim_end_matches(['-', '_', ' ', '.']).ends_with(x)) {
+                return None;
+            }
+            parse_java_version(&name[at..]).map(|v| v.0)
+        })
+        .find(|m| (8..100).contains(m))
+        .unwrap_or(8)
+}
+
+fn java_label(java: &str) -> String {
+    java_version(java).map(|v| v.1).unwrap_or_else(|| "판 모름".into())
+}
+
+/// 이클립스와 다른 java 로 뜨는지 — 가져올 때 이클립스 JRE 를 찾은 서버만 본다
+fn java_diff(c: &Config, s: &ServerCfg) -> Option<String> {
+    let ej = s.eclipse_java.trim();
+    if ej.is_empty() {
+        return None;
+    }
+    let ours = launch_java(c, s);
+    let same = |a: &str, b: &str| a.replace('\\', "/").eq_ignore_ascii_case(&b.replace('\\', "/"));
+    if same(ej, &ours) {
+        return None;
+    }
+    let (theirs, mine) = (java_label(ej), java_label(&ours));
+    // 경로만 다르고 판이 같으면 (같은 JDK 를 복사해 둔 것 등) 알리지 않는다
+    if java_version(ej).is_some() && theirs == mine {
+        return None;
+    }
+    Some(if c.hot_reload {
+        // 판 뒤에 조사를 붙이지 않는다 — 「17.0.8 을」 · 「11.0.2 를」 처럼 끝 숫자마다 달라진다
+        format!("이클립스가 쓰던 자바는 {theirs} 입니다 · 핫리로드 모드는 {mine} 입니다 (DCEVM) — 외부 연계에서 SSL 오류(SSLHandshakeException)나 UnsupportedClassVersionError 가 나면 핫리로드를 끄고 띄워 보세요. 끄면 이클립스와 같은 자바로 뜹니다")
+    } else {
+        format!("이클립스가 쓰던 자바는 {theirs} 입니다 · 이 서버는 {mine} 입니다 ({ours}) — 같게 하려면 설정 › 서버 › java 칸에 이클립스 경로({ej})를 적으세요")
+    })
+}
+
 fn helper_dir() -> PathBuf {
     home_dir().join("helper")
 }
@@ -724,7 +939,31 @@ fn overlay_dir() -> PathBuf {
     home_dir().join("overlay")
 }
 
-fn server_checks(s: &ServerCfg) -> Vec<Check> {
+// pom 의 리소스 필터링 — resources 를 훑으므로 pom · m2e 설정 · 저장(res_gen)이 바뀔 때만 다시 센다. 필터링을 쓰지 않으면 줄이 없다.
+fn filter_check(s: &ServerCfg, r: &Rt) -> Option<Check> {
+    if s.project.trim().is_empty() {
+        return None;
+    }
+    let proj = Path::new(&s.project);
+    let key = format!(
+        "{}|{}|{}|{}",
+        s.project,
+        mtime_ms(&proj.join("pom.xml")).unwrap_or(0),
+        mtime_ms(&proj.join(filtering::M2E_PREFS)).unwrap_or(0),
+        r.res_gen.load(Ordering::Relaxed)
+    );
+    let mut cache = r.filter_check.lock().unwrap();
+    if let Some((k, c)) = cache.as_ref() {
+        if *k == key {
+            return c.clone();
+        }
+    }
+    let c = filtering::scan(proj).map(|rep| Check { key: "filtering", label: "리소스 필터링", ok: true, detail: rep.detail(), warn: rep.warn() });
+    *cache = Some((key, c.clone()));
+    c
+}
+
+fn server_checks(c: &Config, s: &ServerCfg, r: &Rt) -> Vec<Check> {
     let jars = fs::read_dir(&s.deps_dir)
         .map(|r| r.filter_map(Result::ok).filter(|e| e.path().extension().map_or(false, |x| x == "jar")).count())
         .unwrap_or(0);
@@ -732,8 +971,8 @@ fn server_checks(s: &ServerCfg) -> Vec<Check> {
     let pom = mtime_ms(&Path::new(&s.project).join("pom.xml")).unwrap_or(0);
     let deps_fresh = read_stamp(&s.deps_dir) >= pom;
     let compiled = Path::new(&s.classes_dir).join(STAMP_FILE).exists();
-    vec![
-        Check { key: "project", label: "소스", ok: Path::new(&s.project).join("src/main/webapp").exists(), detail: s.project.clone() },
+    let mut out = vec![
+        Check { key: "project", label: "소스", ok: Path::new(&s.project).join("src/main/webapp").exists(), detail: s.project.clone(), warn: false },
         Check {
             key: "deps",
             label: "의존 jar",
@@ -745,14 +984,54 @@ fn server_checks(s: &ServerCfg) -> Vec<Check> {
             } else {
                 format!("{jars}개")
             },
+            warn: false,
         },
         Check {
             key: "classes",
             label: "컴파일 결과",
             ok: compiled,
             detail: if compiled { s.classes_dir.clone() } else { "아직 없음 · 처음 시작할 때 전체 컴파일".into() },
+            warn: false,
         },
-    ]
+    ];
+    // 같은 라이브러리의 다른 판 — 시작은 되므로 노란 줄. 키를 deps 와 나눈 것은 화면이 deps 줄 하나로 「다시 받기」 강조 · 「자동으로 채우기」 알림을 걸기 때문이다
+    // 프로젝트를 정하지 않았으면 빈 경로 — 실행기 폴더 기준 상대 경로를 읽지 않게 한다
+    let own = if s.project.trim().is_empty() { PathBuf::new() } else { Path::new(&s.project).join("src/main/webapp/WEB-INF/lib") };
+    let dups = jarcheck::duplicates(&own, Path::new(&s.deps_dir));
+    if !dups.is_empty() {
+        out.push(Check { key: "depsDup", label: "같은 jar 다른 판", ok: true, detail: jarcheck::detail(&dups), warn: true });
+    }
+    // SVN 쓰기를 켠 서버만 — 끈 서버는 svn.exe 가 없어도 된다
+    if s.vcs.write && vcs_kinds(s).contains(&"svn") {
+        let block = svn_block(s);
+        let detail = block.clone().unwrap_or_else(|| svncli::probe(&s.vcs.svn_exe).map(|p| format!("svn {} · {}", p.version, p.exe)).unwrap_or_default());
+        out.push(Check { key: "svn", label: "svn.exe (SVN 쓰기)", ok: block.is_none(), detail, warn: false });
+    }
+    out.extend(filter_check(s, r));
+    // 이클립스와 다르게 도는 것 — 가져올 때 남긴 서버 설정 쪽 + 지금 프로젝트 폴더의 .settings (pom 리소스 필터링은 위 줄이 따로 센다)
+    let mut diff = s.eclipse_warnings.clone();
+    diff.extend(java_diff(c, s));
+    if !s.project.trim().is_empty() {
+        diff.extend(eclipse::project_settings(Path::new(&s.project), None).warnings(&s.encoding, s.parameters));
+    }
+    if !diff.is_empty() {
+        if !s.eclipse_warnings.is_empty() || !s.eclipse_java.is_empty() {
+            diff.push("이클립스 서버 설정을 고쳤다면 다시 가져와야 이 목록이 바뀝니다 (설정 › 서버 › 이클립스에서 가져오기)".into());
+        }
+        out.push(Check { key: "eclipse", label: "이클립스와 다름", ok: true, detail: diff.join("\n"), warn: true });
+    }
+    out
+}
+
+// Allow write 를 켠 SVN 서버에서 쓰기를 못 하는 까닭 — svn.exe 가 없거나, 판 · 작업복사본 형식이 맞지 않으면
+fn svn_block(s: &ServerCfg) -> Option<String> {
+    if !s.vcs.write || !vcs_kinds(s).contains(&"svn") {
+        return None;
+    }
+    match svncli::probe(&s.vcs.svn_exe) {
+        Err(e) => Some(e),
+        Ok(p) => svncli::block_reason(&p, svn::wc_format(Path::new(&vcs_root(s)))),
+    }
 }
 
 fn snapshot(app: &AppHandle) -> Snapshot {
@@ -775,6 +1054,10 @@ fn snapshot(app: &AppHandle) -> Snapshot {
                 debug_port: s.debug_port,
                 jvm_args: s.jvm_args.clone(),
                 links: s.links.clone(),
+                context_path: s.context_path.clone(),
+                max_parameter_count: s.max_parameter_count,
+                encoding: s.encoding.clone(),
+                parameters: s.parameters,
                 status: i.status,
                 pid: i.child.as_ref().map(|c| c.id()),
                 started_at_ms: i.started_at_ms,
@@ -784,13 +1067,23 @@ fn snapshot(app: &AppHandle) -> Snapshot {
                 last_compile: i.last_compile.clone(),
                 restart_needed: i.restart_needed.clone(),
                 deps_busy: r.deps_busy.load(Ordering::Relaxed),
-                checks: server_checks(s),
+                checks: server_checks(&c, s, r),
+                java: s.java.clone(),
+                java_label: java_label(&plain_java(&c, s)),
+                eclipse_java: s.eclipse_java.clone(),
+                eclipse_java_label: if s.eclipse_java.is_empty() { String::new() } else { java_label(&s.eclipse_java) },
+                java_diff: java_diff(&c, s),
                 phases: i.phases.clone(),
                 waiting: i.waiting,
                 mem: i.mem,
                 vcs: s.vcs.clone(),
                 vcs_kinds: vcs_kinds(s),
                 vcs_root: vcs_root(s),
+                svn_cli: match svncli::probe(&s.vcs.svn_exe) {
+                    Ok(p) => format!("svn {} · {}", p.version, p.exe),
+                    Err(e) => e,
+                },
+                svn_block: svn_block(s),
             }
         })
         .collect();
@@ -815,6 +1108,7 @@ fn snapshot(app: &AppHandle) -> Snapshot {
             javac: c.javac.clone(),
             java_plain: c.java_plain.clone(),
             editor: c.editor.clone(),
+            msg_cmd: c.msg_cmd.clone(),
             tld_scan: c.tld_scan.clone(),
         },
         update_check: c.update_check,
@@ -994,9 +1288,12 @@ fn pipe_reader(app: AppHandle, i: usize, src: &'static str, r: impl Read + Send 
 /* ---------- 재시작해도 로그인 유지 ---------- */
 
 // 톰캣이 정상 종료 때 세션을 저장하는 곳 — conf/context.xml 의 <Manager pathname="SESSIONS.ser"> 는 work 폴더 기준이다.
-// 두 server.xml 모두 엔진 Catalina · 호스트 localhost · 경로 "/"(작업 폴더 이름 ROOT) 하나다.
-fn session_file(base: &str) -> PathBuf {
-    Path::new(base).join("work/Catalina/localhost/ROOT/SESSIONS.ser")
+// 엔진 Catalina · 호스트 localhost 아래 작업 폴더 이름은 접속 경로를 따른다 — "" 는 ROOT, "/a/b" 는 a#b (톰캣 ContextName 규칙).
+// 2026.10.29 : 접속 경로를 서버 설정으로 옮기면서 ROOT 고정을 풀었다. 고정이면 /shop 앱의 세션 파일을 찾지 못해 로그인 유지가 조용히 꺼진다.
+fn session_file(base: &str, context_path: &str) -> PathBuf {
+    let dir = context_path.trim_start_matches('/').replace('/', "#");
+    let dir = if dir.is_empty() { "ROOT".to_string() } else { dir };
+    Path::new(base).join("work/Catalina/localhost").join(dir).join("SESSIONS.ser")
 }
 
 fn kb(bytes: u64) -> String {
@@ -1052,7 +1349,7 @@ fn report_session_restore(app: &AppHandle, i: usize) {
         (inner.session_had, inner.session_err.clone())
     };
     let Some(size) = had else { return };
-    let file = session_file(&sv.catalina_base);
+    let file = session_file(&sv.catalina_base, &sv.context_path);
     match err {
         Some(e) if !e.is_empty() => {} // 예외 줄을 잡을 때 이미 알렸다
         Some(_) => {
@@ -1072,8 +1369,8 @@ fn report_session_restore(app: &AppHandle, i: usize) {
 }
 
 // 정상 종료 뒤 — 세션 파일이 이번 종료 때 쓰였는지 본다. 세션이 하나도 없으면 톰캣은 파일을 만들지 않는다.
-fn report_session_save(app: &AppHandle, i: usize, base: &str, since_ms: u64) {
-    let file = session_file(base);
+fn report_session_save(app: &AppHandle, i: usize, sv: &ServerCfg, since_ms: u64) {
+    let file = session_file(&sv.catalina_base, &sv.context_path);
     let fresh = fs::metadata(&file).ok().filter(|_| mtime_ms(&file).unwrap_or(0) + 1000 >= since_ms);
     match fresh {
         Some(m) => log(app, Some(i), "app", "", format!("로그인 세션을 저장했습니다 ({}). 다음 기동 때 되살립니다.", kb(m.len()))),
@@ -1323,6 +1620,10 @@ fn monitor(app: AppHandle) {
         let roots: Vec<String> = s.cfg.lock().unwrap().servers.iter().map(vcs_root).collect();
         for (i, root) in roots.iter().enumerate() {
             let r = rt(&app, i);
+            // 실행기가 쓰는 중이면 반쯤 쓴 상태를 읽지 않는다 — 끝나면 vcs_done 이 표지를 맞추고 한 번만 알린다
+            if r.vcs_busy.load(Ordering::SeqCst) {
+                continue;
+            }
             for (stamp, slot) in [(svn::db_stamp(Path::new(root)), &r.svn_stamp), (git::stamp(Path::new(root)), &r.git_stamp)] {
                 if let Some(stamp) = stamp {
                     let prev = slot.swap(stamp, Ordering::Relaxed);
@@ -1348,6 +1649,9 @@ fn server_props(cfg: &Config, sv: &ServerCfg) -> Vec<String> {
         ("shutdownPort", sv.shutdown_port.to_string()),
         ("httpPort", sv.http_port.to_string()),
         ("ajpPort", sv.ajp_port.to_string()),
+        ("contextPath", sv.context_path.clone()),
+        // 0 이면 톰캣이 파라미터를 하나도 받지 않는다 — 손으로 고친 json 이 0 이어도 기본으로 띄운다
+        ("maxParameterCount", if sv.max_parameter_count == 0 { DEFAULT_MAX_PARAMS } else { sv.max_parameter_count }.to_string()),
         ("webapp", format!("{proj}/src/main/webapp")),
         ("resources", format!("{proj}/src/main/resources")),
         ("classes", sv.classes_dir.clone()),
@@ -1364,12 +1668,22 @@ fn server_props(cfg: &Config, sv: &ServerCfg) -> Vec<String> {
 }
 
 // 서버의 CATALINA_BASE 에 conf 가 없으면 실행기 폴더의 base/conf 를 복사한다 (서버를 새로 더했을 때).
-// 이미 있으면 건드리지 않는다 — 사용자가 그 서버의 conf 만 고쳐 쓸 수 있게.
-fn ensure_base(sv: &ServerCfg) -> Result<(), String> {
+// 이미 있으면 덮지 않는다 — 사용자가 그 서버의 conf 만 고쳐 쓸 수 있게.
+// 맨 위 파일만 복사한다 — conf/Catalina/ 아래(서버별 JNDI 설정 · write_naming)는 첫 서버의 것이 다른 서버로 퍼지면 안 된다.
+// 이미 있는 server.xml 이 옛 원본 그대로면 새 원본으로 바꾼다 (upgrade_server_xml). 돌려주는 값은 기동 로그에 남길 경고다.
+fn ensure_base(sv: &ServerCfg) -> Result<Option<String>, String> {
     let base = Path::new(&sv.catalina_base);
     let conf = base.join("conf");
-    if !conf.join("server.xml").exists() {
-        let tpl = home_dir().join("base/conf");
+    let tpl = home_dir().join("base/conf");
+    let mut warning = None;
+    if conf.join("server.xml").exists() {
+        // 첫 서버는 실행기 폴더의 base 를 그대로 쓴다 — 원본 자신이다
+        if !same_dir(&conf, &tpl) {
+            if let Ok(tpl_xml) = fs::read_to_string(tpl.join("server.xml")) {
+                warning = upgrade_server_xml(&conf.join("server.xml"), &tpl_xml)?;
+            }
+        }
+    } else {
         if !tpl.join("server.xml").exists() {
             return Err(format!("톰캣 설정 원본이 없습니다: {}/server.xml", p(&tpl)));
         }
@@ -1385,7 +1699,105 @@ fn ensure_base(sv: &ServerCfg) -> Result<(), String> {
     for d in ["logs", "temp", "work", "webapps"] {
         let _ = fs::create_dir_all(base.join(d));
     }
-    Ok(())
+    Ok(warning)
+}
+
+fn same_dir(a: &Path, b: &Path) -> bool {
+    let norm = |x: &Path| fs::canonicalize(x).map(|c| p(&c)).unwrap_or_else(|_| p(x)).trim_end_matches('/').to_lowercase();
+    norm(a) == norm(b)
+}
+
+// 서버 설정 값으로 받게 된 속성 — (옛 원본에 박혀 있던 글자, 지금 원본의 글자, 설정 칸 이름)
+const SERVER_XML_PROPS: [(&str, &str, &str); 2] = [
+    (r#"<Context path="""#, r#"<Context path="${tomcatrun.contextPath}""#, "접속 경로"),
+    (r#"maxParameterCount="1000""#, r#"maxParameterCount="${tomcatrun.maxParameterCount}""#, "파라미터 수 상한"),
+];
+
+// 주석과 공백을 뺀 본문 — 원본 머리말 설명 · 줄바꿈만 바뀐 것은 같은 파일로 본다
+fn xml_body(xml: &str) -> String {
+    let mut out = String::new();
+    let mut rest = xml;
+    while let Some(at) = rest.find("<!--") {
+        out.push_str(&rest[..at]);
+        rest = rest[at..].find("-->").map_or("", |end| &rest[at + end + 3..]);
+    }
+    out.push_str(rest);
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// 서버를 더할 때 복사해 둔 server.xml 을 새 원본으로 옮긴다 (2026.10.29 · 접속 경로 · maxParameterCount 를 서버 설정으로 옮기며 생겼다).
+/// ensure_base 는 이미 있는 conf 를 덮지 않아서, 그대로 두면 더한 서버는 설정 화면에서 두 값을 바꿔도 톰캣에 들어가지 않는다.
+///   옛 박힌 값을 ${…} 로 바꾼 본문이 지금 원본과 같다   → 손대지 않은 복사본이다. server.xml.bak 을 남기고 원본으로 바꾼다
+///   다르다 (사용자가 고쳐 쓴 파일)                       → 건드리지 않고 경고만 돌려준다
+fn upgrade_server_xml(file: &Path, tpl_xml: &str) -> Result<Option<String>, String> {
+    let Ok(cur) = fs::read_to_string(file) else { return Ok(None) };
+    let missing: Vec<_> = SERVER_XML_PROPS.iter().filter(|(_, new, _)| !cur.contains(new)).collect();
+    if missing.is_empty() {
+        return Ok(None);
+    }
+    let mut moved = cur.clone();
+    for (old, new, _) in SERVER_XML_PROPS {
+        moved = moved.replace(old, new);
+    }
+    if xml_body(&moved) == xml_body(tpl_xml) {
+        let bak = file.with_extension("xml.bak");
+        fs::copy(file, &bak).map_err(|e| format!("톰캣 설정 사본을 남기지 못했습니다 ({}): {e}", p(&bak)))?;
+        fs::write(file, tpl_xml).map_err(|e| format!("톰캣 설정을 새 원본으로 바꾸지 못했습니다 ({}): {e}", p(file)))?;
+        return Ok(None);
+    }
+    Ok(Some(format!(
+        "{} 가 실행기 원본과 달라(직접 고쳤거나 더 옛 판의 복사본) 바꾸지 않았습니다. 「설정 › 서버」의 {} 가 이 서버에 들어가지 않습니다 — 쓰려면 그 파일에 {} 를 적거나, 파일을 지우고 다시 시작해 원본을 복사하게 하세요.",
+        p(file),
+        missing.iter().map(|m| m.2).collect::<Vec<_>>().join(" · "),
+        missing.iter().map(|m| m.1.trim_start_matches("<Context ")).collect::<Vec<_>>().join(" · ")
+    )))
+}
+
+/* ---------- 이클립스 JNDI 설정 (서버별) ---------- */
+
+// 이클립스 server.xml · context.xml 의 <Resource> 를 옮겨 적는 곳 — 톰캣이 conf/context.xml 다음에 모든 Context 에 덧붙인다.
+// 실행기 server.xml · context.xml 은 git 에 들어 있고 다른 서버의 템플릿이라 DB 계정 · 비밀번호를 넣지 않는다.
+// 이 파일은 서버마다 따로 있고 .gitignore(/base/conf/Catalina/ · /servers/)에 들어 있다.
+const NAMING_MARK: &str = "tomcatrun 이 이클립스 설정에서 옮긴 JNDI";
+
+fn naming_file(base: &str) -> PathBuf {
+    Path::new(base).join("conf/Catalina/localhost/context.xml.default")
+}
+
+fn xml_attr(v: &str) -> String {
+    v.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+}
+
+fn naming_xml(entries: &[&eclipse::NamingEntry], source: &str) -> String {
+    let mut s = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!--\n  {NAMING_MARK} — {}\n  이클립스에서 다시 가져오며 JNDI 를 옮기면 이 파일을 갈아 쓴다. 손으로 고친 것은 그때 사라진다.\n  DB 계정 · 비밀번호가 들어 있다. 이 폴더 밖으로 복사하지 않는다.\n-->\n<Context>\n",
+        source.replace("--", "- -")
+    );
+    for e in entries {
+        let attrs: Vec<String> = e.attrs.iter().map(|(k, v)| format!("{k}=\"{}\"", xml_attr(v))).collect();
+        s.push_str(&format!("  <{} {}/>\n", e.kind, attrs.join(" ")));
+    }
+    s.push_str("</Context>\n");
+    s
+}
+
+/// 옮길 수 있는 항목을 서버의 context.xml.default 에 쓴다. 실행기가 만들지 않은 파일이 있으면 .bak 으로 남긴다. 쓴 수를 돌려준다.
+fn write_naming(base: &str, entries: &[eclipse::NamingEntry], source: &str) -> Result<usize, String> {
+    let list: Vec<&eclipse::NamingEntry> = entries.iter().filter(|e| e.movable()).collect();
+    if list.is_empty() {
+        return Ok(0);
+    }
+    let file = naming_file(base);
+    if let Some(dir) = file.parent() {
+        fs::create_dir_all(dir).map_err(|e| format!("톰캣 설정 폴더를 만들지 못했습니다 ({}): {e}", p(dir)))?;
+    }
+    if let Ok(old) = fs::read_to_string(&file) {
+        if !old.contains(NAMING_MARK) {
+            fs::copy(&file, file.with_extension("default.bak")).map_err(|e| format!("있던 {} 을 남기지 못했습니다: {e}", p(&file)))?;
+        }
+    }
+    fs::write(&file, naming_xml(&list, source)).map_err(|e| format!("JNDI 설정을 쓰지 못했습니다 ({}): {e}", p(&file)))?;
+    Ok(list.len())
 }
 
 /* ---------- 클래스 전체 탐색 건너뛰기 ---------- */
@@ -1457,8 +1869,17 @@ fn start_server(app: &AppHandle, i: usize) -> Result<(), String> {
     if !Path::new(&sv.project).join("src/main/webapp").is_dir() {
         return Err(format!("{name} 프로젝트에 src/main/webapp 이 없습니다: {}", sv.project));
     }
-    ensure_base(&sv).map_err(|e| format!("{name} {e}"))?;
-    let java = if cfg.hot_reload { cfg.java_hot.clone() } else { cfg.java_plain.clone() };
+    if let Some(w) = ensure_base(&sv).map_err(|e| format!("{name} {e}"))? {
+        // 기동마다 쌓이지 않게 실행기를 켠 동안 파일마다 한 번만
+        static WARNED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+        let mut warned = WARNED.lock().unwrap();
+        if !warned.contains(&sv.catalina_base) {
+            warned.push(sv.catalina_base.clone());
+            log(app, Some(i), "app", "warn", format!("{name} {w}"));
+        }
+    }
+    let java = launch_java(&cfg, &sv);
+    let major = java_major(&java);
     if !Path::new(&java).exists() {
         return Err(format!("java 를 찾지 못했습니다: {java}"));
     }
@@ -1549,8 +1970,17 @@ fn start_server(app: &AppHandle, i: usize) -> Result<(), String> {
                 return;
             }
         }
+        // 끈 채 인코딩 · -parameters 를 바꿨으면 톰캣을 띄우기 전에 비우고 다시 만든다 — 아직 아무것도 클래스를 쥐고 있지 않다
+        let opts_changed = read_stamp(&sv.classes_dir) != 0 && read_compile_opts(&sv.classes_dir) != compile_opts(&sv);
+        if opts_changed {
+            let _ = fs::remove_dir_all(&sv.classes_dir);
+        }
         if !Path::new(&sv.classes_dir).join(STAMP_FILE).exists() {
-            log(&app, Some(i), "app", "", "컴파일한 클래스가 없어 전체 컴파일부터 합니다.");
+            if opts_changed {
+                log(app, Some(i), "app", "", format!("컴파일 옵션이 바뀌어({}) 컴파일 결과를 비우고 전체 컴파일부터 합니다.", opts_label(&sv)));
+            } else {
+                log(app, Some(i), "app", "", "컴파일한 클래스가 없어 전체 컴파일부터 합니다.");
+            }
             if !run_compile(app, i, true).map_or(false, |res| res.ok) {
                 log(app, Some(i), "app", "err", "컴파일에 실패해 톰캣을 띄우지 않았습니다. 빌드 탭을 보세요.");
                 set_status(app, i, Status::Stopped);
@@ -1574,7 +2004,12 @@ fn start_server(app: &AppHandle, i: usize) -> Result<(), String> {
             args.push(format!("-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address={}", sv.debug_port));
         }
         if cfg.fast_jvm {
-            args.extend(FAST_JVM_ARGS.iter().map(|s| s.to_string()));
+            // 2026.10.29 : 자바 13 부터 -Xverify:none 은 쓰지 말라는 경고를 남긴다 (검증 생략은 그대로 된다) — 로그가 어지럽지 않게 뺀다
+            args.extend(FAST_JVM_ARGS.iter().filter(|a| major < 13 || **a != "-Xverify:none").map(|s| s.to_string()));
+        }
+        // 2026.10.29 : 자바 9 이상 — 톰캣 8.5 의 catalina.bat 가 주는 것과 같다. 없으면 톰캣이 메모리 누수 막기 · RMI 정리에서 경고를 남긴다
+        if major >= 9 {
+            args.extend(JDK9_ARGS.iter().map(|s| s.to_string()));
         }
         if cfg.heap_mb > 0 {
             args.push(format!("-Xmx{}m", cfg.heap_mb));
@@ -1603,7 +2038,12 @@ fn start_server(app: &AppHandle, i: usize) -> Result<(), String> {
             format!("-Djava.io.tmpdir={base}/temp"),
             format!("-Djava.util.logging.config.file={base}/conf/logging.properties"),
             "-Djava.util.logging.manager=org.apache.juli.ClassLoaderLogManager".into(),
-            format!("-Djava.endorsed.dirs={home}/endorsed"),
+        ]);
+        // 2026.10.29 : 자바 9 이상은 endorsed 를 받지 않는다 — 주면 「-Djava.endorsed.dirs is not supported」 로 JVM 이 뜨지 않는다
+        if major < 9 {
+            args.push(format!("-Djava.endorsed.dirs={home}/endorsed"));
+        }
+        args.extend([
             "-classpath".into(),
             format!("{home}/bin/bootstrap.jar;{home}/bin/tomcat-juli.jar"),
             "org.apache.catalina.startup.Bootstrap".into(),
@@ -1619,7 +2059,7 @@ fn start_server(app: &AppHandle, i: usize) -> Result<(), String> {
         {
             // 되살릴 세션이 있는지 띄우기 직전에 본다 — 기동이 끝나면 되살렸는지 알린다 (report_session_restore)
             let mut inner = r.inner.lock().unwrap();
-            inner.session_had = if cfg.keep_session { fs::metadata(session_file(base)).ok().map(|m| m.len()) } else { None };
+            inner.session_had = if cfg.keep_session { fs::metadata(session_file(base, &sv.context_path)).ok().map(|m| m.len()) } else { None };
             inner.session_err = None;
         }
         *r.console.lock().unwrap() = open_console_log(base);
@@ -1745,7 +2185,7 @@ fn stop_blocking(app: &AppHandle, i: usize) {
             if r.inner.lock().unwrap().child.is_none() {
                 // 켜는 중에 끈 것이면 저장할 세션이 원래 없다
                 if cfg.keep_session && starting_for.is_none() {
-                    report_session_save(app, i, &sv.catalina_base, asked_ms);
+                    report_session_save(app, i, &sv, asked_ms);
                 }
                 return;
             }
@@ -1793,7 +2233,13 @@ fn run_compile(app: &AppHandle, i: usize, full: bool) -> Option<CompileResult> {
     let _guard = r.compile_lock.lock().unwrap();
     let classes = PathBuf::from(&sv.classes_dir);
     let stamp = read_stamp(&sv.classes_dir);
-    let full = full || stamp == 0;
+    // 인코딩 · -parameters 가 지난 컴파일과 다르면 전체를 다시 — 그러지 않으면 옛 옵션으로 만든 클래스가 남는다
+    let opts = compile_opts(&sv);
+    let opts_changed = stamp != 0 && read_compile_opts(&sv.classes_dir) != opts;
+    if opts_changed {
+        log(app, Some(i), "compile", "", format!("컴파일 옵션이 바뀌어({}) 전체를 다시 컴파일합니다.", opts_label(&sv)));
+    }
+    let full = full || stamp == 0 || opts_changed;
     let begin_ms = now_ms();
     let began = Instant::now();
 
@@ -1830,7 +2276,7 @@ fn run_compile(app: &AppHandle, i: usize, full: bool) -> Option<CompileResult> {
         if full { format!("전체 컴파일 시작 · {}개 파일", files.len()) } else { format!("컴파일 시작 · {}", names(&files)) },
     );
     // 띄워 둔 상주 컴파일러가 먼저다. 없거나 응답이 없으면 javac 를 새로 띄워 같은 일을 한다.
-    let request = format!("COMPILE\t{}\t{}\t{}", sv.classes_dir, cp, p(&argfile));
+    let request = compile_request(&sv.classes_dir, &cp, &argfile, &sv);
     let on_diag = |t: String| {
         let kind = if t.contains(": error:") || t.contains(": 오류:") { "err" } else { classify(&t) };
         log(app, Some(i), "compile", kind, t);
@@ -1845,6 +2291,11 @@ fn run_compile(app: &AppHandle, i: usize, full: bool) -> Option<CompileResult> {
     if ok {
         // 시작 시각을 남긴다 — 컴파일하는 동안 고친 파일은 다음에 다시 잡힌다
         let _ = fs::write(classes.join(STAMP_FILE), begin_ms.to_string());
+        let _ = fs::write(classes.join(COMPILE_OPTS_FILE), &opts);
+        // 켜진 채 옵션이 바뀌었으면(설정 파일을 손으로 고친 경우 — 화면에서는 끈 뒤에만 바꾼다) 옛 클래스가 앱에 올라가 있다
+        if opts_changed && !stopped {
+            add_pending(app, i, "자바 컴파일 옵션".into(), "인코딩 · -parameters 가 바뀜 · 재시작해야 모두 들어감");
+        }
     }
     let result = CompileResult { ok, full, files: files.len(), errors, ms: began.elapsed().as_millis() as u64, at_ms: now_ms() };
     let secs = result.ms as f64 / 1000.0;
@@ -1880,6 +2331,29 @@ fn run_compile(app: &AppHandle, i: usize, full: bool) -> Option<CompileResult> {
 
 fn build_cp(cfg: &Config, sv: &ServerCfg) -> String {
     format!("{};{}/*;{}/src/main/webapp/WEB-INF/lib/*;{}/lib/*", sv.classes_dir, sv.deps_dir, sv.project, cfg.tomcat_home)
+}
+
+fn javac_encoding(sv: &ServerCfg) -> &str {
+    if sv.encoding.trim().is_empty() { "UTF-8" } else { sv.encoding.trim() }
+}
+
+// 컴파일 결과 폴더에 남기는 옵션 한 줄 — 「인코딩 탭 -parameters」. 견줄 때 쓰므로 인코딩 이름은 서버 설정 그대로 (MS949 와 CP949 를 바꿔 적어도 한 번 다시 만든다)
+fn compile_opts(sv: &ServerCfg) -> String {
+    format!("{}\t{}", javac_encoding(sv), sv.parameters)
+}
+
+// 옵션 파일이 없는 폴더(이 기능 전에 만든 것)는 그때 늘 쓰던 UTF-8 · 끔으로 본다 — 업데이트하자마자 전체를 다시 만들지 않게
+fn read_compile_opts(classes_dir: &str) -> String {
+    fs::read_to_string(Path::new(classes_dir).join(COMPILE_OPTS_FILE)).map(|t| t.trim().to_string()).unwrap_or_else(|_| "UTF-8\tfalse".into())
+}
+
+fn opts_label(sv: &ServerCfg) -> String {
+    format!("인코딩 {}{}", javac_encoding(sv), if sv.parameters { " · -parameters" } else { "" })
+}
+
+// 상주 컴파일러에 보내는 한 줄 — 컴파일러 하나를 여러 서버가 같이 쓰므로 옵션은 기동 인자가 아니라 요청마다 싣는다
+fn compile_request(out_dir: &str, cp: &str, argfile: &Path, sv: &ServerCfg) -> String {
+    format!("COMPILE\t{out_dir}\t{cp}\t{}\t{}\t{}", p(argfile), javac_encoding(sv), sv.parameters)
 }
 
 fn spawn_daemon(app: &AppHandle) -> Option<Daemon> {
@@ -2001,8 +2475,10 @@ fn daemon_call(app: &AppHandle, request: &str, mut on_diag: impl FnMut(String)) 
 
 fn javac_process(app: &AppHandle, i: usize, cfg: &Config, sv: &ServerCfg, cp: &str, argfile: &Path) -> (bool, usize) {
     // -g : Spring 이 @RequestParam 이름을 지역 변수 정보에서 읽는다. 빼면 이름 없는 파라미터가 깨진다.
+    // -encoding · -parameters 는 서버 설정 (상주 컴파일러에 싣는 것과 같다 — compile_request)
     let out = Command::new(&cfg.javac)
-        .args(["-nowarn", "-g", "-encoding", "UTF-8", "-source", "1.8", "-target", "1.8", "-implicit:none", "-sourcepath", ""])
+        .args(["-nowarn", "-g", "-encoding", javac_encoding(sv), "-source", "1.8", "-target", "1.8", "-implicit:none", "-sourcepath", ""])
+        .args(sv.parameters.then_some("-parameters"))
         .arg("-d")
         .arg(&sv.classes_dir)
         .arg("-cp")
@@ -2091,7 +2567,8 @@ fn warm_daemon(app: &AppHandle) {
             continue;
         }
         let _guard = rt(app, i).compile_lock.lock().unwrap();
-        if daemon_call(app, &format!("COMPILE\t{}\t{}\t{}", p(&tmp), build_cp(&cfg, sv), p(&argfile)), |_| {}).is_none() {
+        // 결과는 버리지만 인코딩은 맞춘다 — 다르면 ECJ 가 한글 줄마다 진단을 낸다
+        if daemon_call(app, &compile_request(&p(&tmp), &build_cp(&cfg, sv), &argfile, sv), |_| {}).is_none() {
             return;
         }
     }
@@ -2352,6 +2829,14 @@ fn change_worker(app: AppHandle, rx: Receiver<(usize, PathBuf)>) {
 
 fn apply_changes(app: &AppHandle, i: usize, paths: &[&PathBuf]) {
     let (c, sv) = cfgs(app, i);
+    // resources · filters 파일이 바뀌었으면 리소스 필터링 점검을 다시 세게 한다 (무시 목록에 걸린 파일도 톰캣은 올린다)
+    let res = |p: &&PathBuf| {
+        let l = rel_to(&sv.project, p).to_ascii_lowercase();
+        l.starts_with("src/main/") && !l.starts_with("src/main/java/") && !l.starts_with("src/main/webapp/")
+    };
+    if paths.iter().any(res) {
+        rt(app, i).res_gen.fetch_add(1, Ordering::Relaxed);
+    }
     // 무시 목록에 걸린 파일은 반영 기록 · 재시작 알림 · 자동 컴파일 어디에도 넣지 않는다 (SVN 목록에는 그대로 나온다)
     let paths: Vec<&PathBuf> = paths.iter().copied().filter(|p| !ignored(&c.ignore, &rel_to(&sv.project, p))).collect();
     if paths.is_empty() {
@@ -2748,6 +3233,7 @@ fn set_paths(app: AppHandle, paths: Paths) -> Result<(), String> {
         c.javac = javac;
         c.java_plain = java;
         c.editor = paths.editor.trim().to_string();
+        c.msg_cmd = paths.msg_cmd.trim().to_string();
         c.tld_scan = paths.tld_scan.split([',', '\n']).map(str::trim).filter(|x| !x.is_empty()).collect::<Vec<_>>().join(",");
         save_config(&c).map_err(|e| format!("설정을 저장하지 못했습니다: {e}"))?;
     }
@@ -2755,7 +3241,8 @@ fn set_paths(app: AppHandle, paths: Paths) -> Result<(), String> {
     Ok(())
 }
 
-// 「설정 › 서버」 — 포트 · 이름 · 바로가기는 다음 기동부터, 프로젝트 폴더를 바꾸면 저장 감시를 바로 옮긴다
+// 「설정 › 서버」 — 포트 · 이름 · 바로가기는 다음 기동부터, 프로젝트 폴더를 바꾸면 저장 감시를 바로 옮긴다.
+// 소스 인코딩 · 매개변수 이름은 톰캣을 끈 뒤에만 바꾼다 (다음 컴파일이 전체를 다시 만든다)
 #[tauri::command]
 fn set_server(app: AppHandle, srv: usize, edit: ServerEdit) -> Result<bool, String> {
     check_srv(&app, srv)?;
@@ -2771,8 +3258,32 @@ fn set_server(app: AppHandle, srv: usize, edit: ServerEdit) -> Result<bool, Stri
     if ports.iter().any(|&x| x == 0) || ports.iter().collect::<HashSet<_>>().len() < ports.len() {
         return Err("포트 네 개는 모두 다른 0 아닌 수여야 합니다.".into());
     }
+    let java = edit.java.trim().trim_matches('"').replace('\\', "/");
+    if !java.is_empty() && !Path::new(&java).is_file() {
+        return Err(format!("java 가 없습니다: {java} (비우면 설정 › 경로의 java 를 씁니다)"));
+    }
+    let context_path = clean_context_path(&edit.context_path)?;
+    if edit.max_parameter_count != -1 && edit.max_parameter_count < 1 {
+        return Err("파라미터 수 상한은 1 이상이거나 -1(무제한)이어야 합니다.".into());
+    }
+    // 자바 문자 집합 이름에 쓸 수 있는 글자만 — 탭이 들어가면 상주 컴파일러 요청 줄이 깨진다
+    let encoding = eclipse::clean_encoding(&edit.encoding);
+    if !encoding.chars().all(|c| c.is_ascii_alphanumeric() || "-_.:+".contains(c)) {
+        return Err(format!("소스 인코딩 이름이 올바르지 않습니다: {encoding} (예: UTF-8 · MS949 · EUC-KR)"));
+    }
+    // 설정 잠금을 잡기 전에 읽는다 — 두 잠금을 겹쳐 잡지 않는다 (import_servers 와 같은 순서)
+    let stopped = rt(&app, srv).inner.lock().unwrap().status == Status::Stopped;
     let c = {
         let mut c = shared(&app).cfg.lock().unwrap();
+        // 켜진 앱에는 옛 인코딩 · 옵션으로 만든 클래스가 올라가 있다. 바로 다시 컴파일하면 핫리로드가 클래스 수천 개를 한꺼번에 바꾸려 하고,
+        // 미루면 옛 클래스와 새 클래스가 섞인다. 끈 뒤에 바꾸면 다음 기동이 비우고 한 번에 다시 만든다. 일부만 저장하지 않도록 아무것도 바꾸기 전에 막는다.
+        let old = &c.servers[srv];
+        if !stopped && (old.encoding != encoding || old.parameters != edit.parameters) {
+            return Err(format!(
+                "{} 톰캣을 끈 뒤에 소스 인코딩 · 매개변수 이름을 바꾸세요. 켜진 앱에는 지금 설정으로 만든 클래스가 들어 있습니다. 두 칸을 그대로 두면 나머지는 저장됩니다.",
+                old.name
+            ));
+        }
         // 다른 서버와 포트가 겹치면 함께 띄울 수 없다
         for (i, o) in c.servers.iter().enumerate() {
             if i != srv && [o.http_port, o.ajp_port, o.shutdown_port, o.debug_port].iter().any(|x| ports.contains(x)) {
@@ -2792,6 +3303,11 @@ fn set_server(app: AppHandle, srv: usize, edit: ServerEdit) -> Result<bool, Stri
             Link { label: if l.label.trim().is_empty() { url.clone() } else { l.label.trim().to_string() }, url }
         }).collect();
         sv.jvm_args = edit.jvm_args.into_iter().map(|a| a.trim().to_string()).filter(|a| !a.is_empty()).collect();
+        sv.java = java;
+        sv.context_path = context_path;
+        sv.max_parameter_count = edit.max_parameter_count;
+        sv.encoding = encoding;
+        sv.parameters = edit.parameters;
         (c.clone(), moved)
     };
     save_config(&c.0).map_err(|e| format!("설정을 저장하지 못했습니다: {e}"))?;
@@ -2866,15 +3382,22 @@ async fn eclipse_scan(app: AppHandle, dir: Option<String>) -> Result<Vec<eclipse
         .filter(|s| !s.project.is_empty())
         .filter_map(|s| Path::new(&s.project).parent().map(Path::to_path_buf))
         .collect();
-    tauri::async_runtime::spawn_blocking(move || match dir {
-        Some(d) => {
-            let d = PathBuf::from(d.trim());
-            if !eclipse::is_workspace(&d) {
-                return Err(format!("이클립스 작업 공간이 아닙니다 (.metadata 의 서버 설정이 없습니다): {}", p(&d)));
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut list = match dir {
+            Some(d) => {
+                let d = PathBuf::from(d.trim());
+                if !eclipse::is_workspace(&d) {
+                    return Err(format!("이클립스 작업 공간이 아닙니다 (.metadata 의 서버 설정이 없습니다): {}", p(&d)));
+                }
+                vec![eclipse::read_workspace(&d)]
             }
-            Ok(vec![eclipse::read_workspace(&d)])
+            None => eclipse::find_workspaces(&projects).iter().map(|w| eclipse::read_workspace(w)).filter(|w| !w.servers.is_empty()).collect(),
+        };
+        // 「시작하기」 목록에 그 서버가 쓰던 자바 판을 붙인다
+        for s in list.iter_mut().flat_map(|w| w.servers.iter_mut()).filter(|s| !s.java.is_empty()) {
+            s.java_version = java_label(&s.java);
         }
-        None => Ok(eclipse::find_workspaces(&projects).iter().map(|w| eclipse::read_workspace(w)).filter(|w| !w.servers.is_empty()).collect()),
+        Ok(list)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -2883,7 +3406,9 @@ async fn eclipse_scan(app: AppHandle, dir: Option<String>) -> Result<Vec<eclipse
 // 이클립스 서버를 실행기 서버로 — 같은 프로젝트를 쓰는 서버가 있으면 그것을, 프로젝트가 빈 서버가 있으면 그것을 채우고, 없으면 더한다.
 // 의존 jar 는 이클립스 배포본에서 옮긴다. 늘어난 서버 · 바뀐 프로젝트 폴더는 실행기를 다시 열지 않아도 바로 쓴다.
 // 2026-10-29 : 서버 수가 바뀔 때만 실행기를 다시 열었다. 빈 서버를 채우거나 프로젝트를 바꾼 경우는 저장 감시가 옛 폴더에 남아 껐다 켜야 반영됐다.
-fn import_servers(app: &AppHandle, picked: &[eclipse::EServer]) -> Result<String, String> {
+// naming 은 사용자가 「JNDI 도 옮기기」를 켰을 때만 참이다 — DB 계정 · 비밀번호가 실행기 폴더로 복사되기 때문이다.
+// 켤 때 저절로 가져올 때(auto_setup)는 묻지 못하므로 늘 거짓이고, 옮기지 않은 수와 다시 가져오는 길을 알린다.
+fn import_servers(app: &AppHandle, picked: &[eclipse::EServer], naming: bool) -> Result<String, String> {
     if picked.is_empty() {
         return Err("가져올 서버가 없습니다 (프로젝트 폴더를 찾지 못했습니다).".into());
     }
@@ -2894,6 +3419,9 @@ fn import_servers(app: &AppHandle, picked: &[eclipse::EServer]) -> Result<String
     }
     let mut c = shared(app).cfg.lock().unwrap().clone();
     let mut jobs = Vec::new();
+    let mut naming_jobs = Vec::new();
+    let mut skipped = 0;
+    let mut warned = 0;
     for es in picked {
         let same = |a: &str| a.trim_end_matches('/').eq_ignore_ascii_case(es.project.trim_end_matches('/'));
         let k = match c.servers.iter().position(|s| same(&s.project)).or_else(|| c.servers.iter().position(|s| s.project.trim().is_empty())) {
@@ -2911,11 +3439,39 @@ fn import_servers(app: &AppHandle, picked: &[eclipse::EServer]) -> Result<String
         if es.http_port > 0 { sv.http_port = es.http_port; }
         if es.ajp_port > 0 { sv.ajp_port = es.ajp_port; }
         if es.shutdown_port > 0 { sv.shutdown_port = es.shutdown_port; }
+        // 이클립스와 같은 주소 · 같은 요청 한도로 — 이클립스 server.xml 에 값이 없으면 톰캣 기본(루트 · 10000)으로 읽힌다
+        sv.context_path = es.context_path.clone();
+        sv.max_parameter_count = es.max_parameter_count;
+        // 이클립스와 같은 인코딩 · -parameters 로 컴파일한다 — 바뀌었으면 다음 기동이 전체를 다시 만든다 (모든 서버가 꺼져 있다)
+        sv.encoding = es.encoding.clone();
+        sv.parameters = es.parameters;
+        let mut compile_note = format!("{} 자바 컴파일 옵션: {}", sv.name, opts_label(sv));
+        if es.encoding_unset {
+            compile_note.push_str(" — 이클립스 설정에 소스 인코딩이 없어 UTF-8 로 둡니다. 한글이 깨지면 설정 › 서버 › 소스 인코딩을 MS949 로 바꾸세요");
+        }
+        log(app, None, "app", if es.encoding_unset { "warn" } else { "" }, compile_note);
         for a in &es.jvm_args {
             if !sv.jvm_args.contains(a) { sv.jvm_args.push(a.clone()); }
         }
         if !es.tomcat_home.is_empty() { c.tomcat_home = es.tomcat_home.clone(); }
+        // 핫리로드를 끈 기동은 이클립스와 같은 JRE 로 — 포트처럼 찾은 것만 덮는다
+        if !es.java.is_empty() {
+            sv.java = es.java.clone();
+            sv.eclipse_java = es.java.clone();
+        }
         if !es.lib_dir.is_empty() { jobs.push((sv.name.clone(), es.lib_dir.clone(), es.project.clone(), PathBuf::from(&sv.deps_dir))); }
+        let movable = es.naming_full.iter().filter(|e| e.movable()).count();
+        // 다시 가져오면 새로 읽은 것으로 덮는다 — {base} 는 이 서버의 톰캣 설정 폴더
+        sv.eclipse_warnings = es.server_warnings.iter().map(|w| w.replace("{base}", &sv.catalina_base)).collect();
+        if naming && movable > 0 {
+            naming_jobs.push((sv.name.clone(), sv.catalina_base.clone(), es.naming_full.clone(), format!("이클립스 서버 「{}」", es.name)));
+        } else {
+            skipped += movable;
+            if movable > 0 {
+                sv.eclipse_warnings.push(format!("이클립스 서버에 DB 연결(JNDI) 설정 {movable}개가 있는데 옮기지 않았습니다 — 설정 › 서버 › 이클립스에서 가져오기에서 「JNDI 설정 {movable}개도 옮기기」를 켜고 다시 가져오세요"));
+            }
+        }
+        warned += es.warnings.len();
     }
     save_config(&c).map_err(|e| format!("설정을 저장하지 못했습니다: {e}"))?;
     grow_rts(app, c.servers.len());
@@ -2935,6 +3491,26 @@ fn import_servers(app: &AppHandle, picked: &[eclipse::EServer]) -> Result<String
             }
         }
     }
+    for (name, base, entries, source) in naming_jobs {
+        match write_naming(&base, &entries, &source) {
+            Ok(n) => {
+                // 로그에는 이름만 적는다 — 속성 값에 비밀번호가 있다
+                let names: Vec<&str> = entries.iter().filter(|e| e.movable()).map(|e| e.name.as_str()).collect();
+                log(app, None, "app", "ok", format!("{name} JNDI 설정 {n}개({})를 {} 에 옮겼습니다.", names.join(", "), p(&naming_file(&base))));
+                notes.push(format!("{name} JNDI {n}개"));
+            }
+            Err(e) => {
+                log(app, None, "app", "err", format!("{name} {e}"));
+                notes.push(format!("{name} JNDI 못 옮김"));
+            }
+        }
+    }
+    if skipped > 0 {
+        notes.push(format!("JNDI 설정 {skipped}개는 옮기지 않았습니다 (설정 › 서버 › 이클립스에서 가져오기)"));
+    }
+    if warned > 0 {
+        notes.push(format!("이클립스와 다른 점 {warned}건 (상태 탭)"));
+    }
     stop_daemon(app, "");
     let msg = format!("이클립스에서 서버 {}개를 가져왔습니다 · {}", picked.len(), notes.join(" · "));
     log(app, None, "app", "ok", msg.clone());
@@ -2943,10 +3519,11 @@ fn import_servers(app: &AppHandle, picked: &[eclipse::EServer]) -> Result<String
 }
 
 #[tauri::command]
-async fn eclipse_import(app: AppHandle, ws: String, ids: Vec<String>) -> Result<String, String> {
+async fn eclipse_import(app: AppHandle, ws: String, ids: Vec<String>, naming: bool) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        // JNDI 속성은 화면을 거치지 않고 여기서 이클립스 파일을 다시 읽어 쓴다
         let picked: Vec<_> = eclipse::read_workspace(Path::new(&ws)).servers.into_iter().filter(|s| ids.contains(&s.id) && !s.project.is_empty()).collect();
-        import_servers(&app, &picked)
+        import_servers(&app, &picked, naming)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -3009,7 +3586,7 @@ fn auto_setup(app: AppHandle) {
             let _ = app.emit("setup-needed", ());
             return;
         }
-        match import_servers(&app, &found) {
+        match import_servers(&app, &found, false) {
             Ok(msg) => {
                 let _ = app.emit("toast", format!("{msg} · 시작을 누르면 됩니다"));
             }
@@ -3421,6 +3998,487 @@ async fn git_rev_diff(app: AppHandle, srv: usize, rel: String, old: String, new:
     tauri::async_runtime::spawn_blocking(move || git::rev_diff(&root, &rel, &old, &new)).await.map_err(|e| e.to_string())?
 }
 
+/* ---------- 버전 관리 쓰기 · Blame · 충돌 (2026.10.29~) ---------- */
+//
+// 쓰기는 svncli.rs(svn.exe) · gitwrite.rs(git) 에만 있다. 여기서는 막을 것을 먼저 막는다.
+//   Allow write 가 꺼졌거나 · 그 서버의 버전 관리가 아니거나 · svn.exe 판이 맞지 않거나 · 같은 서버에서 다른 쓰기가 도는 중이면 거절
+//   Conflicted 가 남은 채 Commit · 내가 고친 파일과 겹치는 리비전 되돌리기는 거절
+// 끝나면(실패해도) 표지를 맞추고 vcs-dirty 를 한 번 보내 화면이 다시 읽게 한다.
+// Blame · 충돌 세 쪽 보기는 읽기라 Allow write 와 상관없다.
+
+struct VcsBusy {
+    app: AppHandle,
+    srv: usize,
+    root: PathBuf,
+}
+
+impl Drop for VcsBusy {
+    fn drop(&mut self) {
+        let r = rt(&self.app, self.srv);
+        // 쓰는 동안 바뀐 wc.db · .git 표지를 지금 값으로 맞춘다 — 그러지 않으면 감시가 같은 변경을 한 번 더 알린다
+        if let Some(s) = svn::db_stamp(&self.root) {
+            r.svn_stamp.store(s, Ordering::Relaxed);
+        }
+        if let Some(s) = git::stamp(&self.root) {
+            r.git_stamp.store(s, Ordering::Relaxed);
+        }
+        r.vcs_busy.store(false, Ordering::SeqCst);
+        let _ = self.app.emit("vcs-dirty", self.srv);
+    }
+}
+
+fn vcs_begin(app: &AppHandle, srv: usize, kind: &str) -> Result<(ServerCfg, PathBuf, VcsBusy), String> {
+    check_srv(app, srv)?;
+    let s = cfgs(app, srv).1;
+    if !s.vcs.write {
+        return Err(format!("{} 은 「설정 › 버전 관리 › Allow write」가 꺼져 있습니다.", s.name));
+    }
+    if !vcs_kinds(&s).contains(&kind) {
+        return Err(format!("{} 에서 쓰는 버전 관리가 아닙니다: {kind}", s.name));
+    }
+    if kind == "svn" {
+        if let Some(why) = svn_block(&s) {
+            return Err(why);
+        }
+    }
+    let r = rt(app, srv);
+    if r.vcs_busy.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+        return Err("이 서버에서 다른 버전 관리 작업이 도는 중입니다.".into());
+    }
+    let root = PathBuf::from(vcs_root(&s));
+    Ok((s, root.clone(), VcsBusy { app: app.clone(), srv, root }))
+}
+
+fn svn_cli(s: &ServerCfg, wc: &Path) -> Result<svncli::Svn, String> {
+    let p = svncli::probe(&s.vcs.svn_exe)?;
+    Ok(svncli::Svn { exe: PathBuf::from(p.exe), wc: wc.to_path_buf() })
+}
+
+// 실행기에 넣어 둔 SVN 계정 — 없으면 svn 자신의 인증 캐시에만 기댄다
+fn svn_cred(app: &AppHandle, wc: &Path) -> Option<(String, String)> {
+    svn::wc_info(wc).ok().and_then(|i| creds_for(app, &i.url).ok())
+}
+
+fn vcs_kind_ok(kind: &str) -> Result<(), String> {
+    if kind == "svn" || kind == "git" { Ok(()) } else { Err(format!("버전 관리 종류가 올바르지 않습니다: {kind}")) }
+}
+
+// 성공도 실패도 로그에 한 줄 — 무엇을 언제 저장소에 썼는지 나중에 찾을 수 있게
+fn vcs_record<T>(app: &AppHandle, srv: usize, what: &str, r: &Result<T, String>, ok: impl Fn(&T) -> String) {
+    match r {
+        Ok(v) => log(app, Some(srv), "app", "", format!("{what} · {}", ok(v))),
+        Err(e) => log(app, Some(srv), "app", "warn", format!("{what} 실패 · {}", e.trim_start_matches(NEED_LOGIN))),
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct VcsDone {
+    msg: String,
+    conflicts: Vec<String>, // 끝난 뒤 남은 Conflicted — 화면이 맨 위에 모아 보인다
+}
+
+fn conflicts_now(kind: &str, root: &Path) -> Vec<String> {
+    let items = if kind == "git" { git::status(root).map(|s| s.items) } else { svn::status(root).map(|s| s.items) };
+    items.map(|v| v.into_iter().filter(|i| i.conflict).map(|i| i.path).collect()).unwrap_or_default()
+}
+
+#[tauri::command]
+async fn vcs_commit(app: AppHandle, srv: usize, kind: String, paths: Vec<String>, msg: String, allow_rule_break: Option<bool>) -> Result<String, String> {
+    vcs_kind_ok(&kind)?;
+    let msg = msg.trim().to_string();
+    if msg.is_empty() {
+        return Err("Commit message 를 먼저 적으세요.".into());
+    }
+    // 규칙은 경고만 한다 — 다만 확인 창에서 「그래도 Commit」을 고른 호출만 넘긴다
+    check_srv(&app, srv)?;
+    let broken = commitmsg::check(&cfgs(&app, srv).1.vcs.rule(), &msg);
+    if !broken.is_empty() && allow_rule_break != Some(true) {
+        return Err(format!("Commit message 가 규칙에 맞지 않습니다: {}", broken.join(" · ")));
+    }
+    if paths.is_empty() {
+        return Err("고른 파일이 없습니다.".into());
+    }
+    for p in &paths {
+        safe_rel(p)?;
+    }
+    let (s, root, busy) = vcs_begin(&app, srv, &kind)?;
+    let cred = if kind == "svn" { svn_cred(&app, &root) } else { None };
+    let r = tauri::async_runtime::spawn_blocking(move || -> Result<String, String> {
+        let _busy = busy;
+        if kind == "git" {
+            let st = git::status(&root)?;
+            let mut all = paths.clone();
+            for p in &paths {
+                let it = st.items.iter().find(|i| &i.path == p).ok_or_else(|| format!("Changes 목록에 없습니다: {p}"))?;
+                if it.conflict {
+                    return Err(format!("Conflicted 가 남아 있습니다: {p}. 먼저 Resolve 하세요."));
+                }
+                all.extend(it.orig.clone());
+            }
+            let id = gitwrite::commit(Path::new(&st.root), &msg, &all)?;
+            return Ok(format!("Commit 했습니다 · {id} · 파일 {}개", paths.len()));
+        }
+        let st = svn::status(&root)?;
+        let cli = svn_cli(&s, &root)?;
+        let (mut adds, mut gone, mut new_dirs) = (Vec::new(), Vec::new(), Vec::new());
+        for p in &paths {
+            let it = st.items.iter().find(|i| &i.path == p).ok_or_else(|| format!("Changes 목록에 없습니다: {p}"))?;
+            if it.conflict {
+                return Err(format!("Conflicted 가 남아 있습니다: {p}. 먼저 Resolve 하세요."));
+            }
+            match it.code {
+                "?" => {
+                    adds.push(p.clone());
+                    if it.dir {
+                        new_dirs.push(p.clone());
+                    }
+                }
+                "!" => gone.push(p.clone()),
+                "A" if it.dir => new_dirs.push(p.clone()),
+                _ => {}
+            }
+        }
+        if !adds.is_empty() {
+            cli.call(&svncli::add_args(&adds), cred.as_ref()).map_err(web_err)?;
+        }
+        if !gone.is_empty() {
+            cli.call(&svncli::delete_args(&gone), cred.as_ref()).map_err(web_err)?;
+        }
+        // Commit 은 --depth empty 라 새 폴더의 안쪽을 하나하나 넣는다 (무시 목록에 걸린 것은 svn add 가 이미 뺐다)
+        let mut targets = paths.clone();
+        if !new_dirs.is_empty() {
+            for it in svn::status(&root)?.items {
+                if it.code == "A" && new_dirs.iter().any(|d| it.path.starts_with(&format!("{d}/"))) && !targets.contains(&it.path) {
+                    targets.push(it.path);
+                }
+            }
+        }
+        let rev = cli.commit(&msg, &targets, cred.as_ref()).map_err(web_err)?;
+        Ok(format!("Commit 했습니다 · {} · 파일 {}개", rev.map_or("리비전 모름".into(), |r| format!("r{r}")), targets.len()))
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    vcs_record(&app, srv, "Commit", &r, |m| m.clone());
+    r
+}
+
+#[tauri::command]
+async fn vcs_update(app: AppHandle, srv: usize, kind: String) -> Result<VcsDone, String> {
+    vcs_kind_ok(&kind)?;
+    let (s, root, busy) = vcs_begin(&app, srv, &kind)?;
+    let cred = if kind == "svn" { svn_cred(&app, &root) } else { None };
+    let what = if kind == "git" { "Pull" } else { "Update" };
+    let r = tauri::async_runtime::spawn_blocking(move || -> Result<VcsDone, String> {
+        let _busy = busy;
+        if kind == "git" {
+            let groot = git::toplevel(&root)?;
+            let cmd = if s.vcs.git_update.trim().is_empty() { "git pull --ff-only" } else { s.vcs.git_update.as_str() };
+            let last = gitwrite::pull(&groot, cmd)?;
+            return Ok(VcsDone { msg: format!("Pull 했습니다{}", if last.is_empty() { String::new() } else { format!(" · {last}") }), conflicts: conflicts_now("git", &groot) });
+        }
+        svn_cli(&s, &root)?.call(&svncli::update_args(), cred.as_ref()).map_err(web_err)?;
+        let rev = svn::wc_info(&root).map(|i| i.rev_max).unwrap_or(0);
+        Ok(VcsDone { msg: format!("Update 했습니다 · r{rev}"), conflicts: conflicts_now("svn", &root) })
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    vcs_record(&app, srv, what, &r,|d| format!("{}{}", d.msg, if d.conflicts.is_empty() { String::new() } else { format!(" · Conflicted {}", d.conflicts.len()) }));
+    r
+}
+
+#[tauri::command]
+async fn vcs_revert(app: AppHandle, srv: usize, kind: String, paths: Vec<String>) -> Result<String, String> {
+    vcs_kind_ok(&kind)?;
+    if paths.is_empty() {
+        return Err("고른 파일이 없습니다.".into());
+    }
+    for p in &paths {
+        safe_rel(p)?;
+    }
+    let (s, root, busy) = vcs_begin(&app, srv, &kind)?;
+    let cred = if kind == "svn" { svn_cred(&app, &root) } else { None };
+    let r = tauri::async_runtime::spawn_blocking(move || -> Result<String, String> {
+        let _busy = busy;
+        if kind == "git" {
+            let st = git::status(&root)?;
+            let items: Vec<gitwrite::RevertItem> = paths
+                .iter()
+                .filter_map(|p| st.items.iter().find(|i| &i.path == p))
+                .map(|i| gitwrite::RevertItem { path: i.path.clone(), code: i.code.to_string(), orig: i.orig.clone() })
+                .collect();
+            let n = items.iter().filter(|i| i.code != "?").count();
+            gitwrite::revert(Path::new(&st.root), &items)?;
+            return Ok(format!("Revert 했습니다 · 파일 {n}개"));
+        }
+        let st = svn::status(&root)?;
+        // 새로 더한 · 지운 · 없어진 폴더는 안쪽까지, 나머지는 그 경로 하나만 — 「.」 의 속성만 되돌리려다 전체가 되돌아가지 않게
+        let (mut deep, mut shallow) = (Vec::new(), Vec::new());
+        for p in &paths {
+            let Some(it) = st.items.iter().find(|i| &i.path == p) else { continue };
+            if it.code == "?" {
+                continue; // 버전 관리 밖 파일은 되돌릴 것이 없다 (지우지 않는다)
+            }
+            if it.dir && ["A", "D", "!", "~"].contains(&it.code) { deep.push(p.clone()) } else { shallow.push(p.clone()) }
+        }
+        let cli = svn_cli(&s, &root)?;
+        for (d, v) in [(false, &shallow), (true, &deep)] {
+            if !v.is_empty() {
+                cli.call(&svncli::revert_args(d, v), cred.as_ref()).map_err(web_err)?;
+            }
+        }
+        Ok(format!("Revert 했습니다 · 파일 {}개", shallow.len() + deep.len()))
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    vcs_record(&app, srv, "Revert", &r, |m| m.clone());
+    r
+}
+
+#[tauri::command]
+async fn vcs_resolve(app: AppHandle, srv: usize, kind: String, path: String, accept: String) -> Result<String, String> {
+    vcs_kind_ok(&kind)?;
+    safe_rel(&path)?;
+    let (s, root, busy) = vcs_begin(&app, srv, &kind)?;
+    let cred = if kind == "svn" { svn_cred(&app, &root) } else { None };
+    let r = tauri::async_runtime::spawn_blocking(move || -> Result<String, String> {
+        let _busy = busy;
+        let ci = if kind == "git" { git::conflict_info(&root, &path)? } else { svn::conflict_info(&root, &path)? };
+        if ci.kinds.contains(&"tree") && accept != "working" {
+            return Err("tree conflict 은 Use mine · Use theirs 로 풀리지 않습니다. 파일을 맞춘 뒤 Mark as resolved 를 누르거나 TortoiseSVN 으로 푸세요.".into());
+        }
+        if kind == "git" {
+            gitwrite::resolve(&git::toplevel(&root)?, &path, &accept)?;
+        } else {
+            svn_cli(&s, &root)?.call(&svncli::resolve_args(&accept, &path)?, cred.as_ref()).map_err(web_err)?;
+        }
+        let how = match accept.as_str() {
+            "mine" => "Use mine",
+            "theirs" => "Use theirs",
+            _ => "Mark as resolved",
+        };
+        Ok(format!("Resolve 했습니다 · {path} · {how}"))
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    vcs_record(&app, srv, "Resolve", &r, |m| m.clone());
+    r
+}
+
+// 리비전(커밋) 하나의 변경을 거꾸로 작업복사본에 적용한다. 결과는 Changes 에 남고 Commit 은 사용자가 따로 한다.
+#[tauri::command]
+async fn vcs_revert_revision(app: AppHandle, srv: usize, kind: String, rev: String) -> Result<VcsDone, String> {
+    vcs_kind_ok(&kind)?;
+    let (s, root, busy) = vcs_begin(&app, srv, &kind)?;
+    let cred = if kind == "svn" { Some(svn::wc_info(&root).and_then(|i| creds_for(&app, &i.url))) } else { None };
+    let r = tauri::async_runtime::spawn_blocking(move || -> Result<VcsDone, String> {
+        let _busy = busy;
+        // 내가 고친 파일과 겹치면 되돌린 변경과 내 변경이 한 파일에 섞여 가리지 못한다
+        let check = |changed: Vec<String>, mine: Vec<String>| -> Result<(), String> {
+            if changed.is_empty() {
+                return Err("이 리비전은 작업복사본 안을 바꾸지 않았습니다.".into());
+            }
+            let both: Vec<String> = changed.into_iter().filter(|p| mine.contains(p)).collect();
+            if both.is_empty() { Ok(()) } else { Err(format!("내가 고친 파일과 겹칩니다: {}. 먼저 Commit 하거나 Revert 하세요.", both.join(", "))) }
+        };
+        if kind == "git" {
+            let st = git::status(&root)?;
+            let groot = PathBuf::from(&st.root);
+            let mine = st.items.into_iter().filter(|i| i.code != "?").map(|i| i.path).collect();
+            check(gitwrite::changed_paths(&groot, &rev)?, mine)?;
+            let r = gitwrite::revert_commit(&groot, &rev);
+            let conflicts = conflicts_now("git", &groot);
+            r?;
+            let short: String = rev.chars().take(8).collect();
+            return Ok(VcsDone { msg: format!("{short} 의 변경을 거꾸로 적용했습니다. 확인한 뒤 Commit 하세요."), conflicts });
+        }
+        let n: i64 = rev.trim_start_matches('r').parse().map_err(|_| format!("리비전이 올바르지 않습니다: {rev}"))?;
+        let cred = cred.unwrap_or_else(|| Err("SVN 계정이 필요합니다.".into()))?;
+        let info = svn::wc_info(&root)?;
+        let entries = svnweb::log(&info.url, &info.repos_path, &cred, n, n, 1, "").map_err(web_err)?;
+        let changed = entries.iter().flat_map(|e| e.paths.iter()).filter(|c| c.inside && !c.dir).map(|c| c.path.clone()).collect();
+        let mine = svn::status(&root)?.items.into_iter().filter(|i| i.code != "?").map(|i| i.path).collect();
+        check(changed, mine)?;
+        svn_cli(&s, &root)?.call(&svncli::reverse_merge_args(n, &info.url), Some(&cred)).map_err(web_err)?;
+        Ok(VcsDone { msg: format!("r{n} 의 변경을 거꾸로 적용했습니다. 확인한 뒤 Commit 하세요."), conflicts: conflicts_now("svn", &root) })
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    vcs_record(&app, srv, "Revert revision", &r, |d| d.msg.clone());
+    r
+}
+
+// 줄마다 마지막으로 고친 리비전 · 작성자 (읽기 — Allow write 와 상관없다). SVN 은 BASE, Git 은 지금 파일 기준이다.
+#[tauri::command]
+async fn vcs_blame(app: AppHandle, srv: usize, kind: String, path: String) -> Result<svn::Blame, String> {
+    vcs_kind_ok(&kind)?;
+    safe_rel(&path)?;
+    if path.is_empty() {
+        return Err("파일 경로가 올바르지 않습니다.".into());
+    }
+    check_srv(&app, srv)?;
+    let s = cfgs(&app, srv).1;
+    let root = PathBuf::from(vcs_root(&s));
+    let cred = if kind == "svn" { svn_cred(&app, &root) } else { None };
+    tauri::async_runtime::spawn_blocking(move || -> Result<svn::Blame, String> {
+        if kind == "git" {
+            return git::blame(&root, &path);
+        }
+        let base = svn::base_content(&root, &path).ok_or("BASE 가 없습니다 (새로 더한 파일이거나 폴더입니다).")?;
+        let note = |m: &str| Ok(svn::Blame { path: path.clone(), note: Some(m.into()), lines: Vec::new() });
+        if base.len() > 3 * 1024 * 1024 {
+            return note("파일이 커서(3MB 넘음) Blame 을 보이지 않습니다.");
+        }
+        if base.iter().take(8192).any(|&b| b == 0) {
+            return note("바이너리 파일이라 Blame 을 보이지 않습니다.");
+        }
+        let xml = svn_cli(&s, &root)?.call(&svncli::blame_args(&path), cred.as_ref()).map_err(web_err)?;
+        let lines = svncli::join_blame(&svn::decode(&base), svncli::parse_blame(&xml)?);
+        Ok(svn::Blame { path, note: None, lines })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn vcs_conflict(app: AppHandle, srv: usize, kind: String, path: String) -> Result<svn::ConflictInfo, String> {
+    vcs_kind_ok(&kind)?;
+    safe_rel(&path)?;
+    check_srv(&app, srv)?;
+    let root = PathBuf::from(vcs_root(&cfgs(&app, srv).1));
+    tauri::async_runtime::spawn_blocking(move || if kind == "git" { git::conflict_info(&root, &path) } else { svn::conflict_info(&root, &path) })
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+// 충돌 세 쪽 — side : mine(BASE ↔ 내 것) · theirs(BASE ↔ 저장소 것)
+#[tauri::command]
+async fn vcs_conflict_diff(app: AppHandle, srv: usize, kind: String, path: String, side: String) -> Result<svn::Diff, String> {
+    vcs_kind_ok(&kind)?;
+    safe_rel(&path)?;
+    check_srv(&app, srv)?;
+    let root = PathBuf::from(vcs_root(&cfgs(&app, srv).1));
+    tauri::async_runtime::spawn_blocking(move || if kind == "git" { git::conflict_diff(&root, &path, &side) } else { svn::conflict_diff(&root, &path, &side) })
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/* --- Git Fetch · Push --- */
+
+// Fetch 는 작업 파일을 바꾸지 않지만 .git 의 원격 추적 브랜치를 고치므로 다른 쓰기처럼 Allow write 를 본다
+#[tauri::command]
+async fn vcs_fetch(app: AppHandle, srv: usize) -> Result<String, String> {
+    let (_, root, busy) = vcs_begin(&app, srv, "git")?;
+    let r = tauri::async_runtime::spawn_blocking(move || -> Result<String, String> {
+        let _busy = busy;
+        gitwrite::fetch(&git::toplevel(&root)?)?;
+        let st = git::status(&root)?;
+        Ok(match &st.upstream {
+            Some(u) => format!("Fetch 했습니다 · {u} · 받을 커밋 {} · 올릴 커밋 {}", st.behind, st.ahead),
+            None => "Fetch 했습니다 · 지금 브랜치에는 원격 추적 브랜치가 없습니다".into(),
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    vcs_record(&app, srv, "Fetch", &r, |m| m.clone());
+    r
+}
+
+// Push 확인 창이 무엇이 올라가는지 보이려고 부른다 (읽기)
+#[tauri::command]
+async fn git_outgoing(app: AppHandle, srv: usize) -> Result<git::Outgoing, String> {
+    let root = git_root(&app, srv)?;
+    tauri::async_runtime::spawn_blocking(move || git::outgoing(&root)).await.map_err(|e| e.to_string())?
+}
+
+// 바깥 저장소에 남아 되돌리기 어렵다 — 화면은 늘 올라갈 커밋 목록을 확인 창에 보인 뒤에만 부른다
+#[tauri::command]
+async fn vcs_push(app: AppHandle, srv: usize) -> Result<String, String> {
+    let (_, root, busy) = vcs_begin(&app, srv, "git")?;
+    let r = tauri::async_runtime::spawn_blocking(move || -> Result<String, String> {
+        let _busy = busy;
+        let groot = git::toplevel(&root)?;
+        gitwrite::push_target(&groot)?;
+        let n = git::outgoing(&groot)?.entries.len();
+        if n == 0 {
+            return Err("올릴 커밋이 없습니다.".into());
+        }
+        let to = gitwrite::push(&groot)?;
+        Ok(format!("Push 했습니다 · {to} · 커밋 {n}개"))
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    vcs_record(&app, srv, "Push", &r, |m| m.clone());
+    r
+}
+
+/* --- Commit message 자동 생성 · 규칙 검사 (commitmsg.rs) --- */
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MsgGen {
+    msg: String,
+    problems: Vec<String>, // 만든 메시지가 규칙에 어긋난 까닭 — 칸 아래에 보인다
+}
+
+// 저장소에 쓰지 않으므로 Allow write 와 상관없다. 대신 「Commit message 생성 명령」이 비면 하지 않는다 (소스가 밖으로 나가는 일)
+#[tauri::command]
+async fn gen_commit_msg(app: AppHandle, srv: usize, kind: String, paths: Vec<String>) -> Result<MsgGen, String> {
+    vcs_kind_ok(&kind)?;
+    if paths.is_empty() {
+        return Err("고른 파일이 없습니다.".into());
+    }
+    for x in &paths {
+        safe_rel(x)?;
+    }
+    check_srv(&app, srv)?;
+    let (c, s) = cfgs(&app, srv);
+    let cmd = c.msg_cmd.trim().to_string();
+    if cmd.is_empty() {
+        return Err("「설정 › 경로 › Commit message 생성 명령」을 먼저 적으세요.".into());
+    }
+    let root = PathBuf::from(vcs_root(&s));
+    let rule = s.vcs.rule();
+    let (n, t0) = (paths.len(), Instant::now());
+    let r = tauri::async_runtime::spawn_blocking(move || -> Result<MsgGen, String> {
+        // 이슈 번호는 Git 이면 브랜치, SVN 이면 저장소 경로(branches/FDR-112 꼴)에서 찾는다
+        let (items, place) = if kind == "git" {
+            let st = git::status(&root)?;
+            let place = if st.branch.is_empty() { format!("분리된 HEAD {}", st.head) } else { st.branch.clone() };
+            (st.items, place)
+        } else {
+            let st = svn::status(&root)?;
+            (st.items, svn::wc_info(&root).map(|i| i.url).unwrap_or_else(|_| p(&root)))
+        };
+        let files: Vec<commitmsg::FileDiff> = paths
+            .iter()
+            .map(|path| {
+                let it = items.iter().find(|i| &i.path == path);
+                let d = if kind == "git" { git::diff(&root, path, it.and_then(|i| i.orig.as_deref())) } else { svn::diff(&root, path) };
+                commitmsg::FileDiff { path: path.clone(), label: it.map_or("Modified", |i| i.label).to_string(), diff: d.ok().and_then(|d| commitmsg::diff_text(&d)) }
+            })
+            .collect();
+        let issue = commitmsg::issue_of(&rule.issue_pattern, &place).or_else(|| commitmsg::issue_of(&rule.issue_pattern, &p(&root)));
+        let msg = commitmsg::run(&cmd, &commitmsg::build_prompt(&rule, issue.as_deref(), &place, &files))?;
+        Ok(MsgGen { problems: commitmsg::check(&rule, &msg), msg })
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    // 무엇을 넘겼는지(프롬프트 · Diff)는 남기지 않는다 — 언제 몇 개를 보냈는지만
+    match &r {
+        Ok(_) => log(&app, Some(srv), "app", "", format!("Commit message 를 만들었습니다 · 파일 {n}개 · {:.1}초", t0.elapsed().as_secs_f32())),
+        Err(e) => log(&app, Some(srv), "app", "warn", format!("Commit message 생성 실패 · {e}")),
+    }
+    r
+}
+
+// 메시지 칸을 고칠 때마다 부른다 — 화면과 vcs_commit 이 같은 규칙 엔진을 쓰게 하려는 것
+#[tauri::command]
+fn check_commit_msg(app: AppHandle, srv: usize, msg: String) -> Result<Vec<String>, String> {
+    check_srv(&app, srv)?;
+    Ok(commitmsg::check(&cfgs(&app, srv).1.vcs.rule(), &msg))
+}
+
 // 「설정 › 버전 관리」 — 바로 적용된다 (조회는 부를 때마다 설정을 읽는다)
 #[tauri::command]
 fn set_vcs(app: AppHandle, srv: usize, vcs: VcsCfg) -> Result<(), String> {
@@ -3432,6 +4490,11 @@ fn set_vcs(app: AppHandle, srv: usize, vcs: VcsCfg) -> Result<(), String> {
     if !root.is_empty() && !Path::new(root).is_dir() {
         return Err(format!("작업 폴더가 없습니다: {root}"));
     }
+    let exe = vcs.svn_exe.trim();
+    if !exe.is_empty() && !Path::new(exe).is_file() {
+        return Err(format!("svn.exe 가 없습니다: {exe}"));
+    }
+    commitmsg::validate(&vcs.rule())?;
     let c = {
         let mut c = shared(&app).cfg.lock().unwrap();
         c.servers[srv].vcs = VcsCfg {
@@ -3440,6 +4503,12 @@ fn set_vcs(app: AppHandle, srv: usize, vcs: VcsCfg) -> Result<(), String> {
             commit_hint: vcs.commit_hint.trim().to_string(),
             svn_update: vcs.svn_update.trim().to_string(),
             git_update: vcs.git_update.trim().to_string(),
+            write: vcs.write,
+            svn_exe: vcs.svn_exe.trim().replace('\\', "/"),
+            msg_rule: vcs.msg_rule.trim().to_string(),
+            issue_pattern: vcs.issue_pattern.trim().to_string(),
+            subject_pattern: vcs.subject_pattern.trim().to_string(),
+            subject_max: vcs.subject_max,
         };
         c.clone()
     };
@@ -3547,7 +4616,9 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             get_state, start, stop, restart, quit, compile, refresh_deps, set_option, set_heap, set_compiler, set_ignore, open, reveal, open_source,
             svn_status, svn_diff, svn_account, svn_login, svn_logout, svn_incoming, svn_log, svn_rev_diff,
-            git_status, git_diff, git_incoming, git_log, git_rev_diff, set_vcs, set_paths, set_server, add_server, pick_project,
+            git_status, git_diff, git_incoming, git_log, git_rev_diff,
+            vcs_commit, vcs_update, vcs_revert, vcs_resolve, vcs_revert_revision, vcs_blame, vcs_conflict, vcs_conflict_diff, set_vcs, set_paths, set_server, add_server, pick_project,
+            vcs_fetch, vcs_push, git_outgoing, gen_commit_msg, check_commit_msg,
             update_check, update_install, changelog, eclipse_scan, eclipse_import, quick_project, pick_dir, auto_deps
         ])
         .run(tauri::generate_context!())
@@ -3559,6 +4630,25 @@ mod tests {
     use super::*;
 
     const PROJ: &str = "D:/work/shop";
+
+    #[test]
+    fn 자바_판을_읽는다() {
+        assert_eq!(parse_java_version("1.8.0_181"), Some((8, "8u181".into())));
+        assert_eq!(parse_java_version("17.0.8"), Some((17, "17.0.8".into())));
+        assert_eq!(parse_java_version("11"), Some((11, "11".into())));
+        assert_eq!(parse_java_version(""), None);
+        // release 가 없으면 폴더 이름으로 짐작 · 모르면 8 (지금까지와 같은 인자)
+        assert_eq!(java_major("C:/없는/jdk-17.0.2/bin/java.exe"), 17);
+        assert_eq!(java_major("C:/없는/Eclipse Adoptium/jdk-21.0.1.12-hotspot/bin/java.exe"), 21);
+        assert_eq!(java_major("C:/없는/jdk1.8.0_301/jre/bin/java.exe"), 8);
+        assert_eq!(java_major("C:/없는/app2024/bin/java.exe"), 8);
+        let dir = std::env::temp_dir().join(format!("tomcatrun-java-{}", std::process::id()));
+        fs::create_dir_all(dir.join("jre/bin")).unwrap();
+        fs::write(dir.join("release"), "IMPLEMENTOR=\"x\"\nJAVA_VERSION=\"1.8.0_392\"\n").unwrap();
+        // JDK 8 의 jre/bin/java.exe 는 두 단계 위의 release
+        assert_eq!(java_version(&p(&dir.join("jre/bin/java.exe"))), Some((8, "8u392".into())));
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     // 프로젝트의 context-datasource.xml 을 본뜬 것 — 속성(p:mapperLocations) · 목록(<list><value>) 두 꼴,
     // 주석으로 막은 빈, 다시 읽지 않는 일반 빈(SqlSessionFactoryBean)이 섞여 있다.
@@ -3686,6 +4776,8 @@ mod tests {
         assert_eq!(c.editor, "notepad");
         // 파일에 없는 옵션은 기본값 — 힙 상한 1.5GB · ECJ · 로그인 유지(톰캣 기본) · 앱 동작을 바꾸는 옵션은 꺼짐
         assert_eq!((c.heap_mb, c.compiler.as_str(), c.keep_session, c.stagger_start), (1536, "ecj", true, true));
+        // 2026.10.29 전에 쓴 파일에는 접속 경로 · 파라미터 수 상한이 없다 — 루트 · 10000 (0 이면 톰캣이 파라미터를 하나도 받지 않는다)
+        assert_eq!((c.servers[0].context_path.as_str(), c.servers[0].max_parameter_count), ("", 10000));
         assert!(!c.lazy_init && !c.no_schedule && !c.mapper_hotswap && !c.skip_scan);
         // 기본 설정은 빈 서버 하나 — 프로젝트 · 접속 주소를 코드에 두지 않는다
         let def = Config::default();
@@ -3697,6 +4789,37 @@ mod tests {
         let c = parse_config(r#"{"servers":[{"vcs":{"kind":"svn","accountNote":"x"}}]}"#).unwrap();
         assert_eq!(c.servers[0].vcs.kind, "svn");
         assert!(!serde_json::to_string(&c).unwrap().contains("accountNote"));
+        // 2026-10-29 전에 쓴 파일에는 write · svnExe 가 없다 — 읽으면 쓰기는 꺼져 있다
+        assert!(!c.servers[0].vcs.write && c.servers[0].vcs.svn_exe.is_empty());
+        assert!(!VcsCfg::default().write);
+        // 메시지 규칙 칸이 없던 파일도 읽힌다 — 규칙은 비어 있고(검사 안 함) 생성 명령도 비어 있다(아무것도 밖으로 안 나간다)
+        let v = &c.servers[0].vcs;
+        assert!(v.subject_pattern.is_empty() && v.subject_max == 0 && !v.issue_pattern.is_empty());
+        assert!(c.msg_cmd.is_empty() && def.msg_cmd.is_empty());
+        assert!(commitmsg::check(&v.rule(), "아무 말").is_empty());
+    }
+
+    #[test]
+    fn 컴파일_옵션이_바뀌면_알아챈다() {
+        let dir = std::env::temp_dir().join(format!("tomcatrun-opts-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let mut sv = new_server(&dir, "a", "앱", 0);
+        // 옛 설정 파일에는 두 칸이 없다 — UTF-8 · 끔
+        let old = parse_config(r#"{"servers":[{"id":"a"}]}"#).unwrap();
+        assert_eq!((old.servers[0].encoding.as_str(), old.servers[0].parameters), ("", false));
+        // 옵션 파일이 없는 옛 컴파일 결과는 그때 쓰던 UTF-8 · 끔과 같다고 본다 — 업데이트만으로 전체 컴파일을 하지 않는다
+        assert_eq!(read_compile_opts(&sv.classes_dir), compile_opts(&sv));
+        sv.encoding = "MS949".into();
+        sv.parameters = true;
+        assert_ne!(read_compile_opts(&sv.classes_dir), compile_opts(&sv));
+        fs::create_dir_all(&sv.classes_dir).unwrap();
+        fs::write(Path::new(&sv.classes_dir).join(COMPILE_OPTS_FILE), compile_opts(&sv)).unwrap();
+        assert_eq!(read_compile_opts(&sv.classes_dir), compile_opts(&sv));
+        // 상주 컴파일러 요청 — 옛 네 칸 뒤에 인코딩 · -parameters
+        let req = compile_request("C:/c", "C:/c;D:/d/*", Path::new("C:/t/args.txt"), &sv);
+        assert_eq!(req, "COMPILE\tC:/c\tC:/c;D:/d/*\tC:/t/args.txt\tMS949\ttrue");
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -3776,6 +4899,80 @@ mod tests {
         for name in xml.split("${tomcatrun.").skip(1).map(|r| &r[..r.find('}').unwrap()]) {
             assert!(props.iter().any(|x| x.starts_with(&format!("-Dtomcatrun.{name}="))), "{name}");
         }
+        assert!(props.contains(&"-Dtomcatrun.contextPath=".to_string()) && props.contains(&"-Dtomcatrun.maxParameterCount=10000".to_string()));
+        sv.context_path = "/shop".into();
+        sv.max_parameter_count = 0;
+        let props = server_props(&cfg, &sv);
+        assert!(props.contains(&"-Dtomcatrun.contextPath=/shop".to_string()) && props.contains(&"-Dtomcatrun.maxParameterCount=10000".to_string()));
+    }
+
+    #[test]
+    fn 접속_경로는_톰캣_표기로_받는다() {
+        for (raw, want) in [("", ""), ("/", ""), (" //", ""), ("shop", "/shop"), ("/shop/", "/shop"), ("/a/b", "/a/b")] {
+            assert_eq!(clean_context_path(raw).unwrap(), want, "{raw}");
+        }
+        for bad in ["/a b", "/a?x", "/a#", r"\a", "/a//b", "/../x"] {
+            assert!(clean_context_path(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn 옛_server_xml_은_손대지_않은_복사본만_새_원본으로_바꾼다() {
+        let dir = std::env::temp_dir().join(format!("tomcatrun-upgrade-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let tpl = include_str!("../../base/conf/server.xml");
+        // 옛 원본 — 박힌 값 두 곳 · 머리말 설명이 다르고 줄바꿈이 CRLF
+        let old = tpl
+            .replace(r#"maxParameterCount="${tomcatrun.maxParameterCount}""#, r#"maxParameterCount="1000""#)
+            .replace(r#"<Context path="${tomcatrun.contextPath}""#, r#"<Context path="""#)
+            .replace("tomcatrun 로컬 개발 톰캣", "옛 설명")
+            .replace('\n', "\r\n");
+        let f = dir.join("server.xml");
+        fs::write(&f, &old).unwrap();
+        assert_eq!(upgrade_server_xml(&f, tpl).unwrap(), None);
+        assert_eq!(fs::read_to_string(&f).unwrap(), tpl);
+        assert_eq!(fs::read_to_string(dir.join("server.xml.bak")).unwrap(), old);
+        // 이미 새 원본이면 그대로
+        assert_eq!(upgrade_server_xml(&f, tpl).unwrap(), None);
+        // 사용자가 고친 파일은 건드리지 않고 경고만
+        let mine = old.replace(r#"connectionTimeout="20000""#, r#"connectionTimeout="60000""#);
+        fs::write(&f, &mine).unwrap();
+        let w = upgrade_server_xml(&f, tpl).unwrap().unwrap();
+        assert!(w.contains("접속 경로 · 파라미터 수 상한") && w.contains("${tomcatrun.contextPath}"), "{w}");
+        assert_eq!(fs::read_to_string(&f).unwrap(), mine);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn jndi_는_서버별_파일에_쓰고_손으로_만든_것은_남긴다() {
+        let base = std::env::temp_dir().join(format!("tomcatrun-naming-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let b = p(&base);
+        let e = |kind: &str, name: &str, pw: &str| eclipse::NamingEntry {
+            kind: kind.into(),
+            name: name.into(),
+            attrs: vec![("name".into(), name.into()), ("password".into(), pw.into()), ("url".into(), "jdbc:x?a=1&b=2".into())],
+            from: "server.xml".into(),
+        };
+        // 옮길 것이 없으면 파일을 만들지 않는다
+        assert_eq!(write_naming(&b, &[e("ResourceLink", "jdbc/lost", "")], "t").unwrap(), 0);
+        assert!(!naming_file(&b).exists());
+        // 사용자가 만든 파일은 .bak 으로 남긴다
+        fs::create_dir_all(naming_file(&b).parent().unwrap()).unwrap();
+        fs::write(naming_file(&b), "<Context/>").unwrap();
+        assert_eq!(write_naming(&b, &[e("Resource", "jdbc/a", "p\"<1"), e("ResourceLink", "jdbc/lost", "")], "이클립스 서버 「앱」").unwrap(), 1);
+        let bak = base.join("conf/Catalina/localhost/context.xml.default.bak");
+        assert_eq!(fs::read_to_string(&bak).unwrap(), "<Context/>");
+        let xml = fs::read_to_string(naming_file(&b)).unwrap();
+        assert!(xml.contains(r#"<Resource name="jdbc/a" password="p&quot;&lt;1" url="jdbc:x?a=1&amp;b=2"/>"#), "{xml}");
+        assert!(!xml.contains("jdbc/lost"));
+        assert!(roxmltree::Document::parse(&xml).is_ok());
+        // 실행기가 쓴 파일은 .bak 없이 갈아 쓴다
+        fs::remove_file(&bak).unwrap();
+        write_naming(&b, &[e("Resource", "jdbc/b", "x")], "t").unwrap();
+        assert!(!bak.exists() && fs::read_to_string(naming_file(&b)).unwrap().contains("jdbc/b"));
+        let _ = fs::remove_dir_all(&base);
     }
 
     #[test]
@@ -3787,7 +4984,9 @@ mod tests {
         assert!(exception_line("\tat java.io.ObjectInputStream.readObject(ObjectInputStream.java:431)").is_none());
         assert!(exception_line("Caused by: java.lang.ClassNotFoundException: a.B").is_some());
         assert!(exception_line("28-Oct-2026 11:04:20.606 정보 [main] org.apache.catalina.core.StandardServer.await").is_none());
-        assert_eq!(session_file("C:/t/base").as_path(), Path::new("C:/t/base/work/Catalina/localhost/ROOT/SESSIONS.ser"));
+        assert_eq!(session_file("C:/t/base", "").as_path(), Path::new("C:/t/base/work/Catalina/localhost/ROOT/SESSIONS.ser"));
+        assert_eq!(session_file("C:/t/base", "/shop").as_path(), Path::new("C:/t/base/work/Catalina/localhost/shop/SESSIONS.ser"));
+        assert_eq!(session_file("C:/t/base", "/a/b").as_path(), Path::new("C:/t/base/work/Catalina/localhost/a#b/SESSIONS.ser"));
         assert_eq!((kb(1), kb(2048)), ("1 KB".to_string(), "2 KB".to_string()));
     }
 

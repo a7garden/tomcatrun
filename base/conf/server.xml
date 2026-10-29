@@ -12,7 +12,8 @@
       컴파일한 클래스    서버의 classes 폴더          → /WEB-INF/classes (tomcatrun.classes)
       개발 전용 앱 설정  <실행기 폴더>/overlay         → /WEB-INF/classes (tomcatrun.overlay)
       의존 jar           서버의 deps 폴더             → /WEB-INF/lib     (tomcatrun.deps)
-  · 경로는 "/" 하나만 올린다.
+  · 앱은 하나만 올린다. 접속 경로는 서버 설정의 값이다 (tomcatrun.contextPath · 비면 "/").
+  · maxParameterCount 도 서버 설정의 값이다 (tomcatrun.maxParameterCount · 기본 10000 = 톰캣 8.5 기본 · 이클립스 서버에 값이 없을 때와 같다).
   · reloadable="false" — 클래스 반영은 HotswapAgent 가 한다. 켜 두면 클래스 하나에 앱 전체가 다시 뜬다.
 -->
 <Server port="${tomcatrun.shutdownPort}" shutdown="SHUTDOWN">
@@ -21,7 +22,7 @@
   <Listener className="org.apache.catalina.core.ThreadLocalLeakPreventionListener"/>
 
   <Service name="Catalina">
-    <Connector port="${tomcatrun.httpPort}" protocol="HTTP/1.1" connectionTimeout="20000" maxParameterCount="1000" redirectPort="8443"/>
+    <Connector port="${tomcatrun.httpPort}" protocol="HTTP/1.1" connectionTimeout="20000" maxParameterCount="${tomcatrun.maxParameterCount}" redirectPort="8443"/>
     <!-- 같은 PC 의 앞단(Apache mod_jk 등)용이다. 비밀값 없이 여는 대신 127.0.0.1 에만 묶어 밖에서 닿지 않게 한다 -->
     <Connector port="${tomcatrun.ajpPort}" protocol="AJP/1.3" address="127.0.0.1" redirectPort="8443" secretRequired="false"/>
 
@@ -34,7 +35,7 @@
              · altDDName : 실행기가 기동마다 원본 web.xml 의 사본(conf/web-dev.xml)을 만든다. 옵션을 켜면 사본에
                            metadata-complete="true" 와 빈 <absolute-ordering/> 만 더하고, 끄면 원본과 같다.
              · containerSciFilter : 옵션을 켜면 톰캣 쪽 웹소켓 초기화 클래스(WsSci)도 거른다. 끄면 빈 값이라 거르지 않는다. -->
-        <Context path="" docBase="${tomcatrun.webapp}" reloadable="false"
+        <Context path="${tomcatrun.contextPath}" docBase="${tomcatrun.webapp}" reloadable="false"
                  altDDName="${catalina.base}/conf/web-dev.xml" containerSciFilter="${tomcatrun.sciFilter}">
           <!-- cacheTtl 1초 : 정적 파일을 고친 뒤 톰캣이 옛 내용을 들고 있는 시간 (기본 5초) -->
           <Resources cachingAllowed="true" cacheTtl="1000" cacheMaxSize="102400">

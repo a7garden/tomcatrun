@@ -303,7 +303,7 @@ docket 의 단추와 같은 결의 Windows 도구 단추다.
 ### Chips
 - **구분 칩:** 반영 기록의 「구분」 칸. docket `Chip` 과 같은 20px 알약, 1px 테두리, 여백 0 8px, Badge 글자. 중립은 `panel-raised` 바탕 · `line` 테두리 · `ink-muted` 글자.
 - **상태 변형:** 바로 반영 · 클래스 교체는 무채색(`ink` 글자 · `line-strong` 테두리), 기동 완료는 옅은 초록, 재시작 필요는 옅은 호박, 컴파일 실패는 옅은 빨강. 모두 같은 계열의 옅은 테두리를 단다.
-- **SVN 상태 코드:** 4px 모서리 칩. M 은 무채색(`ink` 글자), A 초록 · D 와 ! 빨강 옅은 바탕, C(충돌)만 꽉 찬 빨강.
+- **SVN 상태 코드:** 4px 모서리 칩. Modified 는 무채색(`ink` 글자), Added 초록 · Deleted 와 Missing 빨강 옅은 바탕, Conflicted 만 꽉 찬 빨강. 칩 글자는 아래 「버전 관리 용어」를 따른다.
 
 ### Cards / Containers
 - **Corner Style:** 바닥 띠는 모서리 없음, 상태 카드 · 설정 목록은 6px.
@@ -330,6 +330,25 @@ docket 의 단추와 같은 결의 Windows 도구 단추다.
 
 ### 알림 줄 (Signature Component)
 서버 줄 바로 아래 전체 폭 띠. 컴파일 실패는 `crit-weak`, 재시작 필요는 `warn-weak`. 아이콘은 상태 색, 글은 `ink`, 굵게 쓴 요지 뒤에 고정폭 파일 위치 링크(밑줄), 오른쪽에 조치 단추. 문제가 없으면 띠가 없다.
+
+### 버전 관리 용어 (2026-10-29)
+버전 관리의 동작 · 상태 · 보기 이름은 영문 표준 용어를 그대로 쓴다. TortoiseSVN · VS Code · `svn` · `git` 출력과 같은 낱말이라 도구를 오가도 같은 말로 찾는다. 설명 · 확인 · 오류 문장은 한국어로 쓰되 그 안에서도 같은 낱말을 쓴다(「Revert 하면 고친 내용이 사라집니다」). 「계정」 · 「새로 고침」처럼 버전 관리 용어가 아닌 것은 한국어로 둔다.
+
+| 쓰는 곳 | 말 |
+| - | - |
+| 보기 | Changes · Incoming · Log |
+| 상태 칩 (SVN) | Modified · Added · Deleted · Missing · Conflicted · Properties · Obstructed · Unversioned |
+| 상태 칩 (Git) | Modified · Added · Deleted · Renamed · Type changed · Conflicted · Untracked |
+| 비교 기준 | BASE (마지막으로 받은 내용) · HEAD (SVN 은 저장소 최신, Git 은 마지막 커밋) · upstream (Git 원격 추적 브랜치) |
+| 단추 | Commit · Update · Pull · Revert… · Diff · Compare with HEAD · Show log · Blame · Show unversioned (Git 은 Show untracked) |
+| 충돌 판 | Resolve · Use mine · Use theirs · Mark as resolved · BASE ↔ mine · BASE ↔ theirs |
+| Log 의 되돌리기 | Revert changes from this revision… (SVN) · Revert commit… (Git) |
+| 설정 | Allow write · Commit message 예시 · Update 명령 · Pull 명령 · svn.exe |
+
+- **쓰기 단추:** 「Allow write」를 켠 서버에서만 보인다. 실행 단추(Commit · Update)는 Primary, Revert 는 기본 단추이고 확인 창의 실행 단추만 Danger 다. 쓰기를 못 하는 까닭(svn.exe 없음 등)이 있으면 단추를 숨기지 않고 잠근 채 `title` 과 바닥 띠 안내에 까닭을 둔다.
+- **확인 창:** 닫기 확인과 같은 `dlg`(최대 폭 540px). 제목 · 한두 줄 설명 · 넘길 파일 목록(경로는 고정폭, 상태는 `ink-muted`) · 취소 / 실행. 되돌릴 수 없는 일이면 초점을 「취소」에 둔다.
+- **충돌 판:** Diff 머리 아래 `crit-weak` 바탕 6px 모서리 상자. 세 쪽 비교 단추 줄과 Resolve 단추 줄 두 줄.
+- **Blame:** Diff 표와 같은 꼴에 왼쪽 `panel-raised` 칸(리비전 · 작성자 · 날짜, 11.5px `ink-muted`). 같은 리비전이 이어지면 첫 줄에만 적고, 바뀌는 줄 위에 `line-soft` 1px 선을 긋는다.
 
 ## Do's and Don'ts
 

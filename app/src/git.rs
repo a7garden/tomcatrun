@@ -1,11 +1,15 @@
-// 읽기 전용 Git — 저장소를 바꾸지 않는 git 명령만 부른다 (status · cat-file · log · rev-parse).
+// 읽기 전용 Git — 저장소를 바꾸지 않는 git 명령만 부른다 (status · cat-file · log · rev-parse · blame · ls-files).
 //
-// fetch · pull · commit · checkout 처럼 저장소나 작업 폴더를 바꾸는 명령은 부르지 않는다. 화면은 명령을 복사해 줄 뿐이다.
+// 이 파일은 저장소나 작업 폴더를 바꾸는 명령을 부르지 않는다.
+// Commit · Pull · Revert 같은 쓰기는 gitwrite.rs 에만 있다 (2026.10.29~ · 「Allow write」를 켠 서버에서 사용자가 누를 때만).
+//
+// 목차 : 내 변경(status · diff) · 로그 · 받을 커밋(incoming · rev_diff) · 올라갈 커밋(outgoing) · Blame · 충돌 세 쪽
 //   GIT_OPTIONAL_LOCKS=0   git status 가 색인(.git/index)을 새로 고쳐 쓰지 않게 한다
 //   GIT_TERMINAL_PROMPT=0  계정을 묻느라 멈추지 않게 한다 (원격에 묻는 명령은 쓰지 않지만 혹시 모를 때)
 // 「업데이트 확인」은 원격에 묻지 않고, 마지막으로 fetch 해 둔 원격 추적 브랜치(@{u})와 견준다.
 // 파일 내용은 cat-file --filters 로 꺼낸다. 줄끝 변환(core.autocrlf)을 거친 내용이라 작업 파일과 줄끝이 어긋나지 않는다.
 
+use std::collections::HashMap;
 use std::fs;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -14,7 +18,7 @@ use std::time::{Instant, UNIX_EPOCH};
 
 use serde::Serialize;
 
-use crate::svn::{text_diff, Diff, Item};
+use crate::svn::{text_diff, Blame, BlameLine, ConflictInfo, Diff, Item};
 use crate::svnweb::Changed;
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -69,7 +73,7 @@ pub fn stamp(root: &Path) -> Option<u64> {
         .max()
 }
 
-fn toplevel(dir: &Path) -> Result<PathBuf, String> {
+pub fn toplevel(dir: &Path) -> Result<PathBuf, String> {
     let t = git_text(dir, &["rev-parse", "--show-toplevel"]).map_err(|e| format!("git 저장소가 아닙니다: {} ({e})", dir.display()))?;
     Ok(PathBuf::from(t.trim()))
 }
@@ -106,17 +110,18 @@ fn item(path: &str, code: &'static str, label: &'static str) -> Item {
 
 // XY 두 글자(X 스테이지 · Y 작업 파일)를 svn 쪽과 같은 표시로 바꾼다. 스테이지 여부는 커밋 도우미가 git add 로 맞추므로 가리지 않는다.
 fn code_of(xy: &str) -> (&'static str, &'static str) {
+    // 2026.10.29 : 라벨은 git status 의 영문 표준 용어 (DESIGN.md 「버전 관리 용어」)
     let has = |c: char| xy.contains(c);
     if has('D') {
-        ("D", "삭제")
+        ("D", "Deleted")
     } else if has('A') {
-        ("A", "추가")
+        ("A", "Added")
     } else if has('R') || has('C') {
-        ("M", "이름 바꿈")
+        ("M", "Renamed")
     } else if has('T') {
-        ("~", "종류 바뀜")
+        ("~", "Type changed")
     } else {
-        ("M", "수정")
+        ("M", "Modified")
     }
 }
 
@@ -176,10 +181,10 @@ pub fn status(dir: &Path) -> Result<Status, String> {
             'u' => {
                 let f: Vec<&str> = r.splitn(11, ' ').collect();
                 if f.len() == 11 {
-                    st.items.push(item(f[10], "C", "충돌"));
+                    st.items.push(item(f[10], "C", "Conflicted"));
                 }
             }
-            '?' => st.items.push(item(&r[2..], "?", "추가 안 됨")),
+            '?' => st.items.push(item(&r[2..], "?", "Untracked")),
             _ => {}
         }
     }
@@ -315,6 +320,25 @@ pub fn incoming(dir: &Path) -> Result<Incoming, String> {
     Ok(Incoming { branch: st.branch, head: st.head, upstream: st.upstream, fetched_ms, ahead: st.ahead, entries, overlap, more })
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Outgoing {
+    pub branch: String,
+    pub upstream: Option<String>,
+    pub entries: Vec<Commit>,
+}
+
+/// 올라갈 커밋 — @{u}..HEAD. Push 확인 창이 무엇이 나가는지 보여 준다 (원격에 묻지 않는다)
+pub fn outgoing(dir: &Path) -> Result<Outgoing, String> {
+    let st = status(dir)?;
+    let root = PathBuf::from(&st.root);
+    let mut entries = Vec::new();
+    if st.upstream.is_some() && st.ahead > 0 {
+        entries = parse_log(&git_text(&root, &["log", "-n200", LOG_FORMAT, "--name-status", "--no-renames", "@{u}..HEAD"])?);
+    }
+    Ok(Outgoing { branch: st.branch, upstream: st.upstream, entries })
+}
+
 /// 두 내용의 차이. 쪽마다 「local」(지금 파일) · 「head」(원격 추적 브랜치, 없으면 HEAD) · 「none」(빈 내용) · 커밋 표기 중 하나
 pub fn rev_diff(dir: &Path, rel: &str, old: &str, new: &str) -> Result<Diff, String> {
     let root = toplevel(dir)?;
@@ -329,6 +353,85 @@ pub fn rev_diff(dir: &Path, rel: &str, old: &str, new: &str) -> Result<Diff, Str
         }
     };
     Ok(text_diff(rel, &get(old)?, &get(new)?))
+}
+
+/* ---------- Blame ---------- */
+
+/// git blame --porcelain — 지금 작업 파일 기준이라 Commit 안 된 줄은 해시가 0 으로 온다 (rev 를 비운다)
+pub fn parse_blame(text: &str) -> Vec<BlameLine> {
+    let mut who: HashMap<String, (String, Option<i64>)> = HashMap::new();
+    let mut cur = String::new();
+    let mut out = Vec::new();
+    for l in text.split('\n') {
+        if let Some(s) = l.strip_prefix('\t') {
+            let (author, date_ms) = who.get(&cur).cloned().unwrap_or_default();
+            let rev = if cur.bytes().all(|b| b == b'0') { String::new() } else { cur.clone() };
+            out.push(BlameLine { rev, author, date_ms, s: s.trim_end_matches('\r').to_string() });
+            continue;
+        }
+        let first = l.split(' ').next().unwrap_or("");
+        if first.len() == 40 && first.bytes().all(|b| b.is_ascii_hexdigit()) {
+            cur = first.to_string();
+            who.entry(cur.clone()).or_default();
+        } else if let Some(a) = l.strip_prefix("author ") {
+            who.entry(cur.clone()).or_default().0 = a.to_string();
+        } else if let Some(t) = l.strip_prefix("author-time ") {
+            who.entry(cur.clone()).or_default().1 = t.trim().parse::<i64>().ok().map(|s| s * 1000);
+        }
+    }
+    out
+}
+
+pub fn blame(dir: &Path, rel: &str) -> Result<Blame, String> {
+    let root = toplevel(dir)?;
+    let full = root.join(rel);
+    if fs::metadata(&full).map(|m| m.len()).unwrap_or(0) > DIFF_MAX_BYTES {
+        return Ok(Blame { path: rel.to_string(), note: Some("파일이 커서(3MB 넘음) Blame 을 보이지 않습니다.".into()), lines: Vec::new() });
+    }
+    let lines = parse_blame(&git_text(&root, &["blame", "--porcelain", "--", rel])?);
+    Ok(Blame { path: rel.to_string(), note: None, lines })
+}
+
+/* ---------- 충돌 세 쪽 (색인의 stage 1 BASE · 2 mine · 3 theirs) ---------- */
+
+pub fn conflict_info(dir: &Path, rel: &str) -> Result<ConflictInfo, String> {
+    let root = toplevel(dir)?;
+    let text = git_text(&root, &["ls-files", "-u", "-z", "--", rel])?;
+    // 「모드 해시 단계\t경로」
+    let stages: Vec<u8> = text.split('\0').filter_map(|r| r.split('\t').next()?.split(' ').nth(2)?.parse().ok()).collect();
+    if stages.is_empty() {
+        return Err(format!("충돌 기록이 없습니다: {rel}"));
+    }
+    let has = |n: u8| stages.contains(&n).then(|| format!(":{n}"));
+    let d = git_dir(&root);
+    let mark = |f: &str| d.as_ref().map_or(false, |d| d.join(f).exists());
+    let operation = if mark("MERGE_HEAD") {
+        "merge"
+    } else if mark("REVERT_HEAD") {
+        "revert"
+    } else if mark("CHERRY_PICK_HEAD") {
+        "cherry-pick"
+    } else if mark("rebase-merge") || mark("rebase-apply") {
+        "rebase"
+    } else {
+        ""
+    };
+    // 두 쪽이 다 있어야 내용 충돌이다. 한쪽이 지웠으면(modify/delete) tree conflict 처럼 「고친 대로 해결」만 된다
+    let kinds = if stages.contains(&2) && stages.contains(&3) { vec!["text"] } else { vec!["tree"] };
+    Ok(ConflictInfo { path: rel.to_string(), kinds, operation: operation.into(), base: has(1), mine: has(2), theirs: has(3) })
+}
+
+pub fn conflict_diff(dir: &Path, rel: &str, side: &str) -> Result<Diff, String> {
+    let root = toplevel(dir)?;
+    let n = match side {
+        "mine" => ":2",
+        "theirs" => ":3",
+        x => return Err(format!("비교할 쪽이 올바르지 않습니다: {x}")),
+    };
+    // 공통 조상이 없으면(양쪽에서 새로 더함) 빈 내용과 견준다
+    let base = content(&root, ":1", rel).unwrap_or_default();
+    let other = content(&root, n, rel).ok_or("그쪽 내용이 색인에 없습니다 (지운 쪽입니다).")?;
+    Ok(text_diff(rel, &base, &other))
 }
 
 #[cfg(test)]
@@ -354,7 +457,21 @@ mod tests {
         assert_eq!(code_of(".M").0, "M");
         assert_eq!(code_of("A.").0, "A");
         assert_eq!(code_of(".D").0, "D");
-        assert_eq!(code_of("R.").1, "이름 바꿈");
+        assert_eq!(code_of("R.").1, "Renamed");
+    }
+
+    #[test]
+    fn blame_줄을_읽는다() {
+        let a = "a".repeat(40);
+        let z = "0".repeat(40);
+        let text = format!(
+            "{a} 1 1 2\nauthor 홍길동\nauthor-time 1700000000\nsummary x\nfilename a.jsp\n\t<c:if>\r\n{a} 2 2\n\t  <li/>\n{z} 3 3 1\nauthor Not Committed Yet\nauthor-time 1700000099\n\t</c:if>\n"
+        );
+        let v = parse_blame(&text);
+        assert_eq!(v.len(), 3);
+        assert_eq!((v[0].rev.as_str(), v[0].author.as_str(), v[0].date_ms, v[0].s.as_str()), (a.as_str(), "홍길동", Some(1_700_000_000_000), "<c:if>"));
+        assert_eq!((v[1].author.as_str(), v[1].s.as_str()), ("홍길동", "  <li/>"));
+        assert_eq!(v[2].rev, "");
     }
 
     #[test]
