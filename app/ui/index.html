@@ -561,6 +561,38 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .dlg.vcs-dlg li.pick > span.warn { color: var(--warn); font-weight: 600; }
 .dlg.vcs-dlg li.pick.all label span { color: var(--text); font-weight: 600; }
 .dlg.vcs-dlg li.pick > span:last-child { flex: none; }
+/* 넓은 확인 창 (Update · Pull) — 왼쪽 목록에서 줄을 고르면 오른쪽에 그 커밋 내용이 보인다 */
+.vcs-split { display: contents; }
+.dlg.vcs-dlg.wide { display: flex; flex-direction: column; max-width: 1040px; height: 720px; max-height: 100%; }
+.dlg.vcs-dlg.wide > * { flex: none; }
+.dlg.vcs-dlg.wide .vcs-split { display: grid; flex: 1; grid-template: minmax(0, 1fr) / minmax(0, 3fr) minmax(0, 2fr); min-height: 0; margin-top: 10px; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.dlg.vcs-dlg.wide .vcs-split ul { margin: 0; max-height: none; border-right: 1px solid var(--line); }
+.dlg.vcs-dlg.wide li.pick.all { padding: 5px 10px; border-top: 0; border-bottom: 1px solid var(--line); }
+.dlg.vcs-dlg.wide li.w-row { display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto; gap: 0 8px; align-items: center; padding: 5px 10px; border-top: 0; border-bottom: 1px solid var(--line-soft); cursor: pointer; }
+.dlg.vcs-dlg.wide li.w-row.plain { grid-template-columns: minmax(0, 1fr) auto; }
+.dlg.vcs-dlg.wide li.w-row:hover, .dlg.vcs-dlg.wide li.w-row.on { background: var(--panel-2); }
+.dlg.vcs-dlg.wide li.w-row.on { box-shadow: inset 2px 0 0 var(--text); }
+.w-row label { display: flex; }
+.w-row input { margin: 0; }
+.w-row .p { min-width: 0; }
+.w-row .p b { display: block; font: 600 12px var(--mono); color: var(--text); overflow-wrap: anywhere; }
+.w-row.plain .p b { font: 500 13px var(--ui); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.w-row .p .dir { color: var(--faint); font: 11.5px var(--mono); word-break: break-all; }
+.w-row .warn, .vcs-detail .warn { color: var(--warn); font: 600 11.5px var(--ui); white-space: nowrap; }
+.w-row .who { color: var(--muted); font-size: 11.5px; line-height: 1.45; text-align: right; white-space: nowrap; }
+.w-row .who b { color: var(--text); font-weight: 500; }
+.vcs-detail { min-width: 0; min-height: 0; overflow: auto; }
+.vcs-detail .path { padding: 8px 12px; border-bottom: 1px solid var(--line); font: 600 12px var(--mono); overflow-wrap: anywhere; }
+.vcs-detail .cc { padding: 10px 12px; border-bottom: 1px solid var(--line-soft); }
+.vcs-detail .cc:last-child { border-bottom: 0; }
+.vcs-detail .who { color: var(--muted); font-size: 12px; }
+.vcs-detail .who b { color: var(--text); font: 600 12px var(--mono); margin-right: 6px; }
+.vcs-detail .m { margin: 6px 0 0; color: var(--text); line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+.vcs-detail h3 { margin: 10px 0 4px; color: var(--muted); font-size: 12px; font-weight: 600; }
+.vcs-detail .cf { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 2px 0; font: 12px var(--mono); }
+.vcs-detail .cf > div:nth-child(2) { color: var(--muted); overflow-wrap: anywhere; }
+.vcs-detail .cf.on > div:nth-child(2) { color: var(--text); font-weight: 600; }
+.vcs-detail .none { margin-top: 10px; color: var(--faint); font-size: 12px; }
 /* 확인 창 안의 입력 칸 (2026-10-29~ · Rename · Switch · 속성 …) — 설정 「버전 관리」 칸과 같은 라벨 112px 두 칸 */
 .dlg.vcs-dlg .vcs-fields { display: grid; gap: 6px; margin: 4px 0 12px; }
 .dlg.vcs-dlg .vcs-fields label { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: 0 10px; align-items: center; }
@@ -943,12 +975,15 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 	</div>
 </div>
 <div class="scrim" id="vcsScrim" hidden>
-	<div class="dlg vcs-dlg" role="alertdialog" aria-modal="true" aria-labelledby="vcsDlgTitle" aria-describedby="vcsDlgText">
+	<div class="dlg vcs-dlg" id="vcsDlg" role="alertdialog" aria-modal="true" aria-labelledby="vcsDlgTitle" aria-describedby="vcsDlgText">
 		<h2 id="vcsDlgTitle"></h2>
 		<p id="vcsDlgText"></p>
 		<div class="vcs-fields" id="vcsDlgFields" hidden></div>
 		<p class="vcs-err" id="vcsDlgErr" hidden></p>
-		<ul id="vcsDlgList"></ul>
+		<div class="vcs-split">
+			<ul id="vcsDlgList"></ul>
+			<div class="vcs-detail" id="vcsDlgDetail" hidden></div>
+		</div>
 		<div class="acts">
 			<button class="btn" id="vcsDlgCancel">취소</button>
 			<button class="btn primary" id="vcsDlgOk"></button>
@@ -3617,9 +3652,18 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 		closeMenu();
 		$("vcsDlgTitle").textContent = o.title;
 		$("vcsDlgText").innerHTML = o.html || "";
-		var items = o.items || [], list = $("vcsDlgList"), ok = $("vcsDlgOk");
+		var items = o.items || [], list = $("vcsDlgList"), ok = $("vcsDlgOk"), detail = $("vcsDlgDetail");
+		// wide : 넓은 두 칸 창. row(항목) 가 줄 내용을, detail(항목) 이 오른쪽 내용을 돌려준다 (둘 다 이미 esc 한 것). 줄을 눌러도 고른 칸은 바뀌지 않는다
+		$("vcsDlg").classList.toggle("wide", !!o.wide);
+		detail.hidden = !o.wide;
+		detail.innerHTML = "";
 		// pick : 항목마다 고르는 칸을 둔다 (처음엔 다 골라 둔다). o.ok 는 고른 수를 받아 단추 글자를 돌려준다 — 하나도 안 고르면 단추를 잠근다.
-		if (o.pick) {
+		if (o.wide) {
+			list.innerHTML = (o.pick && items.length > 1 ? '<li class="pick all"><label><input type="checkbox" data-all checked><span>모두</span></label><span>' + items.length + "개</span></li>" : "") +
+				items.map(function (x, i) {
+					return '<li class="w-row' + (o.pick ? "" : " plain") + '" data-r="' + i + '">' + (o.pick ? '<label><input type="checkbox" data-i="' + i + '" checked></label>' : "") + o.row(x) + "</li>";
+				}).join("");
+		} else if (o.pick) {
 			list.innerHTML = (items.length > 1 ? '<li class="pick all"><label><input type="checkbox" data-all checked><span>모두</span></label><span>' + items.length + "개</span></li>" : "") +
 				// 경로는 Changes 처럼 이름을 먼저 굵게, 폴더는 아래에 흐리게 — 긴 경로가 이름 가운데서 끊기지 않게. x[2] 가 참이면 설명을 경고색으로
 				items.map(function (x, i) {
@@ -3663,9 +3707,23 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 		// 여러 개 고르기 — Shift+클릭은 마지막으로 누른 칸부터 그 칸까지 같은 값으로, Shift+↑↓ 는 옮겨 가며 지나온 칸을 같은 값으로 칠한다.
 		// 칸은 Tab 한 자리만 차지하고(마지막으로 머문 칸) 그 안에서는 ↑↓ 로 옮긴다 — 파일이 수십 개면 Tab 으로 단추까지 가기 어렵다.
 		var boxes = [].slice.call(list.querySelectorAll("[data-i]")), last = null;
-		var rove = function (c) { boxes.forEach(function (b) { b.tabIndex = b === c ? 0 : -1; }); };
-		if (boxes.length) rove(boxes[0]);
+		var rows = [].slice.call(list.querySelectorAll("[data-r]"));
+		var nav = boxes.length ? boxes : rows;   // 고르는 칸이 없는 넓은 창은 줄 자체가 칸 노릇을 한다
+		var rove = function (c) { nav.forEach(function (b) { b.tabIndex = b === c ? 0 : -1; }); };
+		if (nav.length) rove(nav[0]);
+		var showRow = function (i) {
+			if (!o.wide) return;
+			rows.forEach(function (r, k) { r.classList.toggle("on", k === i); });
+			detail.innerHTML = o.detail(items[i]);
+			detail.scrollTop = 0;
+		};
 		list.onclick = function (e) {
+			var row = e.target.closest("[data-r]");
+			if (row) {
+				var r = rows.indexOf(row);
+				showRow(r);
+				if (!e.target.closest("label")) { rove(nav[r]); nav[r].focus(); }
+			}
 			var i = boxes.indexOf(e.target);
 			if (i < 0) return;
 			if (e.shiftKey && last !== null) {
@@ -3676,15 +3734,17 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 			rove(e.target);
 		};
 		list.onkeydown = function (e) {
-			var i = boxes.indexOf(document.activeElement);
+			var i = nav.indexOf(document.activeElement);
 			if (i < 0 || (e.key !== "ArrowDown" && e.key !== "ArrowUp")) return;
 			e.preventDefault();
-			var j = Math.max(0, Math.min(boxes.length - 1, i + (e.key === "ArrowDown" ? 1 : -1)));
-			if (e.shiftKey) { boxes[j].checked = boxes[i].checked; sync(); }
+			var j = Math.max(0, Math.min(nav.length - 1, i + (e.key === "ArrowDown" ? 1 : -1)));
+			if (e.shiftKey && boxes.length) { boxes[j].checked = boxes[i].checked; sync(); }
 			last = j;
-			rove(boxes[j]);
-			boxes[j].focus();
+			rove(nav[j]);
+			nav[j].focus();
+			showRow(j);
 		};
+		if (rows.length) showRow(0);
 		ok.className = "btn " + (o.danger ? "danger" : "primary");
 		ok.disabled = false;
 		sync();
@@ -3706,7 +3766,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 		if (e.key === "Escape") { vcsHide(); e.stopPropagation(); }
 		if (e.key === "Tab") {   // 확인 창 밖으로 초점이 새지 않게 창 안의 고르는 칸 · 단추 사이만 돈다
 			e.preventDefault();
-			var f = [].filter.call(this.querySelectorAll("input, textarea, button"), function (x) { return !x.disabled && x.offsetParent && x.tabIndex >= 0; });
+			var f = [].filter.call(this.querySelectorAll("input, textarea, button, [data-r]"), function (x) { return !x.disabled && x.offsetParent && x.tabIndex >= 0; });
 			var i = f.indexOf(document.activeElement);
 			f[(i + (e.shiftKey ? -1 : 1) + f.length) % f.length].focus();
 		}
@@ -3798,29 +3858,59 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 			e.paths.forEach(function (c) {
 				if (!c.inside || (c.dir && c.action === "M")) return;
 				var f = by[c.path];
-				if (!f) { f = by[c.path] = { path: c.path, dir: c.dir, action: c.action, revs: [] }; out.push(f); }
-				f.revs.push(e.rev);
+				if (!f) { f = by[c.path] = { path: c.path, dir: c.dir, action: c.action, commits: [] }; out.push(f); }
+				f.commits.push(e);
 			});
 		});
 		return out.sort(function (a, b) { return a.path < b.path ? -1 : a.path > b.path ? 1 : 0; });
+	}
+	function authorName(e) { return e.author || "(이름 없음)"; }
+	// 받을 커밋을 올린 사람들 — 많으면 앞의 다섯만 이름을 적는다
+	function incomingPeople(inc) {
+		var seen = {}, names = [];
+		inc.entries.forEach(function (e) {
+			var a = authorName(e);
+			if (!seen[a]) { seen[a] = true; names.push(a); }
+		});
+		return "올린 사람 " + names.length + "명 (" + esc(names.slice(0, 5).join(", ")) + (names.length > 5 ? " 외" : "") + ")";
+	}
+	// 넓은 확인 창의 오른쪽 — 커밋 하나의 번호 · 올린 사람 · 일시 · 메시지 전문 · 앞으로 받을 파일
+	function incomingCommitHtml(e, mine, onPath) {
+		var files = e.paths.filter(function (c) { return c.inside; });
+		return '<div class="cc"><div class="who"><b>' + esc(commitRef(e).name) + "</b>" + esc(authorName(e)) + (e.dateMs ? " · " + fmtDate(e.dateMs) : "") + "</div>" +
+			'<div class="m">' + esc(e.msg || "(메시지 없음)") + "</div>" +
+			(files.length ? "<h3>받을 파일 " + files.length + "개</h3>" + files.map(function (c) {
+				return '<div class="cf' + (c.path === onPath ? " on" : "") + '"><span class="code ' + esc(c.action) + '">' + esc(c.action) + "</span><div>" + esc(c.path) + (c.dir ? "/" : "") + "</div>" +
+					(mine[c.path] ? '<div class="warn">겹침</div>' : "<div></div>") + "</div>";
+			}).join("") : '<div class="none">받을 파일 목록이 없습니다. 합치기 커밋이면 바뀐 파일이 따로 나오지 않습니다.</div>') + "</div>";
 	}
 	function vcsUpdateAsk() {
 		var git = isGit(), name = git ? "Pull" : "Update";
 		var inc = R().incoming;
 		var over = inc ? inc.overlap : [];
+		var pullNote = "명령: " + esc(updateCmd()) + (/--ff-only\b/.test(updateCmd()) ? " · 갈라졌으면 합치지 않고 멈춥니다." : " · 갈라졌으면 이 명령대로 합칩니다.");
+		var mine = {};
+		over.forEach(function (p) { mine[p] = true; });
 		// SVN 은 파일마다 골라 받는다 (2026.10.29~). 다 고르면 예전처럼 작업복사본 전체 svn update — 200개 넘게 밀린 커밋 · 폴더 속성까지 받는다.
 		var files = !git && inc ? incomingFiles(inc) : [];
 		if (files.length) {
-			var mine = {}, ACT = { A: "Added", M: "Modified", D: "Deleted", R: "Replaced" };
-			over.forEach(function (p) { mine[p] = true; });
 			vcsConfirm({
 				title: srvName() + " · " + name,
-				html: "받을 커밋 " + inc.entries.length + (inc.more ? "개 넘음" : "개") + " · 파일 " + files.length + "개. 받을 파일을 고르세요.\n" +
+				html: "받을 커밋 " + inc.entries.length + (inc.more ? "개 넘음" : "개") + " · 파일 " + files.length + "개 · " + incomingPeople(inc) + "\n" +
 					"다 고르면 svn update 로 작업복사본 전체를 저장소 최신으로 받고, 일부만 고르면 고른 파일만 최신으로 받습니다. Shift+클릭 · Shift+↑↓ 로 여러 개를 한 번에 고르거나 뺍니다." +
 					(over.length ? '\n<span class="flag warn">「내 변경과 겹침」 파일은 받으면 합쳐지거나 Conflicted 가 됩니다.</span>' : ""),
-				items: files.map(function (f) {
-					return [f.path + (f.dir ? "/" : ""), (mine[f.path] ? "내 변경과 겹침 · " : "") + (ACT[f.action] || f.action) + " · r" + f.revs.join(", r"), mine[f.path]];
-				}),
+				items: files,
+				wide: true,
+				row: function (f) {
+					var d = f.dir ? "/" : "", pp = splitPath(f.path), c = f.commits[0], n = f.commits.length - 1;
+					return '<span class="code ' + esc(f.action) + '">' + esc(f.action) + "</span>" +
+						'<div class="p" title="' + esc(f.path + d) + '"><b>' + esc(pp[1] + d) + "</b>" + (pp[0] ? '<div class="dir">' + esc(pp[0]) + "</div>" : "") +
+						(mine[f.path] ? '<div class="warn">내 변경과 겹침</div>' : "") + "</div>" +
+						'<div class="who"><b>' + esc(authorName(c)) + "</b> · r" + esc(c.rev) + (n ? " 외 " + n + "건" : "") + "<br>" + fmtDate(c.dateMs) + "</div>";
+				},
+				detail: function (f) {
+					return '<div class="path">' + esc(f.path + (f.dir ? "/" : "")) + "</div>" + f.commits.map(function (e) { return incomingCommitHtml(e, mine, f.path); }).join("");
+				},
 				pick: true,
 				ok: function (n) { return n === files.length ? "Update (전체)" : "고른 " + n + "개 받기"; },
 				run: function (picked) {
@@ -3830,10 +3920,30 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 			});
 			return;
 		}
+		// Git 은 파일을 골라 받지 않는다 — 고르는 칸 없이 받을 커밋만 보인다
+		if (git && inc && inc.entries.length) {
+			vcsConfirm({
+				title: srvName() + " · " + name,
+				html: "받을 커밋 " + inc.entries.length + (inc.more ? "개 넘음" : "개") + " · " + incomingPeople(inc) + "\n" + pullNote +
+					(over.length ? '\n<span class="flag warn">「겹침」 커밋의 파일은 내가 고친 파일과 겹쳐 합쳐지거나 Conflicted 가 됩니다.</span>' : ""),
+				items: inc.entries,
+				wide: true,
+				row: function (e) {
+					var title = (e.msg || "(메시지 없음)").split("\n")[0];
+					return '<div class="p" title="' + esc(title) + '"><b>' + esc(title) + '</b><div class="dir">' + esc(e.short) + "</div>" +
+						(e.paths.some(function (c) { return mine[c.path]; }) ? '<div class="warn">겹침</div>' : "") + "</div>" +
+						'<div class="who"><b>' + esc(authorName(e)) + "</b><br>" + fmtDate(e.dateMs) + "</div>";
+				},
+				detail: function (e) { return incomingCommitHtml(e, mine); },
+				ok: name,
+				run: function () { vcsRun(name + " 하는 중...", "vcs_update", vcsArgs(), updated); }
+			});
+			return;
+		}
 		vcsConfirm({
 			title: srvName() + " · " + name,
 			html: (inc ? (inc.entries.length ? "받을 커밋 " + inc.entries.length + (inc.more ? "개 넘음" : "개") + "." : "받을 커밋이 없습니다.") + " " : "") +
-				(git ? "명령: " + esc(updateCmd()) + (/--ff-only\b/.test(updateCmd()) ? " · 갈라졌으면 합치지 않고 멈춥니다." : " · 갈라졌으면 이 명령대로 합칩니다.") : "svn update · 작업복사본 전체를 저장소 최신으로 받습니다.") +
+				(git ? pullNote : "svn update · 작업복사본 전체를 저장소 최신으로 받습니다.") +
 				(over.length ? '\n<span class="flag warn">아래 파일은 내가 고친 파일과 겹쳐 합쳐지거나 Conflicted 가 됩니다.</span>' : ""),
 			items: over.map(function (p) { return [p, "내가 고친 파일"]; }),
 			ok: name,

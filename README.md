@@ -158,7 +158,7 @@ HotswapAgent 의 원문 줄(`Reloading classes …` · `Registering Spring bean 
 | 동작 | SVN | Git |
 | - | - | - |
 | Commit | 고른 파일만 (`--depth empty` · 경로는 `--targets` 파일로). Unversioned 는 먼저 `svn add`, Missing 은 `svn delete`. 지운 폴더가 끼면 그 폴더째 `--depth infinity` 로 올린다 | `git add -A` 뒤 `git commit -- 고른 파일` |
-| Update · Pull | `svn update` (겹치면 Conflicted 로 남는다) | 설정의 Pull 명령 (기본 `git pull --ff-only`) |
+| Update · Pull | `svn update` (겹치면 Conflicted 로 남는다). 넓은 확인 창에서 받을 파일을 고른다. 줄마다 올린 사람 · 리비전 · 일시가 보이고, 줄을 누르면 오른쪽에 그 파일의 커밋 메시지 전문과 받을 파일이 보인다 | 설정의 Pull 명령 (기본 `git pull --ff-only`). 넓은 확인 창에 받을 커밋과 올린 사람 · 일시가 보이고, 줄을 누르면 오른쪽에 메시지 전문과 받을 파일이 보인다 |
 | Fetch | 없음 | `git fetch --prune`. 원격 추적 브랜치만 새로 고치고 작업 파일은 그대로라 확인 창 없이 돈다 |
 | Push | 없음 (Commit 이 곧 올리기) | 지금 브랜치를 원격 추적 브랜치(`@{u}`)에만 올린다. 확인 창에 올라갈 커밋을 보인다. 원격 추적 브랜치가 없는 새 브랜치는 올리지 않는다 (`git push -u` 는 직접). `--force` 는 쓰지 않는다 |
 | Revert | BASE 로 되돌린다. Added 는 Unversioned 로 돌아가고 파일은 남는다 | HEAD 로 되돌린다. Added 는 색인에서만 빠진다 |
