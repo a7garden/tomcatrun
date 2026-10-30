@@ -418,7 +418,8 @@ pub fn conflict_info(dir: &Path, rel: &str) -> Result<ConflictInfo, String> {
     };
     // 두 쪽이 다 있어야 내용 충돌이다. 한쪽이 지웠으면(modify/delete) tree conflict 처럼 「고친 대로 해결」만 된다
     let kinds = if stages.contains(&2) && stages.contains(&3) { vec!["text"] } else { vec!["tree"] };
-    Ok(ConflictInfo { path: rel.to_string(), kinds, operation: operation.into(), base: has(1), mine: has(2), theirs: has(3) })
+    let choices = if kinds == ["text"] { crate::svn::text_choices() } else { crate::svn::mark_only() };
+    Ok(ConflictInfo { path: rel.to_string(), kinds, operation: operation.into(), base: has(1), mine: has(2), theirs: has(3), choices, ..Default::default() })
 }
 
 pub fn conflict_diff(dir: &Path, rel: &str, side: &str) -> Result<Diff, String> {

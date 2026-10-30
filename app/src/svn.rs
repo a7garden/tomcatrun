@@ -60,6 +60,14 @@ pub struct Status {
     pub items: Vec<Item>,
     pub locks: Vec<String>, // 작업복사본 잠금이 걸린 폴더 (「.」 은 맨 위) — 남아 있으면 svn 쓰기가 E155004 로 막힌다
     pub other_svn: Vec<String>, // 잠금이 있을 때 켜져 있던 다른 SVN 프로그램 (Eclipse 등) — main.rs 가 채운다
+    pub my_locks: Vec<RepoLock>, // 내가 svn lock 으로 잡은 파일 — 고치지 않은 파일은 Changes 에 없어 따로 준다 (Unlock 메뉴)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoLock {
+    pub path: String,
+    pub comment: String,
 }
 
 #[derive(Serialize)]
@@ -276,6 +284,7 @@ pub fn status(wc: &Path) -> Result<Status, String> {
         )
         .unwrap_or_default();
     let locks = locks_of(&c);
+    let my_locks = repo_locks(&c);
     drop(c);
 
     let mut items: HashMap<String, Item> = HashMap::new();
@@ -385,7 +394,7 @@ pub fn status(wc: &Path) -> Result<Status, String> {
         let kb = ORDER.iter().position(|c| *c == b.code).unwrap_or(9);
         ka.cmp(&kb).then_with(|| a.path.cmp(&b.path))
     });
-    Ok(Status { url, rev_min, rev_max, nodes: nodes.len(), hashed, took_ms: began.elapsed().as_millis() as u64, items: list, locks, other_svn: Vec::new() })
+    Ok(Status { url, rev_min, rev_max, nodes: nodes.len(), hashed, took_ms: began.elapsed().as_millis() as u64, items: list, locks, other_svn: Vec::new(), my_locks })
 }
 
 // UTF-8 이 아니면 MS949 로 읽는다 (로그와 같은 규칙). svn.exe 의 출력(콘솔 코드페이지)도 같은 규칙으로 읽는다.
@@ -509,6 +518,30 @@ pub fn wc_info(wc: &Path) -> Result<WcInfo, String> {
     .map_err(|e| format!("작업복사본 정보를 읽지 못했습니다: {e}"))
 }
 
+/// 경로마다 받은 리비전 (BASE 층)
+pub struct BaseRev {
+    pub rev: i64,
+    pub full: bool, // 끝까지(infinity) 받은 폴더 — 그 리비전 앞의 변경은 아래 경로까지 다 받았다
+}
+
+/// 파일마다 골라 Update 하면 작업복사본이 섞인 리비전이 된다. 받을 커밋은 작업복사본 최고 리비전이 아니라 이것과 견준다.
+/// not-present(지운 것을 올렸거나 받은 자리)는 넣지 않는다 — 리비전이 0 으로 남은 것이 있어(mhms_new 에서 확인) 내가 올린 삭제가 늘 「받을 것」으로 남는다.
+/// 없는 경로는 부르는 쪽이 위 폴더 · 나중 삭제로 따진다.
+/// --parents 가 만든 폴더는 depth empty 라 full 이 아니다 — 그 폴더의 리비전으로 아래 새 파일을 받았다고 세면 안 된다.
+pub fn base_revs(wc: &Path) -> Result<HashMap<String, BaseRev>, String> {
+    let c = open(wc)?;
+    let read = || -> rusqlite::Result<HashMap<String, BaseRev>> {
+        let mut st = c.prepare("SELECT local_relpath, revision, kind, depth FROM NODES WHERE op_depth = 0 AND presence IN ('normal', 'incomplete') AND revision IS NOT NULL")?;
+        let rows = st.query_map([], |r| {
+            let kind: String = r.get(2)?;
+            let depth: Option<String> = r.get(3)?;
+            Ok((r.get::<_, String>(0)?, BaseRev { rev: r.get(1)?, full: kind == "dir" && depth.as_deref().map_or(true, |d| d == "infinity") }))
+        })?;
+        rows.collect()
+    };
+    read().map_err(|e| format!("wc.db 를 읽지 못했습니다: {e}"))
+}
+
 /// 기준본 내용 (마지막으로 받은 것) — 버전 관리 밖이면 None
 pub fn base_content(wc: &Path, rel: &str) -> Option<Vec<u8>> {
     let c = open(wc).ok()?;
@@ -544,6 +577,24 @@ fn locks_of(c: &Connection) -> Vec<String> {
     v
 }
 
+/// 이 작업복사본이 쥔 저장소 lock (LOCK 표) — 저장소 경로를 작업복사본 기준으로 옮긴다. 다른 저장소 · 밖의 경로는 뺀다
+fn repo_locks(c: &Connection) -> Vec<RepoLock> {
+    let root: Option<(i64, String)> = c
+        .query_row("SELECT repos_id, repos_path FROM NODES WHERE local_relpath = '' AND op_depth = 0", [], |r| Ok((r.get(0)?, r.get(1)?)))
+        .ok();
+    let Some((rid, base)) = root else { return Vec::new() };
+    let rows: Vec<(String, Option<String>)> = c
+        .prepare("SELECT repos_relpath, lock_comment FROM LOCK WHERE repos_id = ?1 ORDER BY repos_relpath")
+        .and_then(|mut s| s.query_map([rid], |r| Ok((r.get(0)?, r.get(1)?)))?.collect())
+        .unwrap_or_default();
+    rows.into_iter()
+        .filter_map(|(p, cm)| {
+            let rel = if base.is_empty() { p } else { p.strip_prefix(&format!("{base}/"))?.to_string() };
+            Some(RepoLock { path: rel, comment: cm.unwrap_or_default() })
+        })
+        .collect()
+}
+
 /* ---------- Blame · 충돌 (SVN · Git 이 같은 꼴로 화면에 준다) ---------- */
 
 #[derive(Serialize)]
@@ -572,6 +623,73 @@ pub struct ConflictInfo {
     pub base: Option<String>,     // 세 쪽 내용이 있는 곳 — SVN 은 작업복사본 기준 파일 경로 (.rOLD · .mine · .rNEW)
     pub mine: Option<String>,
     pub theirs: Option<String>,
+    pub local: String,            // tree conflict 의 까닭 — 내 쪽 (edited · deleted · unversioned · added …)
+    pub incoming: String,         //   들어온 쪽 (edited · deleted · added · replaced)
+    pub choices: Vec<Choice>,     // 이 충돌에 맞는 풀이 — 화면은 이것만 단추로 그리고, vcs_resolve 는 이 밖의 것을 거절한다
+}
+
+/// 풀이 하나 — id 는 vcs_resolve 의 accept
+#[derive(Serialize, Clone)]
+pub struct Choice {
+    pub id: &'static str,    // mine · theirs · working · incoming
+    pub label: &'static str,
+    pub note: &'static str,  // 확인 창에 보일 「누르면 무엇이 되는가」
+    pub primary: bool,
+}
+
+const fn choice(id: &'static str, label: &'static str, note: &'static str, primary: bool) -> Choice {
+    Choice { id, label, note, primary }
+}
+
+/// 내용 · 속성 충돌 — 세 쪽 중 하나를 고르거나 손으로 고친 대로
+pub fn text_choices() -> Vec<Choice> {
+    vec![
+        choice("mine", "Use mine", "내 것(mine)으로 덮고 해결로 표시합니다. 저장소에서 들어온 변경은 이 파일에서 버려집니다.", false),
+        choice("theirs", "Use theirs", "저장소 것(theirs)으로 덮고 해결로 표시합니다. 내가 고친 내용은 이 파일에서 버려집니다.", false),
+        choice("working", "Mark as resolved", "지금 파일 그대로 해결로 표시합니다. 파일 안의 충돌 표시(<<<<<<< · ======= · >>>>>>>)를 다 정리했는지 먼저 보세요.", true),
+    ]
+}
+
+/// 고친 대로 해결만 되는 것 (merge 중 tree conflict · Git 의 한쪽 삭제)
+pub fn mark_only() -> Vec<Choice> {
+    vec![choice("working", "Mark as resolved", "지금 작업복사본 그대로 해결로 표시합니다. 파일 · 폴더를 원하는 모양으로 맞춘 뒤 누르세요.", true)]
+}
+
+/// SVN tree conflict 의 풀이.
+/// update · switch 가 남긴 tree conflict 은 BASE 가 이미 들어온 판이고 내 쪽이 그 위에 얹혀 있다 —
+/// 그래서 「들어온 것 받기」는 해결 표시 뒤 revert --depth infinity, 「내 것 유지」는 해결 표시만이다.
+/// merge 는 BASE 가 들어온 판이 아니라 revert 하면 merge 로 들어온 변경까지 사라지므로 해결 표시만 둔다.
+fn tree_choices(op: &str, local: &str, incoming: &str) -> Vec<Choice> {
+    if op != "update" && op != "switch" {
+        return mark_only();
+    }
+    let (take, keep): (&'static str, &'static str) = match (local, incoming) {
+        ("unversioned" | "obstructed", "added") => (
+            "저장소에서 들어온 판을 살립니다. 같은 이름의 내 파일이 저장소 판과 다르면 「이름.mine」으로 옮겨 둔 뒤 덮습니다.",
+            "내 쪽을 그대로 둡니다. 들어온 것은 「지움」으로 남아 다음 Commit 이 저장소에서 지웁니다.",
+        ),
+        ("added", "added") => (
+            "저장소에서 들어온 판을 살리고 내가 추가한 것을 버립니다. 내용이 다른 내 파일은 「이름.mine」으로 옮겨 둡니다.",
+            "내가 추가한 것을 둡니다. 다음 Commit 이 저장소 것을 내 것으로 바꿔 넣습니다.",
+        ),
+        (_, "deleted") => (
+            "저장소의 삭제를 받습니다. 내 파일은 버전 관리에서 빠져 Unversioned 로 남습니다. 필요 없으면 지우세요.",
+            "내 것을 둡니다. 다음 Commit 이 저장소에 다시 추가합니다.",
+        ),
+        ("deleted" | "missing", _) => (
+            "들어온 변경을 받아 파일 · 폴더를 되살립니다.",
+            "내 삭제를 둡니다. 다음 Commit 이 저장소에서 지웁니다.",
+        ),
+        // 옮김이 낀 것은 svn 이 옮긴 곳까지 따라가야 해 여기서 고르지 않는다
+        ("moved-away" | "moved-here", _) => return mark_only(),
+        _ => (
+            "저장소에서 들어온 판을 살리고 이 경로의 내 변경을 버립니다. 내용이 다른 내 파일은 「이름.mine」으로 옮겨 둡니다.",
+            "지금 작업복사본 그대로 해결로 표시합니다.",
+        ),
+    };
+    // 들어온 것이 추가인데 내 쪽을 두면 저장소에서 지워지므로 받는 쪽을 앞세운다
+    let take_first = incoming == "added" || matches!(local, "deleted" | "missing");
+    vec![choice("incoming", "들어온 것 받기", take, take_first), choice("working", "내 것 유지", keep, !take_first)]
 }
 
 fn atom(s: &Skel) -> Option<String> {
@@ -605,7 +723,13 @@ pub fn parse_conflict(rel: &str, blob: &[u8]) -> ConflictInfo {
                 out.theirs = m.get(2).and_then(atom);
             }
         }
+        // 「(tree () 내쪽 들어온쪽)」 — 화면이 무엇과 무엇이 부딪쳤는지 풀어 보인다
+        if kind == "tree" {
+            out.local = parts.get(2).and_then(atom).unwrap_or_default();
+            out.incoming = parts.get(3).and_then(atom).unwrap_or_default();
+        }
     }
+    out.choices = if out.kinds.contains(&"tree") { tree_choices(&out.operation, &out.local, &out.incoming) } else { text_choices() };
     out
 }
 
@@ -615,6 +739,47 @@ pub fn conflict_info(wc: &Path, rel: &str) -> Result<ConflictInfo, String> {
         .query_row("SELECT conflict_data FROM ACTUAL_NODE WHERE local_relpath = ?1", [rel], |r| r.get(0))
         .map_err(|_| format!("충돌 기록이 없습니다: {rel}"))?;
     Ok(parse_conflict(rel, &blob.unwrap_or_default()))
+}
+
+/// 「들어온 것 받기」(revert --depth infinity)가 덮어쓸 내 파일을 「이름.mine」으로 옮겨 둔다 — 디스크에 있고 BASE 와 내용이 다른 것.
+/// revert 는 BASE 로 덮으면서 내 내용을 남기지 않으므로, 옮기지 않으면 버전 관리 밖에 있던 내 파일이 흔적 없이 사라진다.
+/// 줄끝 변환(svn:eol-style)이 걸린 파일은 같은 내용이어도 다르게 보이는데, 그때는 옮겨 두는 쪽으로 틀린다.
+/// 돌려주는 것 : 옮긴 뒤의 경로 (작업복사본 기준)
+pub fn backup_overwrites(wc: &Path, rel: &str) -> Result<Vec<String>, String> {
+    let mut moved = Vec::new();
+    for p in overwrites(wc, rel)? {
+        let from = wc.join(&p);
+        let mut to = format!("{p}.mine");
+        let mut n = 2;
+        while wc.join(&to).exists() {
+            to = format!("{p}.mine{n}");
+            n += 1;
+        }
+        fs::rename(&from, wc.join(&to)).map_err(|e| format!("{p} 를 {to} 로 옮기지 못했습니다: {e}"))?;
+        moved.push(to);
+    }
+    Ok(moved)
+}
+
+fn overwrites(wc: &Path, rel: &str) -> Result<Vec<String>, String> {
+    let c = open(wc)?;
+    let mut s = c
+        .prepare("SELECT local_relpath, checksum FROM NODES WHERE op_depth = 0 AND presence = 'normal' AND kind = 'file' AND (local_relpath = ?1 OR local_relpath LIKE ?2 ESCAPE '\\')")
+        .map_err(|e| e.to_string())?;
+    let like = format!("{}/%", rel.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"));
+    let rows: Vec<(String, Option<String>)> = s
+        .query_map([rel, like.as_str()], |r| Ok((r.get(0)?, r.get(1)?)))
+        .map_err(|e| e.to_string())?
+        .filter_map(Result::ok)
+        .collect();
+    let mut out = Vec::new();
+    for (p, ck) in rows {
+        let Ok(mine) = fs::read(wc.join(&p)) else { continue };
+        if ck.as_deref().and_then(|ck| pristine(wc, ck)).map_or(true, |base| base != mine) {
+            out.push(p);
+        }
+    }
+    Ok(out)
 }
 
 /// BASE(.rOLD) 와 한쪽(mine · theirs)의 차이
@@ -669,7 +834,18 @@ mod tests {
         assert_eq!(c.kinds, ["text"]);
         assert_eq!((c.base.as_deref(), c.mine.as_deref(), c.theirs.as_deref()), (Some("a/list.jsp.r3759"), Some("a/list.jsp.mine"), Some("a/list.jsp.r3760")));
         let t = parse_conflict("x", b"((merge ()) ((tree () edited deleted)))");
-        assert_eq!((t.kinds.as_slice(), t.base), (&["tree"][..], None));
+        assert_eq!((t.kinds.as_slice(), t.base.as_deref()), (&["tree"][..], None));
+        assert_eq!((t.local.as_str(), t.incoming.as_str()), ("edited", "deleted"));
+        // 버전 관리 밖 폴더가 있던 자리에 Update 로 같은 이름이 들어온 경우 (mhms_new 의 MD)
+        let d = parse_conflict("MD", b"((update (() (subversion http://h/svn/r () 16 2025/mhms_new/MD 4 3697 dir))) ((tree () unversioned added)))");
+        assert_eq!((d.operation.as_str(), d.kinds.as_slice(), d.local.as_str(), d.incoming.as_str()), ("update", &["tree"][..], "unversioned", "added"));
+        let ids = |c: &ConflictInfo| c.choices.iter().map(|x| (x.id, x.primary)).collect::<Vec<_>>();
+        assert_eq!(ids(&d), [("incoming", true), ("working", false)]);
+        assert_eq!(ids(&c), [("mine", false), ("theirs", false), ("working", true)]);
+        // merge 의 tree conflict 은 revert 하면 merge 로 들어온 변경까지 사라지므로 해결 표시만
+        assert_eq!(ids(&t), [("working", true)]);
+        let e = parse_conflict("x", b"((update ()) ((tree () edited deleted)))");
+        assert_eq!(ids(&e), [("incoming", false), ("working", true)]);
     }
 
     // 실제 작업복사본을 읽기만 한다 — 환경 변수로 폴더를 줄 때만 (여럿이면 ; 로): TOMCATRUN_TEST_SVN_WC=<폴더> cargo test

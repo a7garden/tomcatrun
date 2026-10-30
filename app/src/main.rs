@@ -39,7 +39,7 @@ mod svnget;
 mod svnweb;
 mod update;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpStream};
@@ -4732,25 +4732,65 @@ async fn svn_logout(app: AppHandle, srv: usize) -> Result<(), String> {
 #[serde(rename_all = "camelCase")]
 struct Incoming {
     head: i64,
-    base: i64,             // 작업복사본에서 가장 높은 리비전
+    base: i64,             // 작업복사본에서 가장 낮은 리비전 — 여기 뒤부터 묻는다
     entries: Vec<svnweb::LogEntry>,
     overlap: Vec<String>,  // 들어올 변경과 내가 고친 파일이 겹치는 경로 — 업데이트하면 충돌할 수 있다
-    more: bool,            // 너무 많아 앞의 200개만 가져왔다
+    more: bool,            // 너무 많아 최신 INCOMING_MAX 개만 가져왔다
 }
 
-// 업데이트 확인 — 저장소 최신 리비전과, 작업복사본 다음부터 최신까지의 커밋 (svn log · 읽기 전용)
+// 경로 하나의 r 변경을 이미 받았는가. 노드가 없으면 끝까지 받은 가장 가까운 위 폴더로 본다 — 그 폴더가 r 뒤면 그 뒤에 지워진 것이다.
+// 나중 커밋에서 지워진 경로(gone)인데 노드가 없으면 받을 것이 없다 — 남겨 두면 받아도 그대로라 목록에서 빠지지 않는다.
+fn svn_received(revs: &HashMap<String, svn::BaseRev>, gone: &HashMap<&str, i64>, path: &str, action: &str, rev: i64) -> bool {
+    if let Some(b) = revs.get(path) {
+        return b.rev >= rev;
+    }
+    if action == "D" || gone.get(path).is_some_and(|&d| d >= rev) {
+        return true;
+    }
+    let mut p = path;
+    loop {
+        p = p.rfind('/').map_or("", |i| &p[..i]);
+        if let Some(b) = revs.get(p).filter(|b| b.full) {
+            return b.rev >= rev;
+        }
+        if p.is_empty() {
+            return false;
+        }
+    }
+}
+
+// 2026.10.29 : 200 → 1000. 커밋하면 올린 파일만 리비전이 올라 최저 리비전이 수백 리비전 뒤에 남는다 (mhms_new r3352~r3766). 내가 올린 커밋은 걸러 낸다.
+const INCOMING_MAX: u32 = 1000;
+
+// 업데이트 확인 — 저장소 최신 리비전과, 아직 받지 않은 커밋 (svn log · 읽기 전용)
+// 2026.10.29 : 파일마다 골라 받으므로 작업복사본 최고 리비전 뒤만 보면 남은 변경을 놓친다. 최저 리비전 뒤부터 묻고 경로마다 받은 리비전과 견준다.
 #[tauri::command]
 async fn svn_incoming(app: AppHandle, srv: usize) -> Result<Incoming, String> {
     let (wc, info) = wc_of(&app, srv)?;
     let cred = creds_for(&app, &info.url)?;
     tauri::async_runtime::spawn_blocking(move || -> Result<Incoming, String> {
         let head = svnweb::options(&info.url, &cred).map_err(web_err)?;
-        let base = info.rev_max;
+        let base = info.rev_min;
         let mut entries = Vec::new();
         if head.head > base {
-            entries = svnweb::log(&info.url, &info.repos_path, &cred, head.head, base + 1, 200, "").map_err(web_err)?;
+            entries = svnweb::log(&info.url, &info.repos_path, &cred, head.head, base + 1, INCOMING_MAX, "").map_err(web_err)?;
         }
-        let more = entries.len() >= 200;
+        let more = entries.len() >= INCOMING_MAX as usize;
+        let revs = svn::base_revs(&wc)?;
+        let mut gone: HashMap<&str, i64> = HashMap::new();
+        for e in &entries {
+            for c in e.paths.iter().filter(|c| c.inside && c.action == "D") {
+                let d = gone.entry(c.path.as_str()).or_insert(e.rev);
+                *d = (*d).max(e.rev);
+            }
+        }
+        let keep: Vec<Vec<bool>> =
+            entries.iter().map(|e| e.paths.iter().map(|c| !c.inside || !svn_received(&revs, &gone, &c.path, c.action, e.rev)).collect()).collect();
+        for (e, k) in entries.iter_mut().zip(keep) {
+            let mut k = k.into_iter();
+            e.paths.retain(|_| k.next().unwrap_or(true));
+        }
+        entries.retain(|e| e.paths.iter().any(|c| c.inside));
         let mine: HashSet<String> =
             svn::status(&wc).map(|st| st.items.into_iter().filter(|i| i.code != "?").map(|i| i.path).collect()).unwrap_or_default();
         let mut overlap: Vec<String> = entries.iter().flat_map(|e| e.paths.iter()).filter(|c| c.inside && mine.contains(&c.path)).map(|c| c.path.clone()).collect();
@@ -5138,8 +5178,13 @@ async fn vcs_cleanup(app: AppHandle, srv: usize) -> Result<String, String> {
 }
 
 #[tauri::command]
-async fn vcs_update(app: AppHandle, srv: usize, kind: String) -> Result<VcsDone, String> {
+async fn vcs_update(app: AppHandle, srv: usize, kind: String, paths: Option<Vec<String>>) -> Result<VcsDone, String> {
     vcs_kind_ok(&kind)?;
+    // paths : SVN 에서 고른 경로만 받는다. 없으면 작업복사본 전체. git 은 파일만 받으면 이력이 어긋나 늘 Pull 이다.
+    let paths = paths.filter(|p| !p.is_empty() && kind == "svn");
+    for p in paths.iter().flatten() {
+        safe_rel(p)?;
+    }
     let (s, root, busy) = vcs_begin(&app, srv, &kind)?;
     let cred = if kind == "svn" { svn_cred(&app, &root) } else { None };
     let what = if kind == "git" { "Pull" } else { "Update" };
@@ -5151,9 +5196,25 @@ async fn vcs_update(app: AppHandle, srv: usize, kind: String) -> Result<VcsDone,
             let last = gitwrite::pull(&groot, cmd)?;
             return Ok(VcsDone { msg: format!("Pull 했습니다{}", if last.is_empty() { String::new() } else { format!(" · {last}") }), conflicts: conflicts_now("git", &groot) });
         }
-        svn_cli(&s, &root)?.call(&svncli::update_args(), cred.as_ref()).map_err(web_err)?;
+        let cli = svn_cli(&s, &root)?;
+        let Some(paths) = paths else {
+            cli.call(&svncli::update_args(), cred.as_ref()).map_err(web_err)?;
+            let rev = svn::wc_info(&root).map(|i| i.rev_max).unwrap_or(0);
+            return Ok(VcsDone { msg: format!("Update 했습니다 · r{rev}"), conflicts: conflicts_now("svn", &root) });
+        };
+        // Windows 명령줄은 32K 자에서 잘린다 — 경로를 나눠 부른다
+        let mut i = 0;
+        while i < paths.len() {
+            let (mut j, mut len) = (i, 0);
+            while j < paths.len() && (j == i || len + paths[j].len() < 20_000) {
+                len += paths[j].len() + 3;
+                j += 1;
+            }
+            cli.call(&svncli::update_paths_args(&paths[i..j]), cred.as_ref()).map_err(web_err)?;
+            i = j;
+        }
         let rev = svn::wc_info(&root).map(|i| i.rev_max).unwrap_or(0);
-        Ok(VcsDone { msg: format!("Update 했습니다 · r{rev}"), conflicts: conflicts_now("svn", &root) })
+        Ok(VcsDone { msg: format!("고른 {}개를 받았습니다 · r{rev}", paths.len()), conflicts: conflicts_now("svn", &root) })
     })
     .await
     .map_err(|e| e.to_string())?;
@@ -5218,19 +5279,25 @@ async fn vcs_resolve(app: AppHandle, srv: usize, kind: String, path: String, acc
     let r = tauri::async_runtime::spawn_blocking(move || -> Result<String, String> {
         let _busy = busy;
         let ci = if kind == "git" { git::conflict_info(&root, &path)? } else { svn::conflict_info(&root, &path)? };
-        if ci.kinds.contains(&"tree") && accept != "working" {
-            return Err("tree conflict 은 Use mine · Use theirs 로 풀리지 않습니다. 파일을 맞춘 뒤 Mark as resolved 를 누르거나 TortoiseSVN 으로 푸세요.".into());
+        // 고를 수 있는 풀이는 충돌 기록이 정한다 (svn::tree_choices) — 화면이 낡아 맞지 않는 것을 보내도 여기서 막는다
+        let Some(how) = ci.choices.iter().find(|c| c.id == accept).map(|c| c.label) else {
+            return Err(format!("이 충돌은 그 방법으로 풀 수 없습니다 ({}). 목록을 새로 고친 뒤 다시 고르세요.", ci.kinds.join(" · ")));
+        };
+        // 2026.10.29 : update · switch 의 tree conflict 은 BASE 가 들어온 판이다 — 해결 표시 뒤 내 쪽을 revert 해서 들어온 판을 살린다.
+        //   Mark as resolved 만 하면 내 쪽(「지움」 따위)이 남아 다음 Commit 이 저장소를 바꾼다. 덮일 내 파일은 먼저 「이름.mine」으로 옮긴다.
+        if accept == "incoming" {
+            let cli = svn_cli(&s, &root)?;
+            cli.call(&svncli::resolve_args("working", &path)?, cred.as_ref()).map_err(web_err)?;
+            let moved = svn::backup_overwrites(&root, &path)?;
+            cli.call(&svncli::revert_args(true, &[path.clone()]), cred.as_ref()).map_err(web_err)?;
+            let kept = if moved.is_empty() { String::new() } else { format!(" · 내 파일은 {} 로 옮겨 두었습니다", moved.join(" · ")) };
+            return Ok(format!("Resolve 했습니다 · {path} · {how}{kept}"));
         }
         if kind == "git" {
             gitwrite::resolve(&git::toplevel(&root)?, &path, &accept)?;
         } else {
             svn_cli(&s, &root)?.call(&svncli::resolve_args(&accept, &path)?, cred.as_ref()).map_err(web_err)?;
         }
-        let how = match accept.as_str() {
-            "mine" => "Use mine",
-            "theirs" => "Use theirs",
-            _ => "Mark as resolved",
-        };
         Ok(format!("Resolve 했습니다 · {path} · {how}"))
     })
     .await
@@ -5335,6 +5402,275 @@ async fn vcs_conflict_diff(app: AppHandle, srv: usize, kind: String, path: Strin
     tauri::async_runtime::spawn_blocking(move || if kind == "git" { git::conflict_diff(&root, &path, &side) } else { svn::conflict_diff(&root, &path, &side) })
         .await
         .map_err(|e| e.to_string())?
+}
+
+/* --- 그 밖의 SVN 기능 (2026.10.29~) ---
+   TortoiseSVN 에서 쓰던 일을 실행기 안에서 한다. 쓰기는 모두 Allow write · 확인 창을 거친다 (vcs_begin).
+   목차 : SvnOp(무엇을 하는가) · svn_op(실행) · svn_props(속성 읽기) · svn_make_patch(patch 만들기 · 읽기) · vcs_pick_file(파일 고르기) */
+
+#[derive(Deserialize)]
+#[serde(tag = "op", rename_all = "camelCase")]
+enum SvnOp {
+    Move { from: String, to: String },                                   // Rename · Move — 이력을 이어 간다
+    Delete { paths: Vec<String> },                                       // svn delete --force
+    Add { paths: Vec<String> },
+    Ignore { path: String, pattern: String },                            // 부모 폴더의 svn:ignore 에 한 줄
+    Lock { paths: Vec<String>, msg: String, steal: bool },
+    Unlock { paths: Vec<String>, force: bool },
+    Props { path: String, set: Vec<(String, String)>, del: Vec<String> }, // 속성 여러 개를 한 번에
+    UpdateTo { paths: Vec<String>, rev: i64 },                           // 경로가 없으면 작업복사본 전체
+    FileAt { path: String, rev: i64 },                                   // 파일 하나를 그 리비전 내용으로 (Changes 에 Modified 로 남는다)
+    Switch { url: String },
+    Branch { to: String, rev: Option<i64>, msg: String, switch: bool },  // 저장소 안 복사 (branch · tag)
+    Merge { url: String, revs: String },
+    Relocate { to: String },
+    Patch { file: String },
+    RemoveUnversioned,
+}
+
+impl SvnOp {
+    fn title(&self) -> &'static str {
+        match self {
+            SvnOp::Move { .. } => "Rename",
+            SvnOp::Delete { .. } => "Delete",
+            SvnOp::Add { .. } => "Add",
+            SvnOp::Ignore { .. } => "svn:ignore",
+            SvnOp::Lock { .. } => "Lock",
+            SvnOp::Unlock { .. } => "Unlock",
+            SvnOp::Props { .. } => "Properties",
+            SvnOp::UpdateTo { .. } => "Update to revision",
+            SvnOp::FileAt { .. } => "Revert to this revision",
+            SvnOp::Switch { .. } => "Switch",
+            SvnOp::Branch { .. } => "Branch/tag",
+            SvnOp::Merge { .. } => "Merge",
+            SvnOp::Relocate { .. } => "Relocate",
+            SvnOp::Patch { .. } => "Apply patch",
+            SvnOp::RemoveUnversioned => "Delete unversioned",
+        }
+    }
+
+    // svn 을 부르기 전에 막을 것 — 작업복사본 밖 경로 · 옵션으로 읽힐 값 · 저장소 주소가 아닌 것
+    fn check(&self) -> Result<(), String> {
+        let rels = |ps: &[String]| -> Result<(), String> {
+            if ps.is_empty() {
+                return Err("고른 경로가 없습니다.".into());
+            }
+            ps.iter().try_for_each(|p| safe_rel(p))
+        };
+        let url = |u: &str| if svncli::repo_url_ok(u) { Ok(()) } else { Err(format!("저장소 주소가 아닙니다: {u} (http:// · svn:// · ^/ 로 시작)")) };
+        match self {
+            SvnOp::Move { from, to } => {
+                rels(&[from.clone(), to.clone()])?;
+                if from == to || to.trim().is_empty() {
+                    return Err("새 이름이 지금과 같습니다.".into());
+                }
+                Ok(())
+            }
+            SvnOp::Delete { paths } | SvnOp::Add { paths } | SvnOp::Lock { paths, .. } | SvnOp::Unlock { paths, .. } => rels(paths),
+            SvnOp::Ignore { path, pattern } => {
+                safe_rel(path)?;
+                if pattern.trim().is_empty() || pattern.contains(['/', '\\', '\n']) {
+                    return Err(format!("svn:ignore 패턴이 올바르지 않습니다: {pattern}"));
+                }
+                Ok(())
+            }
+            SvnOp::Props { path, set, del } => {
+                safe_rel(path)?;
+                match set.iter().map(|(n, _)| n).chain(del).find(|n| !svncli::prop_name_ok(n)) {
+                    Some(n) => Err(format!("속성 이름이 올바르지 않습니다: {n}")),
+                    None => Ok(()),
+                }
+            }
+            SvnOp::UpdateTo { paths, rev } => {
+                paths.iter().try_for_each(|p| safe_rel(p))?;
+                if *rev < 0 { Err("리비전 번호가 올바르지 않습니다.".into()) } else { Ok(()) }
+            }
+            SvnOp::FileAt { path, rev } => {
+                safe_rel(path)?;
+                if *rev <= 0 { Err("리비전 번호가 올바르지 않습니다.".into()) } else { Ok(()) }
+            }
+            SvnOp::Switch { url: u } | SvnOp::Merge { url: u, .. } | SvnOp::Relocate { to: u } => url(u),
+            SvnOp::Branch { to, msg, .. } => {
+                url(to)?;
+                if msg.trim().is_empty() { Err("메시지를 넣으세요.".into()) } else { Ok(()) }
+            }
+            SvnOp::Patch { file } => {
+                if Path::new(file).is_absolute() && Path::new(file).is_file() { Ok(()) } else { Err(format!("patch 파일이 없습니다: {file}")) }
+            }
+            SvnOp::RemoveUnversioned => Ok(()),
+        }
+    }
+}
+
+fn svn_op_run(cli: &svncli::Svn, root: &Path, op: SvnOp, cred: Option<&(String, String)>) -> Result<VcsDone, String> {
+    let call = |a: Vec<String>| cli.call(&a, cred).map_err(web_err);
+    let done = |msg: String| Ok(VcsDone { msg, conflicts: Vec::new() });
+    // 받아 오는 일은 끝난 뒤 남은 Conflicted 를 함께 준다
+    let with_conflicts = |msg: String| Ok(VcsDone { msg, conflicts: conflicts_now("svn", root) });
+    // 메시지 · 속성 값은 UTF-8 임시 파일로 넘기고 끝나면 지운다
+    let with_file = |text: &str, f: &dyn Fn(&Path) -> Result<String, String>| -> Result<String, String> {
+        let file = svncli::temp_message(text)?;
+        let r = f(&file);
+        let _ = fs::remove_file(&file);
+        r
+    };
+    match op {
+        SvnOp::Move { from, to } => {
+            call(svncli::move_args(&from, &to))?;
+            done(format!("Rename 했습니다 · {from} → {to} · Commit 하면 저장소에 올라갑니다"))
+        }
+        SvnOp::Delete { paths } => {
+            call(svncli::delete_force_args(&paths))?;
+            done(format!("Delete 했습니다 · {}개 · Commit 하면 저장소에서 지워집니다", paths.len()))
+        }
+        SvnOp::Add { paths } => {
+            call(svncli::add_args(&paths))?;
+            done(format!("Add 했습니다 · {}개", paths.len()))
+        }
+        SvnOp::Ignore { path, pattern } => {
+            let parent = match path.rfind('/') { Some(i) => path[..i].to_string(), None => ".".into() };
+            let props = svncli::parse_props(&call(svncli::proplist_args(&parent))?)?;
+            let now = props.into_iter().find(|(n, _)| n == "svn:ignore").map(|(_, v)| v).unwrap_or_default();
+            let pattern = pattern.trim();
+            if now.lines().any(|l| l.trim() == pattern) {
+                return done(format!("이미 svn:ignore 에 있습니다 · {parent} · {pattern}"));
+            }
+            // 있던 줄은 그대로 두되 줄끝은 LF 로 모은다 — TortoiseSVN 이 넣은 값은 CRLF 라(mhms_new 의 「.」) 그대로 이으면 섞인다
+            let mut v: String = now.lines().map(|l| l.trim_end_matches('\r')).filter(|l| !l.trim().is_empty()).map(|l| format!("{l}\n")).collect();
+            v.push_str(pattern);
+            v.push('\n');
+            with_file(&v, &|f| call(svncli::propset_args("svn:ignore", f, &parent)))?;
+            done(format!("svn:ignore 에 더했습니다 · {parent} · {pattern} · Commit 하면 저장소에 올라갑니다"))
+        }
+        SvnOp::Lock { paths, msg, steal } => {
+            with_file(&msg, &|f| call(svncli::lock_args(f, steal, &paths)))?;
+            done(format!("Lock 했습니다 · {}개", paths.len()))
+        }
+        SvnOp::Unlock { paths, force } => {
+            call(svncli::unlock_args(force, &paths))?;
+            done(format!("Unlock 했습니다 · {}개", paths.len()))
+        }
+        SvnOp::Props { path, set, del } => {
+            for (n, v) in &set {
+                with_file(v, &|f| call(svncli::propset_args(n, f, &path)))?;
+            }
+            for n in &del {
+                call(svncli::propdel_args(n, &path))?;
+            }
+            done(format!("속성을 고쳤습니다 · {path} · {}개 · Commit 하면 저장소에 올라갑니다", set.len() + del.len()))
+        }
+        SvnOp::UpdateTo { paths, rev } => {
+            call(svncli::update_rev_args(rev, &paths))?;
+            with_conflicts(format!("r{rev} 로 맞췄습니다{}", if paths.is_empty() { String::new() } else { format!(" · {}개", paths.len()) }))
+        }
+        SvnOp::FileAt { path, rev } => {
+            let url = format!("{}/{path}", svn::wc_info(root)?.url);
+            let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+            let tmp = std::env::temp_dir().join(format!("tomcatrun-at-{}-{nanos}", std::process::id()));
+            // 임시 파일로 받은 뒤 덮는다 — 받다 실패하면 내 파일은 그대로다
+            let r = call(svncli::export_args(&url, rev, &tmp)).and_then(|_| fs::copy(&tmp, root.join(&path)).map(|_| ()).map_err(|e| format!("파일을 덮지 못했습니다: {e}")));
+            let _ = fs::remove_file(&tmp);
+            r?;
+            done(format!("r{rev} 내용으로 바꿨습니다 · {path} · Changes 에서 확인한 뒤 Commit 하세요"))
+        }
+        SvnOp::Switch { url } => {
+            call(svncli::switch_args(&url))?;
+            with_conflicts(format!("Switch 했습니다 · {url}"))
+        }
+        SvnOp::Branch { to, rev, msg, switch } => {
+            let from = svn::wc_info(root)?.url;
+            let out = with_file(&msg, &|f| call(svncli::copy_args(&from, rev, &to, f)))?;
+            let made = out.lines().rev().find_map(|l| l.split_whitespace().find_map(|w| w.trim_end_matches('.').parse::<i64>().ok()));
+            let head = format!("만들었습니다 · {to}{}", made.map(|r| format!(" · r{r}")).unwrap_or_default());
+            if switch {
+                call(svncli::switch_args(&to))?;
+                return with_conflicts(format!("{head} · 작업복사본을 그쪽으로 Switch 했습니다"));
+            }
+            done(head)
+        }
+        SvnOp::Merge { url, revs } => {
+            call(svncli::merge_args(&url, &revs)?)?;
+            with_conflicts(format!("Merge 했습니다 · {url} · Changes 에서 확인한 뒤 Commit 하세요"))
+        }
+        SvnOp::Relocate { to } => {
+            call(svncli::relocate_args(&to))?;
+            done(format!("Relocate 했습니다 · {to}"))
+        }
+        SvnOp::Patch { file } => {
+            call(svncli::patch_args(Path::new(&file)))?;
+            with_conflicts("patch 를 적용했습니다 · Changes 에서 확인하세요".into())
+        }
+        SvnOp::RemoveUnversioned => {
+            call(svncli::remove_unversioned_args())?;
+            done("버전 관리 밖 파일을 지웠습니다 (ignore 된 것은 남겼습니다)".into())
+        }
+    }
+}
+
+#[tauri::command]
+async fn svn_op(app: AppHandle, srv: usize, op: SvnOp) -> Result<VcsDone, String> {
+    let what = op.title();
+    op.check()?;
+    let (s, root, busy) = vcs_begin(&app, srv, "svn")?;
+    let cred = svn_cred(&app, &root);
+    let r = tauri::async_runtime::spawn_blocking(move || {
+        let _busy = busy;
+        svn_op_run(&svn_cli(&s, &root)?, &root, op, cred.as_ref())
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    vcs_record(&app, srv, what, &r, |d| d.msg.clone());
+    r
+}
+
+// 속성 읽기 — 쓰기가 아니라 Allow write 와 상관없다 (svn.exe 는 있어야 한다)
+#[tauri::command]
+async fn svn_props(app: AppHandle, srv: usize, path: String) -> Result<Vec<(String, String)>, String> {
+    safe_rel(&path)?;
+    check_srv(&app, srv)?;
+    let s = cfgs(&app, srv).1;
+    let root = PathBuf::from(vcs_root(&s));
+    let cred = svn_cred(&app, &root);
+    tauri::async_runtime::spawn_blocking(move || {
+        let out = svn_cli(&s, &root)?.call(&svncli::proplist_args(if path.is_empty() { "." } else { &path }), cred.as_ref()).map_err(web_err)?;
+        svncli::parse_props(&out)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+// 고른 파일의 변경을 patch 파일로 — 작업복사본은 그대로라 Allow write 와 상관없다. 출력은 바이트 그대로 쓴다 (EUC-KR 소스가 깨지지 않게)
+#[tauri::command]
+async fn svn_make_patch(app: AppHandle, srv: usize, paths: Vec<String>, file: String) -> Result<String, String> {
+    paths.iter().try_for_each(|p| safe_rel(p))?;
+    check_srv(&app, srv)?;
+    let s = cfgs(&app, srv).1;
+    let root = PathBuf::from(vcs_root(&s));
+    let cred = svn_cred(&app, &root);
+    tauri::async_runtime::spawn_blocking(move || {
+        let targets = if paths.is_empty() { vec![".".to_string()] } else { paths };
+        let out = svn_cli(&s, &root)?.call_raw(&svncli::diff_args(&targets), cred.as_ref()).map_err(web_err)?;
+        if out.is_empty() {
+            return Err("고른 파일에 바뀐 내용이 없습니다.".into());
+        }
+        fs::write(&file, &out).map_err(|e| format!("patch 파일을 쓰지 못했습니다: {e}"))?;
+        Ok(format!("patch 를 만들었습니다 · {file}"))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+// patch 파일 고르기 — save 면 저장할 곳, 아니면 열 파일
+#[tauri::command]
+async fn vcs_pick_file(app: AppHandle, save: bool, name: String) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    tauri::async_runtime::spawn_blocking(move || {
+        let dlg = app.dialog().file().add_filter("patch", &["patch", "diff"]);
+        let f = if save { dlg.set_title("patch 저장").set_file_name(name).blocking_save_file() } else { dlg.set_title("patch 열기").blocking_pick_file() };
+        Ok(f.and_then(|f| f.into_path().ok()).map(|d| p(&d)))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /* --- Git Fetch · Push --- */
@@ -5599,7 +5935,7 @@ fn main() {
             get_state, start, stop, restart, quit, compile, refresh_deps, set_option, set_heap, set_compiler, set_ignore, open, reveal, open_source,
             svn_status, svn_diff, svn_account, svn_login, svn_logout, svn_incoming, svn_log, svn_rev_diff,
             git_status, git_diff, git_incoming, git_log, git_rev_diff,
-            vcs_commit, vcs_update, vcs_cleanup, vcs_revert, vcs_resolve, vcs_revert_revision, vcs_blame, vcs_conflict, vcs_conflict_diff, set_vcs, set_paths, set_server, add_server, pick_project,
+            vcs_commit, vcs_update, vcs_cleanup, vcs_revert, vcs_resolve, vcs_revert_revision, vcs_blame, vcs_conflict, vcs_conflict_diff, svn_op, svn_props, svn_make_patch, vcs_pick_file, set_vcs, set_paths, set_server, add_server, pick_project,
             vcs_fetch, vcs_push, git_outgoing, gen_commit_msg, check_commit_msg,
             update_check, update_install, svn_get, changelog, eclipse_scan, eclipse_import, quick_project, pick_dir, auto_deps, dedup_deps, undo_dedup, apply_scan_hint
         ])

@@ -25,7 +25,7 @@ IDE 의 서버 배포를 대신하는 개발 도구다. 원본 워크스페이�
 - 서버 여러 대: 프로젝트 하나에 톰캣 하나. 프로젝트 폴더 · 포트 · 접속 주소는 사용자가 「설정 › 서버」에서 정한다. 따로 켜고 끄며 함께 띄울 수 있다.
 - 저장 감시 → 바뀐 파일만 상주 컴파일러(ECJ)로 컴파일 → DCEVM · HotswapAgent 로 클래스 교체 → 반영 기록에 남는다. 재시작이 필요한 변경은 목록으로 모인다.
 - 메모리 표시(톰캣 · 상주 컴파일러 · 실행기 화면), 기동 단계별 시간, 준비 상태 점검, 의존 jar 다시 받기.
-- 버전 관리(SVN · Git, 서버마다 고른다): Changes(받을 커밋 포함) · Diff · History · Blame. 「Allow write」를 켠 서버에서는 Commit · Update(Pull) · Revert · Resolve · Cleanup · 리비전 되돌리기, Git 은 Fetch · Push 까지 실행기 안에서 한다. 끈 서버(기본)는 명령을 복사만 한다(2026-10-28 Git 추가 · 2026-10-29 쓰기 추가).
+- 버전 관리(SVN · Git, 서버마다 고른다): Changes(받을 커밋 포함) · Diff · History · Blame. 「Allow write」를 켠 서버에서는 Commit · Update(Pull) · Revert · Resolve · Cleanup · 리비전 되돌리기, Git 은 Fetch · Push 까지 실행기 안에서 한다. SVN 은 Rename · Delete · Add · svn:ignore · Lock · Properties · Update to rN · Revert to rN · Switch · Branch/tag · Merge · Relocate · patch 만들기 · 적용 · 버전 관리 밖 파일 지우기도 한다(2026-10-29). 끈 서버(기본)는 명령을 복사만 한다(2026-10-28 Git 추가 · 2026-10-29 쓰기 추가).
 - Commit message: 사용자가 정한 언어 모델 CLI 로 제목 한 줄을 만들고(「자동 생성」), 서버마다 정한 규칙(제목 정규식 · 최대 길이)에 어긋나면 알린다. 막지는 않는다(2026-10-29).
 
 ## Capabilities and Constraints

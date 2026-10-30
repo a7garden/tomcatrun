@@ -356,7 +356,8 @@ docket 의 단추와 같은 결의 Windows 도구 단추다.
 | 비교 기준 | BASE (마지막으로 받은 내용) · HEAD (SVN 은 저장소 최신, Git 은 마지막 커밋) · upstream (Git 원격 추적 브랜치) |
 | 단추 | Commit · Update · Pull · Fetch · Push · Revert… · Cleanup… · Diff · Compare with HEAD · Show log · Blame |
 | 묶음 | Conflicted · Changes · Unversioned (Git 은 Untracked) · 받을 커밋 |
-| 충돌 판 | Resolve · Use mine · Use theirs · Mark as resolved · BASE ↔ mine · BASE ↔ theirs |
+| 충돌 판 | Resolve · Use mine · Use theirs · Mark as resolved · BASE ↔ mine · BASE ↔ theirs · 들어온 것 받기 · 내 것 유지 (tree conflict) |
+| SVN 기능 (2026-10-29) | Add · Rename / Move… · Delete… · Lock… · Unlock · Properties… · Update to rN… · Revert to rN… · Switch… · Create branch / tag… · Merge… · Relocate… · Create patch… · Apply patch… · Delete unversioned files… |
 | History 의 되돌리기 | Revert changes from this revision… (SVN) · Revert commit… (Git) |
 | 설정 | Allow write · Commit message 예시 · Update 명령 · Pull 명령 · svn.exe · svn 받기 |
 

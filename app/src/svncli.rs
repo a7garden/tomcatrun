@@ -248,6 +248,11 @@ pub fn update_args() -> Vec<String> {
     vec!["update".into(), "--accept".into(), "postpone".into()]
 }
 
+/// 고른 경로만 받는다 (2026.10.29~). --parents : 새 폴더 안의 파일을 고르면 그 폴더를 빈 채로 만든다 — 없으면 svn 이 작업복사본이 아니라며 건너뛴다.
+pub fn update_paths_args(paths: &[String]) -> Vec<String> {
+    with_paths(vec!["update".into(), "--accept".into(), "postpone".into(), "--parents".into()], paths)
+}
+
 pub fn revert_args(deep: bool, paths: &[String]) -> Vec<String> {
     with_paths(vec!["revert".into(), "--depth".into(), if deep { "infinity" } else { "empty" }.into()], paths)
 }
@@ -276,6 +281,130 @@ pub fn reverse_merge_args(rev: i64, wc_url: &str) -> Vec<String> {
     vec!["merge".into(), "-c".into(), format!("-{rev}"), "--accept".into(), "postpone".into(), wc_url.to_string(), ".".into()]
 }
 
+/* ---------- 그 밖의 SVN 기능 (2026.10.29~) — 화면의 「SVN 기능」 메뉴 · 줄 메뉴가 부른다 (main.rs svn_op) ---------- */
+
+/// 저장소 주소로 받을 수 있는 꼴 — 「-」 로 시작해 옵션으로 읽히거나 로컬 경로가 섞여 들어오지 않게
+pub fn repo_url_ok(u: &str) -> bool {
+    !u.chars().any(char::is_whitespace) && ["http://", "https://", "svn://", "svn+ssh://", "file:///", "^/"].iter().any(|p| u.starts_with(p))
+}
+
+/// svn:ignore · svn:eol-style 같은 속성 이름 — 옵션 · 경로가 끼지 않게 글자를 좁힌다
+pub fn prop_name_ok(n: &str) -> bool {
+    !n.is_empty() && !n.starts_with('-') && n.chars().all(|c| c.is_ascii_alphanumeric() || ":_.-".contains(c))
+}
+
+/// --parents : 옮길 곳의 폴더가 없으면 만들어 더한다
+pub fn move_args(from: &str, to: &str) -> Vec<String> {
+    with_paths(vec!["move".into(), "--parents".into()], &[from.to_string(), to.to_string()])
+}
+
+/// --force : 고친 파일 · 안에 든 버전 관리 밖 파일까지 지운다. 화면이 확인 창에서 먼저 알린다.
+pub fn delete_force_args(paths: &[String]) -> Vec<String> {
+    with_paths(vec!["delete".into(), "--force".into()], paths)
+}
+
+/// steal : 다른 사람이 건 lock 을 빼앗는다
+pub fn lock_args(msg_file: &Path, steal: bool, paths: &[String]) -> Vec<String> {
+    let mut a: Vec<String> = vec!["lock".into(), "-F".into(), msg_file.to_string_lossy().into_owned(), "--encoding".into(), "utf-8".into()];
+    if steal {
+        a.push("--force".into());
+    }
+    with_paths(a, paths)
+}
+
+pub fn unlock_args(force: bool, paths: &[String]) -> Vec<String> {
+    with_paths(if force { vec!["unlock".into(), "--force".into()] } else { vec!["unlock".into()] }, paths)
+}
+
+pub fn proplist_args(path: &str) -> Vec<String> {
+    with_paths(vec!["proplist".into(), "-v".into(), "--xml".into()], &[path.to_string()])
+}
+
+/// 값은 파일로 넘긴다 — svn:ignore · svn:externals 는 여러 줄이라 인자로 넘기면 줄바꿈이 깨진다
+pub fn propset_args(name: &str, value_file: &Path, path: &str) -> Vec<String> {
+    with_paths(vec!["propset".into(), name.into(), "-F".into(), value_file.to_string_lossy().into_owned()], &[path.to_string()])
+}
+
+pub fn propdel_args(name: &str, path: &str) -> Vec<String> {
+    with_paths(vec!["propdel".into(), name.into()], &[path.to_string()])
+}
+
+/// 작업복사본(또는 고른 경로)을 리비전 하나로 맞춘다. 경로가 없으면 맨 위
+pub fn update_rev_args(rev: i64, paths: &[String]) -> Vec<String> {
+    let a = vec!["update".into(), "-r".into(), rev.to_string(), "--accept".into(), "postpone".into()];
+    if paths.is_empty() { with_paths(a, &[".".into()]) } else { with_paths(a, paths) }
+}
+
+/// 파일 하나의 그 리비전 내용을 dest 로 — 줄끝 · 키워드 변환을 svn 이 해 준다
+pub fn export_args(url: &str, rev: i64, dest: &Path) -> Vec<String> {
+    vec!["export".into(), "--force".into(), "-r".into(), rev.to_string(), "--".into(), format!("{url}@{rev}"), dest.to_string_lossy().into_owned()]
+}
+
+pub fn switch_args(url: &str) -> Vec<String> {
+    vec!["switch".into(), "--accept".into(), "postpone".into(), "--".into(), url.into(), ".".into()]
+}
+
+/// 저장소 안에서 바로 복사 (branch · tag) — 작업복사본은 건드리지 않는다. rev 가 없으면 HEAD
+pub fn copy_args(src: &str, rev: Option<i64>, dst: &str, msg_file: &Path) -> Vec<String> {
+    let mut a: Vec<String> = vec!["copy".into(), "--parents".into(), "-F".into(), msg_file.to_string_lossy().into_owned(), "--encoding".into(), "utf-8".into()];
+    if let Some(r) = rev {
+        a.extend(["-r".into(), r.to_string()]);
+    }
+    a.extend(["--".into(), src.into(), dst.into()]);
+    a
+}
+
+/// 「123, 125-130」 → -c 123 -r 124:130. 비우면 아직 안 받은 것 전부 (svn 이 mergeinfo 로 고른다)
+pub fn merge_args(url: &str, revs: &str) -> Result<Vec<String>, String> {
+    let mut a: Vec<String> = vec!["merge".into(), "--accept".into(), "postpone".into()];
+    for part in revs.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        let num = |s: &str| s.trim().trim_start_matches('r').parse::<i64>().ok().filter(|n| *n > 0);
+        match part.split_once('-') {
+            Some((x, y)) => {
+                let (Some(x), Some(y)) = (num(x), num(y)) else { return Err(format!("리비전 범위를 읽지 못했습니다: {part}")) };
+                if x > y {
+                    return Err(format!("범위의 앞이 뒤보다 큽니다: {part}"));
+                }
+                a.extend(["-r".into(), format!("{}:{y}", x - 1)]);
+            }
+            None => {
+                let Some(n) = num(part) else { return Err(format!("리비전 번호를 읽지 못했습니다: {part}")) };
+                a.extend(["-c".into(), n.to_string()]);
+            }
+        }
+    }
+    a.extend(["--".into(), url.into(), ".".into()]);
+    Ok(a)
+}
+
+pub fn relocate_args(to: &str) -> Vec<String> {
+    vec!["relocate".into(), "--".into(), to.into()]
+}
+
+pub fn patch_args(file: &Path) -> Vec<String> {
+    vec!["patch".into(), "--".into(), file.to_string_lossy().into_owned()]
+}
+
+/// --internal-diff : 사용자가 svn 설정에 외부 diff 도구를 걸어 두었어도 patch 로 쓸 수 있는 꼴로 낸다
+pub fn diff_args(paths: &[String]) -> Vec<String> {
+    with_paths(vec!["diff".into(), "--internal-diff".into()], paths)
+}
+
+/// 버전 관리 밖 파일을 지운다 (ignore 된 것은 남긴다)
+pub fn remove_unversioned_args() -> Vec<String> {
+    vec!["cleanup".into(), "--remove-unversioned".into()]
+}
+
+/// svn proplist -v --xml — 이름 · 값 (값은 그대로, 여러 줄이면 \n)
+pub fn parse_props(xml: &str) -> Result<Vec<(String, String)>, String> {
+    let doc = roxmltree::Document::parse(xml).map_err(|e| format!("속성 목록을 읽지 못했습니다: {e}"))?;
+    Ok(doc
+        .descendants()
+        .filter(|n| n.has_tag_name("property"))
+        .map(|n| (n.attribute("name").unwrap_or("").to_string(), n.text().unwrap_or("").to_string()))
+        .collect())
+}
+
 pub fn blame_args(path: &str) -> Vec<String> {
     with_paths(vec!["blame".into(), "--xml".into()], &[path.to_string()])
 }
@@ -298,6 +427,11 @@ impl Svn {
 
     /// 먼저 svn 의 인증 캐시로, 계정 문제로 실패하면 실행기 계정으로 한 번 더. 그래도 안 되면 로그인 필요.
     pub fn call(&self, args: &[String], cred: Option<&(String, String)>) -> Result<String, WebErr> {
+        self.call_raw(args, cred).map(|b| decode(&b))
+    }
+
+    /// 출력 그대로 — patch 처럼 파일 내용(EUC-KR 소스 따위)이 섞인 출력은 글자로 풀면 깨진다
+    pub fn call_raw(&self, args: &[String], cred: Option<&(String, String)>) -> Result<Vec<u8>, WebErr> {
         // 시간이 다 돼 끊으면 svn 이 잡은 잠금이 남는다 — Cleanup 을 내민다
         let cut = |e: String| WebErr::Other(if e.contains("초 안에") { format!("{LOCKED}{e} 끊긴 svn 이 작업복사본에 잠금을 남겼을 수 있습니다. Cleanup 하세요.") } else { e });
         let mut out = self.once(args, None).map_err(cut)?;
@@ -312,7 +446,7 @@ impl Svn {
             let first = args.first().map(String::as_str).unwrap_or("");
             return Err(WebErr::Other(if out.stderr.is_empty() { format!("svn {first} 이 실패했습니다.") } else { explain(&out.stderr) }));
         }
-        Ok(decode(&out.stdout))
+        Ok(out.stdout)
     }
 
     /// 올린 리비전. 고른 파일 내용이 모두 BASE 와 같으면 svn 이 아무것도 올리지 않고 성공하므로 None 이다.
@@ -398,6 +532,21 @@ mod tests {
         assert_eq!(resolve_args("theirs", "x").unwrap(), ["resolve", "--accept", "theirs-full", "--", "x"]);
         assert!(resolve_args("base", "x").is_err());
         assert_eq!(reverse_merge_args(3760, "http://h/svn/r/trunk")[2], "-3760");
+        assert_eq!(move_args("a/x.jsp", "a/y.jsp"), ["move", "--parents", "--", "a/x.jsp", "a/y.jsp"]);
+        assert_eq!(update_rev_args(3700, &[]), ["update", "-r", "3700", "--accept", "postpone", "--", "."]);
+        assert_eq!(unlock_args(true, &paths[..1]), ["unlock", "--force", "--", "src/주문.java"]);
+        assert_eq!(merge_args("^/branches/b", "").unwrap(), ["merge", "--accept", "postpone", "--", "^/branches/b", "."]);
+        assert_eq!(merge_args("^/b", "r123, 125-130").unwrap()[3..7], ["-c", "123", "-r", "124:130"]);
+        assert!(merge_args("^/b", "130-125").is_err());
+        assert!(merge_args("^/b", "x").is_err());
+        assert_eq!(copy_args("http://h/r/trunk", Some(3700), "http://h/r/tags/v1", Path::new("m.txt"))[6..], ["-r", "3700", "--", "http://h/r/trunk", "http://h/r/tags/v1"]);
+        assert!(repo_url_ok("http://192.168.0.164/svn/mhms/2025") && repo_url_ok("^/branches/a"));
+        assert!(!repo_url_ok("-x") && !repo_url_ok("D:\\a") && !repo_url_ok("http://h/a b"));
+        assert!(prop_name_ok("svn:eol-style") && !prop_name_ok("--force") && !prop_name_ok("a b"));
+        let xml = r#"<?xml version="1.0"?><properties><target path="."><property name="svn:ignore">target
+.classpath
+</property><property name="svn:mergeinfo"></property></target></properties>"#;
+        assert_eq!(parse_props(xml).unwrap(), [("svn:ignore".to_string(), "target\n.classpath\n".to_string()), ("svn:mergeinfo".to_string(), String::new())]);
         // 「-」 로 시작하는 이름도 옵션으로 읽히지 않는다
         assert_eq!(delete_args(&["-x".to_string()]), ["delete", "--", "-x"]);
     }
