@@ -105,6 +105,7 @@ fn item(path: &str, code: &'static str, label: &'static str) -> Item {
         author: None,
         date_ms: None,
         orig: None,
+        changelist: None,
     }
 }
 
@@ -202,7 +203,7 @@ fn content(root: &Path, spec: &str, rel: &str) -> Option<Vec<u8>> {
 pub fn diff(dir: &Path, rel: &str, orig: Option<&str>) -> Result<Diff, String> {
     let root = toplevel(dir)?;
     let full = root.join(rel);
-    let mut out = Diff { path: rel.to_string(), note: None, added: 0, removed: 0, lines: Vec::new() };
+    let mut out = Diff { path: rel.to_string(), note: None, notice: None, added: 0, removed: 0, lines: Vec::new(), props: Vec::new() };
     if full.is_dir() {
         out.note = Some("폴더입니다. 안의 파일을 고르면 차이를 보여 줍니다.".into());
         return Ok(out);

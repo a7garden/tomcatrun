@@ -1,6 +1,6 @@
 [package]
 name = "tomcatrun"
-version = "0.22.0"  # 버전은 여기 한 곳 — tauri.conf.json · 설치 파일 · 화면이 이 값을 따른다 (CHANGELOG.md)
+version = "0.23.0"  # 버전은 여기 한 곳 — tauri.conf.json · 설치 파일 · 화면이 이 값을 따른다 (CHANGELOG.md)
 edition = "2021"
 # 2026.10.29 : 1.99 아래는 받지 않는다 — 1.99.1 에서 cargo test 를 통과했다. 판을 못박지 않아 CI 는 그날의 stable 로 빌드한다
 rust-version = "1.99"
@@ -28,6 +28,8 @@ similar = "2"
 ureq = { version = "2", default-features = false, features = ["native-tls", "proxy-from-env"] }
 native-tls = "0.2"
 sha2 = "0.10"
+# 자동 업데이트가 받은 설치 파일의 서명 검증 (update.rs)
+minisign-verify = "0.3"
 base64 = "0.22"
 roxmltree = "0.20"
 # Commit message 규칙 (제목 규칙 · 이슈 번호 찾기) — 사용자가 적은 정규식이라 되돌아가며 찾지 않는(느려지지 않는) 엔진을 쓴다

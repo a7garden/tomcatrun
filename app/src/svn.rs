@@ -46,6 +46,8 @@ pub struct Item {
     pub date_ms: Option<i64>,     // 그 커밋 시각
     #[serde(skip_serializing_if = "Option::is_none")]
     pub orig: Option<String>,     // 이름을 바꾼 파일의 옛 경로 (git 만)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub changelist: Option<String>, // SVN changelist — ignore-on-commit 이면 Commit 대상으로 고르지 않는다 (TortoiseSVN 과 같은 이름)
 }
 
 #[derive(Serialize)]
@@ -84,9 +86,19 @@ pub struct DiffLine {
 pub struct Diff {
     pub path: String,
     pub note: Option<String>, // 바이너리 · 너무 큼 · 폴더 같은 까닭으로 줄 차이를 못 보일 때
+    pub notice: Option<String>, // 줄 차이와 함께 알릴 것 — 줄끝 · 인코딩도 바뀜
     pub added: usize,
     pub removed: usize,
     pub lines: Vec<DiffLine>,
+    pub props: Vec<PropChange>, // 바뀐 Properties (SVN)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PropChange {
+    pub name: String,
+    pub old: Option<String>,
+    pub new: Option<String>,
 }
 
 struct Node {
@@ -273,6 +285,11 @@ pub fn status(wc: &Path) -> Result<Status, String> {
         .prepare("SELECT local_relpath FROM ACTUAL_NODE WHERE properties IS NOT NULL")
         .and_then(|mut s| s.query_map([], |r| r.get::<_, String>(0))?.collect())
         .unwrap_or_default();
+    // 2026.10.30 : 못 읽어도 Changes 를 막지 않는다
+    let lists: HashMap<String, String> = c
+        .prepare("SELECT local_relpath, changelist FROM ACTUAL_NODE WHERE changelist IS NOT NULL")
+        .and_then(|mut s| s.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?.collect())
+        .unwrap_or_default();
     let (url, rev_min, rev_max) = c
         .query_row(
             "SELECT r.root || '/' || n.repos_path,
@@ -301,6 +318,7 @@ pub fn status(wc: &Path) -> Result<Status, String> {
         author: n.and_then(|n| n.cauthor.clone()),
         date_ms: n.and_then(|n| n.cdate.map(|d| d / 1000)),
         orig: None,
+        changelist: lists.get(path).cloned(),
     };
     let mut rels: Vec<&String> = nodes.keys().collect();
     rels.sort(); // 부모가 먼저 오게 — 없어진 폴더 아래는 하나하나 늘어놓지 않는다
@@ -420,11 +438,13 @@ pub fn diff(wc: &Path, rel: &str) -> Result<Diff, String> {
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .ok();
+    let props = prop_changes(&c, rel);
     drop(c);
     let full = wc.join(rel);
-    let mut out = Diff { path: rel.to_string(), note: None, added: 0, removed: 0, lines: Vec::new() };
+    let mut out = Diff { path: rel.to_string(), note: None, notice: None, added: 0, removed: 0, lines: Vec::new(), props: Vec::new() };
     if full.is_dir() || base.as_ref().map_or(false, |(k, _)| k == "dir") {
-        out.note = Some("폴더입니다. 안의 파일을 고르면 차이를 보여 줍니다.".into());
+        out.note = Some(if props.is_empty() { "폴더입니다. 안의 파일을 고르면 차이를 보여 줍니다." } else { "폴더의 Properties 가 바뀌었습니다." }.into());
+        out.props = props;
         return Ok(out);
     }
     let old = match &base {
@@ -441,15 +461,71 @@ pub fn diff(wc: &Path, rel: &str) -> Result<Diff, String> {
         Vec::new()
     };
     let mut out = text_diff(rel, &old, &new);
-    if out.lines.is_empty() && out.note.is_none() {
-        out.note = Some("내용이 BASE 와 같습니다 (수정 시각만 바뀜).".into());
+    if old == new {
+        out.note = Some(if props.is_empty() { "내용이 BASE 와 같습니다 (수정 시각만 바뀜)." } else { "내용은 BASE 와 같고 Properties 만 바뀌었습니다." }.into());
     }
+    out.props = props;
     Ok(out)
+}
+
+// 값 쪽은 ACTUAL_NODE 에 고친 뒤의 속성 전부가 있다. 없으면 고친 속성이 없다는 뜻이다.
+fn prop_changes(c: &Connection, rel: &str) -> Vec<PropChange> {
+    let Ok(now) = c.query_row("SELECT properties FROM ACTUAL_NODE WHERE local_relpath = ?1 AND properties IS NOT NULL", [rel], |r| r.get::<_, Vec<u8>>(0)) else {
+        return Vec::new();
+    };
+    let base: Vec<u8> = c
+        .query_row("SELECT properties FROM NODES WHERE local_relpath = ?1 AND op_depth = 0", [rel], |r| r.get::<_, Option<Vec<u8>>>(0))
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    diff_props(&prop_list(&base), &prop_list(&now))
+}
+
+fn prop_list(blob: &[u8]) -> Vec<(String, String)> {
+    let Some((Skel::List(items), _)) = parse_skel(blob, 0) else { return Vec::new() };
+    items
+        .chunks(2)
+        .filter_map(|kv| match kv {
+            [Skel::Atom(k), Skel::Atom(v)] => Some((String::from_utf8_lossy(k).into_owned(), String::from_utf8_lossy(v).into_owned())),
+            _ => None,
+        })
+        .collect()
+}
+
+fn diff_props(old: &[(String, String)], new: &[(String, String)]) -> Vec<PropChange> {
+    let get = |l: &[(String, String)], n: &str| l.iter().find(|(k, _)| k == n).map(|(_, v)| v.clone());
+    let mut names: Vec<&String> = old.iter().chain(new).map(|(k, _)| k).collect();
+    names.sort();
+    names.dedup();
+    names
+        .into_iter()
+        .filter_map(|n| {
+            let (o, w) = (get(old, n), get(new, n));
+            (o != w).then(|| PropChange { name: n.clone(), old: o, new: w })
+        })
+        .collect()
+}
+
+/// 파일에 충돌 표시가 남았는가 — 시작과 끝 표시가 모두 줄 머리에 있어야 한다 (설명 글에 한 줄만 적힌 것은 세지 않는다)
+pub fn has_conflict_markers(b: &[u8]) -> bool {
+    let has = |m: &[u8]| b.split(|&c| c == b'\n').any(|l| l.starts_with(m));
+    has(b"<<<<<<< ") && has(b">>>>>>> ")
+}
+
+fn eol_name(s: &str) -> &'static str {
+    let crlf = s.matches("\r\n").count();
+    let lf = s.matches('\n').count() - crlf;
+    match (crlf, lf) {
+        (0, 0) => "",
+        (_, 0) => "CRLF",
+        (0, _) => "LF",
+        _ => "CRLF · LF 섞임",
+    }
 }
 
 /// 두 내용의 줄 차이 — 작업복사본 · 기준본 · 저장소 리비전 어느 쪽끼리든 같은 꼴로 보여 준다
 pub fn text_diff(rel: &str, old: &[u8], new: &[u8]) -> Diff {
-    let mut out = Diff { path: rel.to_string(), note: None, added: 0, removed: 0, lines: Vec::new() };
+    let mut out = Diff { path: rel.to_string(), note: None, notice: None, added: 0, removed: 0, lines: Vec::new(), props: Vec::new() };
     if old.len() as u64 > DIFF_MAX_BYTES || new.len() as u64 > DIFF_MAX_BYTES {
         out.note = Some("파일이 커서(3MB 넘음) 차이를 보이지 않습니다.".into());
         return out;
@@ -460,6 +536,25 @@ pub fn text_diff(rel: &str, old: &[u8], new: &[u8]) -> Diff {
         return out;
     }
     let (a, b) = (decode(old), decode(new));
+    // 2026.10.30 : 줄끝 · 인코딩만 바꾼 파일이 「수정 시각만 바뀜」으로 보이거나 온 줄이 빨강 · 초록으로 나왔다. 뜻이 같은 차이는 빼고 견주고, 무엇이 바뀌었는지 말한다
+    let (ea, eb) = (eol_name(&a), eol_name(&b));
+    let eol = (ea != eb && !ea.is_empty() && !eb.is_empty()).then(|| format!("줄끝 {ea} → {eb}"));
+    let enc_of = |x: &[u8]| if std::str::from_utf8(x).is_ok() { "UTF-8" } else { "EUC-KR" };
+    let enc = (enc_of(old) != enc_of(new)).then(|| format!("인코딩 {} → {}", enc_of(old), enc_of(new)));
+    let bom = (a.starts_with('\u{feff}') != b.starts_with('\u{feff}')).then(|| "BOM 바뀜".to_string());
+    let what: Vec<String> = [eol.clone(), enc, bom].into_iter().flatten().collect();
+    let clean = |s: &str| {
+        let s = s.trim_start_matches('\u{feff}');
+        if eol.is_some() { s.replace("\r\n", "\n") } else { s.to_string() }
+    };
+    let (a, b) = (clean(&a), clean(&b));
+    if !what.is_empty() {
+        if a == b {
+            out.note = Some(format!("글자는 같고 {} 만 바뀌었습니다.", what.join(" · ")));
+            return out;
+        }
+        out.notice = Some(format!("{} 도 바뀌었습니다. 아래는 그것을 뺀 차이입니다.", what.join(" · ")));
+    }
     let td = similar::TextDiff::from_lines(&a, &b);
     for group in td.grouped_ops(3) {
         let (first, last) = (group.first().unwrap(), group.last().unwrap());
@@ -823,6 +918,32 @@ mod tests {
         assert_eq!(prop(&blob, "svn:ignore").as_deref(), Some(".classpath\ntarget\n"));
         assert_eq!(prop(&blob, "svn:eol-style"), None);
         assert_eq!(prop(&Some(b"()".to_vec()), "svn:ignore"), None);
+    }
+
+    #[test]
+    fn 줄끝_인코딩만_바뀌면_그렇게_말한다() {
+        let d = text_diff("a", b"x\r\ny\r\n", b"x\ny\n");
+        assert!(d.lines.is_empty() && d.note.unwrap().contains("줄끝 CRLF → LF"));
+        // 「가」 EUC-KR · UTF-8
+        let d = text_diff("a", b"\xb0\xa1\n", "가\n".as_bytes());
+        assert!(d.lines.is_empty() && d.note.unwrap().contains("인코딩 EUC-KR → UTF-8"));
+        // 내용도 바뀌면 진짜 차이만 줄로 보이고 줄끝은 따로 알린다
+        let d = text_diff("a", b"x\r\ny\r\n", b"x\nz\n");
+        assert_eq!((d.added, d.removed), (1, 1));
+        assert!(d.note.is_none() && d.notice.unwrap().contains("줄끝"));
+        assert_eq!(text_diff("a", b"x\n", b"x\n").note.as_deref(), Some("두 내용이 같습니다."));
+    }
+
+    #[test]
+    fn 충돌_표시와_속성_변경을_찾는다() {
+        assert!(has_conflict_markers(b"a\n<<<<<<< .mine\nb\n=======\nc\n>>>>>>> .r3\n"));
+        assert!(!has_conflict_markers(b"// <<<<<<< \nb\n"));
+        assert!(!has_conflict_markers(b"  <<<<<<< x\n  >>>>>>> y\n"));
+        let old = prop_list(b"(svn:ignore 7 target\n a 1 x )");
+        let new = prop_list(b"(svn:ignore 7 target\n b 1 y )");
+        let ch = diff_props(&old, &new);
+        assert_eq!(ch.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["a", "b"]);
+        assert_eq!((ch[0].old.as_deref(), ch[0].new.as_deref()), (Some("x"), None));
     }
 
     #[test]

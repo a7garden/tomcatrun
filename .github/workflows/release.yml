@@ -62,6 +62,20 @@ jobs:
           cd installer/dist
           for f in tomcatrun-setup-*.exe; do sha256sum "$f" | cut -d' ' -f1 > "$f.sha256"; done
 
+      # 실행기의 자동 업데이트가 이 서명을 공개 키(update.rs 의 PUBKEY)로 검증한다. 서명이 없는 판은 받지 않으므로 키가 없으면 여기서 멈춘다
+      - name: 설치 파일 서명
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        run: |
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::error::저장소 비밀 TAURI_SIGNING_PRIVATE_KEY 가 없습니다."
+            exit 1
+          fi
+          cd installer/dist
+          for f in tomcatrun-setup-*.exe; do npx --yes @tauri-apps/cli@2 signer sign "$f"; done
+
       - uses: actions/upload-artifact@v6
         with:
           name: tomcatrun-setup

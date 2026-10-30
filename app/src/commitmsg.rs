@@ -250,6 +250,7 @@ mod tests {
         let d = Diff {
             path: "a.java".into(),
             note: None,
+            notice: None,
             added: 1,
             removed: 1,
             lines: vec![
@@ -257,6 +258,7 @@ mod tests {
                 DiffLine { t: "del", o: Some(1), n: None, s: "old".into() },
                 DiffLine { t: "add", o: None, n: Some(1), s: "새 줄".into() },
             ],
+            props: Vec::new(),
         };
         let t = diff_text(&d).unwrap();
         assert_eq!(t, "@@ -1,1 +1,1 @@\n-old\n+새 줄\n");

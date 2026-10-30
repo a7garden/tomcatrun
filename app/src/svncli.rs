@@ -390,9 +390,40 @@ pub fn diff_args(paths: &[String]) -> Vec<String> {
     with_paths(vec!["diff".into(), "--internal-diff".into()], paths)
 }
 
-/// 버전 관리 밖 파일을 지운다 (ignore 된 것은 남긴다)
-pub fn remove_unversioned_args() -> Vec<String> {
-    vec!["cleanup".into(), "--remove-unversioned".into()]
+/// TortoiseSVN 이 Commit 창에서 고르지 않는 이름 — 두 도구에서 같은 파일이 빠진다
+pub const IGNORE_ON_COMMIT: &str = "ignore-on-commit";
+
+pub fn changelist_args(add: bool, paths: &[String]) -> Vec<String> {
+    with_paths(if add { vec!["changelist".into(), IGNORE_ON_COMMIT.into()] } else { vec!["changelist".into(), "--remove".into()] }, paths)
+}
+
+/// svn update · switch · merge 가 찍은 한 줄
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Received {
+    pub code: String,        // U G C A D E R
+    pub path: String,        // 작업복사본 기준 · 구분자는 /
+    pub before: Option<i64>, // 받기 전 BASE 리비전 — 없으면 새로 들어온 파일
+}
+
+/// 머리 네 칸(내용 · 속성 · 잠금 · tree conflict)과 빈칸 뒤 경로. 「Updating '.':」 · 「Updated to revision」 · 요약 줄은 꼴이 달라 걸러진다.
+/// 못 읽는 줄은 건너뛴다 — 받기는 이미 끝났으므로 표시만 빠진다.
+pub fn parse_received(out: &str) -> Vec<Received> {
+    let mut got: Vec<Received> = Vec::new();
+    for l in out.lines() {
+        let c: Vec<char> = l.chars().collect();
+        if c.len() < 6 || c[4] != ' ' || c[5] == ' ' {
+            continue;
+        }
+        let ok = "ACDEGRU ".contains(c[0]) && "CGU ".contains(c[1]) && " B".contains(c[2]) && " C".contains(c[3]);
+        if !ok || c[..4].iter().all(|x| *x == ' ') {
+            continue;
+        }
+        let code = if c[0] == 'C' || c[1] == 'C' || c[3] == 'C' { 'C' } else if c[0] != ' ' { c[0] } else { c[1] };
+        let path: String = c[5..].iter().collect::<String>().replace('\\', "/");
+        got.push(Received { code: code.to_string(), path, before: None });
+    }
+    got
 }
 
 /// svn proplist -v --xml — 이름 · 값 (값은 그대로, 여러 줄이면 \n)
@@ -549,6 +580,16 @@ mod tests {
         assert_eq!(parse_props(xml).unwrap(), [("svn:ignore".to_string(), "target\n.classpath\n".to_string()), ("svn:mergeinfo".to_string(), String::new())]);
         // 「-」 로 시작하는 이름도 옵션으로 읽히지 않는다
         assert_eq!(delete_args(&["-x".to_string()]), ["delete", "--", "-x"]);
+    }
+
+    #[test]
+    fn 받은_결과를_읽는다() {
+        let out = "Updating '.':\nU    src\\a.java\nG    b.jsp\nC    c.xml\n U   .\nA    new/주문.js\nD    old.js\n   C tree\nUpdated to revision 3770.\nSummary of conflicts:\n  Text conflicts: 1\n  Tree conflicts: 1\n'.' 갱신 중:\n리비전 3770 로 갱신되었습니다.\nAt revision 3.\n";
+        let got = parse_received(out);
+        let v: Vec<(&str, &str)> = got.iter().map(|r| (r.code.as_str(), r.path.as_str())).collect();
+        assert_eq!(v, [("U", "src/a.java"), ("G", "b.jsp"), ("C", "c.xml"), ("U", "."), ("A", "new/주문.js"), ("D", "old.js"), ("C", "tree")]);
+        assert_eq!(changelist_args(true, &["a".to_string()]), ["changelist", "ignore-on-commit", "--", "a"]);
+        assert_eq!(changelist_args(false, &["a".to_string()]), ["changelist", "--remove", "--", "a"]);
     }
 
     #[test]

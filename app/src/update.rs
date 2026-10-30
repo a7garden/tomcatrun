@@ -3,8 +3,10 @@
 //   확인    GET api.github.com/repos/<REPO>/releases/latest → tag_name(v0.7.0) 을 이 실행 파일의 판과 견준다
 //           지난 응답의 ETag 를 If-None-Match 로 붙인다 — 304 는 GitHub 비인증 한도(IP 당 시간 60회)를 쓰지 않는다
 //           태그는 새 판인데 설치 파일이 아직 없으면(릴리스 빌드 중) Building — 실행기가 몇 분 뒤 다시 묻는다
+//           한도에 걸리면(403 · 429) API 를 쓰지 않는 github.com 주소로 판을 알아낸다 (check_web) — 한 공인 IP 를 나눠 쓰는 사무실에서 걸린다
 //   받기    설치 파일(tomcatrun-setup-<판>.exe)을 %TEMP% 에 받고 SHA-256 을 대조한다
 //           (GitHub 가 자산마다 주는 digest, 없으면 같은 릴리스의 <설치 파일>.sha256) — 둘 다 없거나 다르면 돌리지 않는다
+//           서명(<설치 파일>.sig)도 PUBKEY 로 검증한다 — 해시는 같은 릴리스에서 오므로 깨진 파일만 잡고, 릴리스째 바뀐 파일은 서명만 잡는다
 //   설치    tomcatrun-setup.exe /S /D=<실행기 폴더> 를 띄우고 실행기는 톰캣을 끄고 닫힌다.
 //           설치 파일이 exe 를 바꾼 뒤 실행기를 다시 띄운다 (tomcatrun.nsi 의 .onInstSuccess)
 //
@@ -18,10 +20,16 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use base64::Engine;
+use minisign_verify::{PublicKey, Signature};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 pub const REPO: &str = "a7garden/tomcatrun";
+
+// 설치 파일 서명의 공개 키. 비밀 키는 ~/.tauri/tomcatrun.key 와 저장소 비밀 TAURI_SIGNING_PRIVATE_KEY 에 있다.
+// 비밀 키를 잃으면 이미 깔린 실행기는 새 판을 받지 못한다 — 이 값이 실행 파일 안에 박혀 있다
+const PUBKEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDRFNkIxNTU2MjdGRDY1REMKUldUY1pmMG5WaFZyVGpDU0JFSGV5UGVtZy92eW9wbTBLSm42WE9CdzlkRHRla0wzNm5BWGloMDEK";
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -36,6 +44,8 @@ pub struct Release {
     pub sha256: Option<String>,
     #[serde(skip)]
     pub sha256_url: Option<String>,
+    #[serde(skip)]
+    pub sig_url: Option<String>,
 }
 
 fn agent() -> Result<ureq::Agent, String> {
@@ -77,13 +87,54 @@ pub fn check(etag: Option<&str>) -> Result<(Latest, Option<String>), String> {
     if let Some(t) = etag {
         req = req.set("If-None-Match", t);
     }
-    let resp = req.call().map_err(|e| format!("업데이트를 확인하지 못했습니다: {e}"))?;
+    let resp = match req.call() {
+        Ok(r) => r,
+        Err(ureq::Error::Status(403 | 429, _)) => return Ok((check_web(env!("CARGO_PKG_VERSION"))?, None)),
+        Err(e) => return Err(format!("업데이트를 확인하지 못했습니다: {e}")),
+    };
     let tag = resp.header("ETag").map(String::from);
     if resp.status() == 304 {
         return Ok((Latest::NotModified, tag));
     }
     let text = resp.into_string().map_err(|e| e.to_string())?;
     Ok((classify(&text, env!("CARGO_PKG_VERSION"))?, tag))
+}
+
+/// API 한도에 걸렸을 때 — github.com/<REPO>/releases/latest 가 최신 태그 주소로 넘겨 주는 것으로 판을 알아낸다.
+/// 릴리스 본문은 받지 못해 비워 둔다 (설정 › 업데이트의 변경 기록이 릴리스 페이지로 안내한다).
+fn check_web(local: &str) -> Result<Latest, String> {
+    let ag = agent()?;
+    let resp = ag.get(&format!("https://github.com/{REPO}/releases/latest")).call().map_err(|e| format!("업데이트를 확인하지 못했습니다: {e}"))?;
+    let Some(version) = version_in_url(resp.get_url()) else { return Ok(Latest::Current) };
+    if !newer(&version, local) {
+        return Ok(Latest::Current);
+    }
+    let base = format!("https://github.com/{REPO}/releases/download/v{version}");
+    let asset_name = format!("tomcatrun-setup-{version}.exe");
+    let asset = format!("{base}/{asset_name}");
+    let size = match ag.head(&asset).call() {
+        Ok(r) => r.header("Content-Length").and_then(|n| n.parse().ok()).unwrap_or(0),
+        Err(ureq::Error::Status(404, _)) => return Ok(Latest::Building(version)),
+        Err(e) => return Err(format!("업데이트를 확인하지 못했습니다: {e}")),
+    };
+    Ok(Latest::Ready(Release {
+        page: format!("https://github.com/{REPO}/releases/tag/v{version}"),
+        notes: String::new(),
+        sha256: None,
+        sha256_url: Some(format!("{asset}.sha256")),
+        sig_url: Some(format!("{asset}.sig")),
+        asset,
+        asset_name,
+        size,
+        version,
+    }))
+}
+
+/// 「…/releases/tag/v0.7.0」 → 0.7.0. 릴리스가 하나도 없으면 태그 주소로 넘어가지 않아 None
+fn version_in_url(url: &str) -> Option<String> {
+    let (_, tag) = url.split_once("/releases/tag/")?;
+    let v = tag.trim_end_matches('/').trim_start_matches('v');
+    (!v.is_empty()).then(|| v.to_string())
 }
 
 fn classify(text: &str, local: &str) -> Result<Latest, String> {
@@ -124,6 +175,11 @@ fn parse_latest(text: &str) -> Result<Option<Release>, String> {
         .find(|a| name_of(a).eq_ignore_ascii_case(&format!("{asset_name}.sha256")))
         .and_then(|a| a["browser_download_url"].as_str())
         .map(String::from);
+    let sig_url = assets
+        .iter()
+        .find(|a| name_of(a).eq_ignore_ascii_case(&format!("{asset_name}.sig")))
+        .and_then(|a| a["browser_download_url"].as_str())
+        .map(String::from);
     let notes: String = v["body"].as_str().unwrap_or("").chars().take(20000).collect();
     Ok(Some(Release {
         version: tag.trim_start_matches('v').to_string(),
@@ -134,10 +190,25 @@ fn parse_latest(text: &str) -> Result<Option<Release>, String> {
         size: exe["size"].as_u64().unwrap_or(0),
         sha256,
         sha256_url,
+        sig_url,
     }))
 }
 
-/// 설치 파일을 받아 해시를 대조한다. progress(받은 바이트) 는 1MB 마다 부른다.
+/// 서명 도구(tauri signer)가 내는 꼴 — 파일 내용이 minisign 글자를 base64 로 한 번 더 싼 것이다
+fn unbase64(text: &str) -> Result<String, String> {
+    let bytes = base64::engine::general_purpose::STANDARD.decode(text.trim()).map_err(|e| format!("서명을 읽지 못했습니다: {e}"))?;
+    String::from_utf8(bytes).map_err(|e| format!("서명을 읽지 못했습니다: {e}"))
+}
+
+fn public_key() -> Result<PublicKey, String> {
+    PublicKey::decode(&unbase64(PUBKEY)?).map_err(|e| format!("공개 키를 읽지 못했습니다: {e}"))
+}
+
+fn signature(text: &str) -> Result<Signature, String> {
+    Signature::decode(&unbase64(text)?).map_err(|e| format!("서명을 읽지 못했습니다: {e}"))
+}
+
+/// 설치 파일을 받아 해시와 서명을 대조한다. progress(받은 바이트) 는 1MB 마다 부른다.
 pub fn download(rel: &Release, mut progress: impl FnMut(u64)) -> Result<PathBuf, String> {
     let ag = agent()?;
     let want = match (&rel.sha256, &rel.sha256_url) {
@@ -151,6 +222,10 @@ pub fn download(rel: &Release, mut progress: impl FnMut(u64)) -> Result<PathBuf,
     if want.len() != 64 {
         return Err("릴리스의 해시가 올바르지 않습니다.".into());
     }
+    let Some(sig_url) = &rel.sig_url else { return Err("릴리스에 설치 파일의 서명이 없어 받지 않았습니다.".into()) };
+    let sig_text = ag.get(sig_url).call().map_err(|e| format!("서명 파일을 받지 못했습니다: {e}"))?.into_string().map_err(|e| e.to_string())?;
+    let (key, sig) = (public_key()?, signature(&sig_text)?);
+    let mut verifier = key.verify_stream(&sig).map_err(|e| format!("서명을 읽지 못했습니다: {e}"))?;
     let dir = std::env::temp_dir().join("tomcatrun-update");
     let _ = fs::create_dir_all(&dir);
     let out = dir.join(&rel.asset_name);
@@ -166,6 +241,7 @@ pub fn download(rel: &Release, mut progress: impl FnMut(u64)) -> Result<PathBuf,
             break;
         }
         hasher.update(&buf[..n]);
+        verifier.update(&buf[..n]);
         f.write_all(&buf[..n]).map_err(|e| e.to_string())?;
         got += n as u64;
         if got >= next {
@@ -178,6 +254,10 @@ pub fn download(rel: &Release, mut progress: impl FnMut(u64)) -> Result<PathBuf,
     if have != want {
         let _ = fs::remove_file(&part);
         return Err(format!("받은 설치 파일의 해시가 릴리스와 다릅니다 ({have}). 설치하지 않았습니다."));
+    }
+    if let Err(e) = verifier.finalize() {
+        let _ = fs::remove_file(&part);
+        return Err(format!("받은 설치 파일의 서명이 맞지 않습니다 ({e}). 설치하지 않았습니다."));
     }
     let _ = fs::remove_file(&out);
     fs::rename(&part, &out).map_err(|e| e.to_string())?;
@@ -215,6 +295,34 @@ mod tests {
         let _ = std::fs::remove_file(f);
     }
 
+    // API 를 거치지 않고 판과 설치 파일을 찾는다 (GitHub 에 닿을 때만)
+    #[test]
+    #[ignore]
+    fn 한도에_걸리면_github_주소로_찾는다() {
+        let Latest::Ready(r) = check_web("0.0.1").unwrap() else { panic!("설치 파일이 있는 릴리스") };
+        assert!(r.size > 0 && r.asset.ends_with(".exe") && r.notes.is_empty());
+    }
+
+    #[test]
+    fn 태그_주소에서_판을_읽는다() {
+        assert_eq!(version_in_url("https://github.com/a/b/releases/tag/v0.7.0").as_deref(), Some("0.7.0"));
+        assert_eq!(version_in_url("https://github.com/a/b/releases"), None);
+    }
+
+    // fixture 는 ~/.tauri/tomcatrun.key 로 서명한 시험 글자다
+    #[test]
+    fn 서명을_검증한다() {
+        let sig = signature("dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUY1pmMG5WaFZyVHZaVFJlU01vZUZMdDVyYlhFdkoxTVJvbjR2YWFYNzl2emRYRU9FRmRMNDNDd0RlUFEwOU9PRlplWDBjTEhXNHVLM2xOeERFWml5ZjlISCtXTmEwdlF3PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzMzQ3OTI2CWZpbGU6Zml4dHVyZS50eHQKT080K1VzUmVaVmVNWWJvanJVQURVR0tIcmk0bEYzZlpmZE1wTTVuSHBFSDdlblk5ZEozKyswM3FnbnZlZUdPL2J2NkVqcSs2NUdRMXloRVFNVlRRQ3c9PQo=").unwrap();
+        let key = public_key().unwrap();
+        let check = |data: &[u8]| {
+            let mut v = key.verify_stream(&sig).unwrap();
+            v.update(data);
+            v.finalize().is_ok()
+        };
+        assert!(check(b"tomcatrun signature fixture\n"));
+        assert!(!check(b"tomcatrun signature fixturE\n"));
+    }
+
     #[test]
     fn 판을_견준다() {
         assert!(newer("v0.7.0", "0.6.0"));
@@ -230,12 +338,14 @@ mod tests {
         let text = r#"{"tag_name":"v0.7.0","html_url":"https://github.com/a/b/releases/tag/v0.7.0","body":"고친 것",
             "draft":false,"prerelease":false,"assets":[
               {"name":"tomcatrun-setup-0.7.0.exe.sha256","browser_download_url":"https://x/s.sha256","size":90},
+              {"name":"tomcatrun-setup-0.7.0.exe.sig","browser_download_url":"https://x/s.sig","size":90},
               {"name":"tomcatrun-setup-0.7.0.exe","browser_download_url":"https://x/s.exe","size":123,
                "digest":"sha256:ABCDEF"}]}"#;
         let r = parse_latest(text).unwrap().unwrap();
         assert_eq!((r.version.as_str(), r.asset.as_str(), r.size), ("0.7.0", "https://x/s.exe", 123));
         assert_eq!(r.sha256.as_deref(), Some("abcdef"));
         assert_eq!(r.sha256_url.as_deref(), Some("https://x/s.sha256"));
+        assert_eq!(r.sig_url.as_deref(), Some("https://x/s.sig"));
         // 미리 보기 판 · 설치 파일이 없는 릴리스는 알리지 않는다
         assert!(parse_latest(r#"{"tag_name":"v9.0.0","prerelease":true,"assets":[]}"#).unwrap().is_none());
         assert!(parse_latest(r#"{"tag_name":"v9.0.0","assets":[{"name":"src.zip"}]}"#).unwrap().is_none());
