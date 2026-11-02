@@ -4761,6 +4761,21 @@ fn svn_received(revs: &HashMap<String, svn::BaseRev>, gone: &HashMap<&str, i64>,
     }
 }
 
+// 고쳤다가 되돌렸을 수 있는 파일 — 받을 커밋이 둘 이상이고 모두 내용만 고친 것. 커밋 하나면 내용이 같을 수 없어 저장소에 묻지 않는다.
+fn svn_maybe_reverted(entries: &[svnweb::LogEntry]) -> Vec<String> {
+    let mut by: HashMap<&str, Option<u32>> = HashMap::new();
+    for c in entries.iter().flat_map(|e| e.paths.iter()).filter(|c| c.inside) {
+        let n = by.entry(c.path.as_str()).or_insert(Some(0));
+        *n = if c.action == "M" && !c.dir && !c.prop_mods { n.map(|x| x + 1) } else { None };
+    }
+    let mut out: Vec<String> = by.into_iter().filter(|(_, n)| n.is_some_and(|x| x >= 2)).map(|(p, _)| p.to_string()).collect();
+    out.sort();
+    out
+}
+
+// 파일마다 저장소 최신 내용을 받으므로 후보가 아주 많으면 앞의 일부만 견준다. 못 견준 파일은 목록에 남을 뿐이다.
+const REVERT_CHECK_MAX: usize = 200;
+
 // 2026.10.29 : 200 → 1000. 커밋하면 올린 파일만 리비전이 올라 최저 리비전이 수백 리비전 뒤에 남는다 (mhms_new r3352~r3766). 내가 올린 커밋은 걸러 낸다.
 const INCOMING_MAX: u32 = 1000;
 
@@ -4791,6 +4806,19 @@ async fn svn_incoming(app: AppHandle, srv: usize) -> Result<Incoming, String> {
         for (e, k) in entries.iter_mut().zip(keep) {
             let mut k = k.into_iter();
             e.paths.retain(|_| k.next().unwrap_or(true));
+        }
+        // 2026.11.02 : 고쳤다가 되돌린 파일은 받아도 내용이 그대로다. 그대로 두면 svn status -u · IDE 에 없는 파일이 목록에 남는다 (mhms_new 15개).
+        // 저장소에 묻지 못하면 목록에 남긴다 — 받을 것을 숨기는 쪽으로 틀리면 안 된다.
+        let mut same: HashSet<String> = HashSet::new();
+        for path in svn_maybe_reverted(&entries).into_iter().take(REVERT_CHECK_MAX) {
+            let Some(sum) = revs.get(&path).and_then(|b| b.checksum.as_deref()).and_then(|s| s.strip_prefix("$sha1$")) else { continue };
+            let Ok(Some(body)) = svnweb::cat(&info.repo_root, &head.rev_root_stub, head.head, &format!("{}/{}", info.repos_path, path), &cred) else { break };
+            if sha1_smol::Sha1::from(&body).digest().to_string() == sum {
+                same.insert(path);
+            }
+        }
+        for e in entries.iter_mut() {
+            e.paths.retain(|c| !c.inside || !same.contains(&c.path));
         }
         entries.retain(|e| e.paths.iter().any(|c| c.inside));
         let mine: HashSet<String> =
@@ -6143,6 +6171,30 @@ mod tests {
     use super::*;
 
     const PROJ: &str = "D:/work/shop";
+
+    #[test]
+    fn 되돌렸을_수_있는_파일만_저장소와_견준다() {
+        let ch = |action, path: &str, inside, dir, prop_mods| svnweb::Changed { action, path: path.into(), inside, dir, prop_mods };
+        let entry = |paths| svnweb::LogEntry { rev: 1, author: String::new(), date_ms: None, msg: String::new(), paths };
+        let v = [
+            entry(vec![
+                ch("M", "twice.xml", true, false, false),
+                ch("M", "once.xml", true, false, false),
+                ch("M", "prop.xml", true, false, false),
+                ch("M", "added.xml", true, false, false),
+                ch("M", "dir", true, true, false),
+                ch("M", "/other/out.xml", false, false, false),
+            ]),
+            entry(vec![
+                ch("M", "twice.xml", true, false, false),
+                ch("M", "prop.xml", true, false, true),
+                ch("A", "added.xml", true, false, false),
+                ch("M", "dir", true, true, false),
+                ch("M", "/other/out.xml", false, false, false),
+            ]),
+        ];
+        assert_eq!(svn_maybe_reverted(&v), ["twice.xml"]);
+    }
 
     #[test]
     fn 자바_판을_읽는다() {

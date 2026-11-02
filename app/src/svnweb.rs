@@ -204,6 +204,8 @@ pub struct Changed {
     pub path: String,         // 작업복사본 기준 상대 경로 (작업복사본 밖이면 저장소 절대 경로)
     pub inside: bool,         // 작업복사본 안인가
     pub dir: bool,
+    #[serde(skip)]
+    pub prop_mods: bool,      // 속성도 바뀌었는가 — 내용이 같아도 받을 것이 남는다. 알려 주지 않는 서버면 true 로 본다
 }
 
 #[derive(Clone, Serialize)]
@@ -258,6 +260,7 @@ pub fn parse_log(xml: &str, wc_repos_path: &str) -> Result<Vec<LogEntry>, String
                         path: if inside { text[prefix.len()..].to_string() } else { text.clone() },
                         inside,
                         dir: c.attribute("node-kind") == Some("dir"),
+                        prop_mods: c.attribute("prop-mods") != Some("false"),
                     });
                 }
                 _ => {}

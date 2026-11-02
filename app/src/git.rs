@@ -262,7 +262,7 @@ fn parse_log(text: &str) -> Vec<Commit> {
                         'R' => "R",
                         _ => "M",
                     };
-                    Some(Changed { action, path: cols[cols.len() - 1].to_string(), inside: true, dir: false })
+                    Some(Changed { action, path: cols[cols.len() - 1].to_string(), inside: true, dir: false, prop_mods: false })
                 })
                 .collect();
             Some(Commit {

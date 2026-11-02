@@ -106,7 +106,8 @@ input::placeholder { color: var(--faint); }
 input[type=checkbox] { appearance: none; flex: none; position: relative; width: 14px; height: 14px; margin: 0; border: 1px solid var(--line-strong); border-radius: 4px; background: var(--panel); cursor: pointer; vertical-align: -2px; transition: background-color .08s, border-color .08s; }
 input[type=checkbox]:hover:not(:disabled) { border-color: var(--muted); }
 input[type=checkbox]:checked, input[type=checkbox]:indeterminate { background: var(--text); border-color: var(--text); }
-input[type=checkbox]:checked::after { content: ""; position: absolute; left: 3.5px; top: .5px; width: 5px; height: 9px; border: solid var(--panel); border-width: 0 1.75px 1.75px 0; transform: rotate(42deg); }
+/* 2026.11.02 : 테두리를 돌려 그리면 아래로 치우치고 100% 배율에서 가늘게 뭉개져 다각형으로 그린다 */
+input[type=checkbox]:checked::after { content: ""; position: absolute; inset: 0; background: var(--panel); clip-path: polygon(2.2px 6.2px, 3.4px 5px, 5px 6.6px, 8.6px 3px, 9.8px 4.2px, 5px 9px); }
 input[type=checkbox]:indeterminate::after { content: ""; position: absolute; left: 2px; top: 5px; width: 8px; height: 2px; border: 0; border-radius: 1px; background: var(--panel); transform: none; }
 input[type=checkbox]:disabled { opacity: .5; cursor: default; }
 @media (prefers-reduced-motion: reduce) { input[type=checkbox] { transition: none; } }
@@ -3277,7 +3278,8 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 				checksChanged();
 			};
 			row.onclick = function () { svnSelect(p); };
-			row.ondblclick = function () { if (it.code !== "D" && it.code !== "!") invoke("open_source", { file: rootOf(svn.srv) + "/" + p, line: 1 }); };
+			// 체크박스를 빠르게 두 번 눌러도 파일이 열리지 않게 한다
+			row.ondblclick = function (e) { if (e.target.tagName !== "INPUT" && it.code !== "D" && it.code !== "!") invoke("open_source", { file: rootOf(svn.srv) + "/" + p, line: 1 }); };
 		});
 		[].forEach.call(list.querySelectorAll(".d-row"), function (row) {
 			var cb = row.querySelector("input"), path = row.getAttribute("data-d"), self = row.getAttribute("data-p");

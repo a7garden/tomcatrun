@@ -617,6 +617,7 @@ pub fn wc_info(wc: &Path) -> Result<WcInfo, String> {
 pub struct BaseRev {
     pub rev: i64,
     pub full: bool, // 끝까지(infinity) 받은 폴더 — 그 리비전 앞의 변경은 아래 경로까지 다 받았다
+    pub checksum: Option<String>, // 기준본 내용의 SHA-1 ($sha1$…) — 파일만 있다
 }
 
 /// 파일마다 골라 Update 하면 작업복사본이 섞인 리비전이 된다. 받을 커밋은 작업복사본 최고 리비전이 아니라 이것과 견준다.
@@ -626,11 +627,11 @@ pub struct BaseRev {
 pub fn base_revs(wc: &Path) -> Result<HashMap<String, BaseRev>, String> {
     let c = open(wc)?;
     let read = || -> rusqlite::Result<HashMap<String, BaseRev>> {
-        let mut st = c.prepare("SELECT local_relpath, revision, kind, depth FROM NODES WHERE op_depth = 0 AND presence IN ('normal', 'incomplete') AND revision IS NOT NULL")?;
+        let mut st = c.prepare("SELECT local_relpath, revision, kind, depth, checksum FROM NODES WHERE op_depth = 0 AND presence IN ('normal', 'incomplete') AND revision IS NOT NULL")?;
         let rows = st.query_map([], |r| {
             let kind: String = r.get(2)?;
             let depth: Option<String> = r.get(3)?;
-            Ok((r.get::<_, String>(0)?, BaseRev { rev: r.get(1)?, full: kind == "dir" && depth.as_deref().map_or(true, |d| d == "infinity") }))
+            Ok((r.get::<_, String>(0)?, BaseRev { rev: r.get(1)?, full: kind == "dir" && depth.as_deref().map_or(true, |d| d == "infinity"), checksum: r.get(4)? }))
         })?;
         rows.collect()
     };
