@@ -744,7 +744,36 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 #sbMem { display: inline-flex; align-items: center; gap: 4px; flex: none; }
 #sbMem b { color: var(--text); font-weight: 600; font-family: var(--mono); margin-right: 6px; }
 #sbMem b:last-child { margin-right: 0; }
-/* 떠 있는 것(메뉴 · 알림 조각 · 대화상자)만 그림자를 단다 — docket .pop. 바닥에 붙은 판은 선으로만 나눈다. */
+#sbBell { display: inline-flex; align-items: center; gap: 4px; flex: none; }
+#sbBell .ic { width: 14px; height: 14px; }
+#sbBell[aria-expanded="true"] { background: var(--panel-2); color: var(--text); }
+.sb-count { font: 600 11px var(--ui); min-width: 16px; height: 16px; line-height: 16px; padding: 0 4px; border-radius: 8px; text-align: center; background: var(--panel-2); color: var(--muted); }
+.sb-count:empty { display: none; }
+.sb-count.crit { background: var(--crit-solid); color: #fff; }
+.sb-count.warn { background: var(--warn-solid); color: var(--on-warn); }
+/* 알림 센터 — 설정 모달(15)보다 아래에 둔다. 안에서 여는 확인 창이 가려지면 안 된다 */
+.notice {
+	position: fixed; right: 8px; bottom: 34px; z-index: 12; width: min(520px, calc(100vw - 16px)); max-height: calc(100vh - 90px);
+	display: flex; flex-direction: column; background: var(--panel); color: var(--text);
+	border: 1px solid var(--line-strong); border-radius: 8px; box-shadow: var(--shadow-pop); overflow: hidden;
+}
+.notice[hidden] { display: none; }
+.nt-head { display: flex; align-items: center; gap: 6px; padding: 8px 8px 8px 14px; border-bottom: 1px solid var(--line); }
+.nt-head b { flex: 1; font-weight: 600; font-size: 13px; }
+.nt-head .x-slot { width: 24px; height: 24px; padding: 0; justify-content: center; }
+.nt-body { flex: 1; min-height: 0; overflow: auto; }
+.nt-sec { padding: 8px 14px 4px; font: 600 11.5px var(--ui); color: var(--muted); }
+.nt-empty { padding: 28px 14px; text-align: center; color: var(--muted); }
+/* 판이 좁으니 글을 줄바꿈하고 단추는 글 아래로 내린다 */
+.notice .alert { grid-template-columns: auto minmax(0, 1fr); padding: 7px 12px 7px 14px; }
+.notice .alert-text { white-space: normal; overflow-wrap: anywhere; }
+.notice .alert-acts { grid-column: 2; flex-wrap: wrap; margin-top: 4px; }
+.notice .alert-acts .x-slot { margin-left: auto; order: 1; }
+.nt-log { display: flex; gap: 8px; padding: 3px 14px; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.nt-log span:last-child { min-width: 0; }
+.nt-log.crit span:last-child { color: var(--crit); }
+.nt-at { flex: none; color: var(--faint); }
+/* 떠 있는 것(메뉴 · 알림 조각 · 알림 센터 · 대화상자)만 그림자를 단다 — docket .pop. 바닥에 붙은 판은 선으로만 나눈다. */
 .menu {
 	position: fixed; z-index: 25;   /* 설정 모달(15) · 시작하기(20) 안에서도 연다 */
 	 min-width: 240px; max-width: 520px; max-height: calc(100vh - 16px); overflow: auto; padding: 4px; background: var(--panel);
@@ -837,6 +866,7 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 	<symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4.5v10.5M7.5 10.5l4.5 4.5 4.5-4.5"/><path d="M5 19.5h14"/></symbol>
 	<symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 15V4.5M7.5 9l4.5-4.5L16.5 9"/><path d="M5 19.5h14"/></symbol>
 	<symbol id="i-more" viewBox="0 0 24 24"><circle cx="5.5" cy="12" r="1.1"/><circle cx="12" cy="12" r="1.1"/><circle cx="18.5" cy="12" r="1.1"/></symbol>
+	<symbol id="i-bell" viewBox="0 0 24 24"><path d="M6.5 16.5v-5.5a5.5 5.5 0 0 1 11 0v5.5l1.5 2h-14z"/><path d="M10 21h4"/></symbol>
 	<symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8.5" r="3.5"/><path d="M5 19.5c1-3.3 3.8-5 7-5s6 1.7 7 5"/></symbol>
 </svg>
 
@@ -934,9 +964,19 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 
 <footer class="statusbar">
 	<div class="sb-opts" id="sbOpts"></div>
+	<button id="sbBell" title="알림" aria-label="알림" aria-haspopup="dialog" aria-expanded="false"><svg class="ic"><use href="#i-bell"/></svg><span class="sb-count" id="sbBellN"></span></button>
 	<button id="sbMem" title="상태 열기"></button>
 </footer>
 
+<div class="notice" id="notice" role="dialog" aria-label="알림" hidden>
+	<div class="nt-head">
+		<b>알림</b>
+		<button class="btn ghost sm" id="noticeAll">모두 닫기</button>
+		<button class="btn ghost sm" id="noticeClear">기록 지우기</button>
+		<button class="btn ghost sm x-slot" id="noticeX" title="닫기" aria-label="알림 센터 닫기"><svg class="ic"><use href="#i-x"/></svg></button>
+	</div>
+	<div class="nt-body" id="noticeBody"></div>
+</div>
 <div class="menu" id="menu" role="menu" hidden></div>
 <!-- 설정 : 한 번 정하면 거의 바꾸지 않는 것
      2026-10-28 : 구획 목록 · 설명 카드 → 한 기둥의 목록 줄. 화면에는 이름과 값만 두고 설명은 줄의 title 에 둔다.
@@ -1130,19 +1170,21 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 	var store = {}, unread = {}, unreadErr = {};
 	var errMsg = "";       // 실행기 명령이 돌려준 오류 — 닫을 때까지 알림 줄에 둔다
 	var alertOpen = {};    // 알림 줄 목록을 펼친 것
-	var updDismissed = ""; // 알림 줄에서 닫은 새 판 — 이번 실행에서는 다시 띄우지 않는다 (설정 › 업데이트에는 남는다)
-	// 알림 줄에서 닫은 것 (알림 열쇠 → 닫을 때의 문구). 문구가 바뀌면 다시 띄운다 · 상태 탭에는 남는다.
-	// 실행기를 다시 열어도 같은 문구면 띄우지 않는다. 저장소를 못 쓰는 환경이면 이번 실행 동안만 기억한다
+	// 알림 줄에서 닫은 것 (알림 열쇠 → 닫을 때의 문구). 문구가 바뀌면 다시 띄운다 · 알림 센터와 상태 탭에는 남는다.
+	// keep 이 달린 줄(알고 쓰는 차이 · 제안)은 실행기를 다시 열어도 같은 문구면 띄우지 않는다. 저장소를 못 쓰는 환경이면 이번 실행 동안만 기억한다
 	var dismissedMem = {};
 	try { dismissedMem = JSON.parse(localStorage.getItem("tomcatrun.dismissed") || "{}") || {}; } catch (e) { dismissedMem = {}; }
-	function isDismissed(key, sig) { return dismissedMem[key] === sig; }
-	function dismiss(key, sig) {
-		dismissedMem[key] = sig;
+	// 나머지 줄은 이번 실행 동안만이다 — 다음에 켰을 때 컴파일러 없음 같은 문제를 모르고 지나가면 안 된다. 문제가 풀리면 지운다
+	var dismissedRun = {};
+	function saveDismissed() {
 		try { localStorage.setItem("tomcatrun.dismissed", JSON.stringify(dismissedMem)); } catch (e) { /* 이번 실행 동안만 */ }
-		renderAlerts();
 	}
 	var alertsAll = false;  // 접어 둔 알림까지 모두 펼쳤는가
 	var ALERT_ROWS = 3;     // 펼쳐 두는 알림 줄 수 — 넘는 것은 「알림 n개 더」 한 줄로 접는다 (오류는 늘 모두 보인다)
+	var noticeRows = [];    // 지금 걸린 알림 전부 (닫은 것 포함) — 알림 줄과 알림 센터가 함께 쓴다
+	var noticeOpen = false; // 알림 센터가 열려 있는가
+	var noticeLog = [];     // 알림 조각 · 오류 기록 (새것이 앞) — 이번 실행 동안만
+	var NOTICE_LOG_MAX = 100;
 	var lastTitle = "";
 	var errBuf = {}, lastErrs = {};   // 서버별 컴파일 오류 줄 — 모으는 중 · 직전 컴파일 것
 
@@ -1311,6 +1353,7 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 	}
 
 	function go(name) {
+		closeNotice();
 		tab = name;
 		if (store[name]) { unread[name] = 0; unreadErr[name] = false; }
 		closeMenu();
@@ -1534,14 +1577,17 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 
 	/* ---------- 알림 줄 — 지금 손볼 일만. 정상이면 아무것도 없다 ---------- */
 
-	function renderAlerts() {
-		if (!state) return;
-		var rows = [];
-		if (errMsg) rows.push({ key: "err", lv: "crit", text: "<b>" + esc(errMsg) + "</b>", close: true });
+	// 지금 걸린 알림을 모두 모은다. 닫은 줄도 빼지 않고 dismissed 만 단다 — 알림 센터가 다시 보여 준다.
+	// 열쇠는 서버 순서가 바뀌어도 맞도록 sv.id 로 만들고, sig 는 닫을 때의 내용이다 (바뀌면 다시 뜬다)
+	function collectAlerts() {
+		var rows = [], hold = {};
+		if (errMsg) rows.push({ key: "err", lv: "crit", text: "<b>" + esc(errMsg) + "</b>" });
 		state.servers.forEach(function (sv, i) {
 			var lc = sv.lastCompile;
+			// 컴파일 중에는 실패 줄이 잠깐 빠진다 — 저장할 때마다 닫은 줄이 되살아나지 않게 기억을 지우지 않는다
+			if (sv.compiling) hold["c" + sv.id] = true;
 			if (!sv.project) {
-				rows.push({ key: "p" + i, lv: "warn", text: "<b>" + esc(sv.name) + " · 프로젝트 폴더를 정하지 않았습니다</b>" +
+				rows.push({ key: "p" + sv.id, sig: "project", lv: "warn", text: "<b>" + esc(sv.name) + " · 프로젝트 폴더를 정하지 않았습니다</b>" +
 					'<span class="sub">이클립스 설정을 가져오거나 폴더 하나만 고르면 됩니다</span>',
 					acts: [["시작하기", "primary", false, function () { openSetup(); }]] });
 				return;
@@ -1549,7 +1595,7 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 			if (lc && !lc.ok && !sv.compiling) {
 				// 첫 오류의 파일:줄 — 누르면 편집기로 연다
 				var first = (lastErrs[i] || [])[0], fm = first && SRC_RE.exec(first);
-				rows.push({ key: "c" + i, lv: "crit", text: "<b>" + esc(sv.name) + " · 컴파일 실패 · 오류 " + lc.errors + "개</b>" +
+				rows.push({ key: "c" + sv.id, sig: lc.errors + "\n" + (first || ""), lv: "crit", text: "<b>" + esc(sv.name) + " · 컴파일 실패 · 오류 " + lc.errors + "개</b>" +
 					(fm ? '<a class="src" title="' + esc(fm[1]) + ' · 편집기로 열기">' + esc(baseName(fm[1]) + ":" + fm[2]) + "</a>" +
 						'<span class="sub">' + esc(first.slice(fm.index + fm[0].length).trim()) + "</span>"
 						: state.autoCompile ? '<span class="sub">고치고 저장하면 다시 컴파일합니다</span>' : ""),
@@ -1558,7 +1604,7 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 			}
 			var pend = sv.restartNeeded || [];
 			if (pend.length && sv.status !== "stopped") {
-				rows.push({ key: "r" + i, srv: i, lv: "warn", text: "<b>" + esc(sv.name) + " · 재시작해야 반영되는 변경 " + pend.length + "건</b>" +
+				rows.push({ key: "r" + sv.id, sig: pend.map(function (x) { return x.path; }).join("\n"), srv: i, lv: "warn", text: "<b>" + esc(sv.name) + " · 재시작해야 반영되는 변경 " + pend.length + "건</b>" +
 					'<span class="sub mono">' + esc(pend.slice(0, 3).map(function (x) { return baseName(x.path); }).join(", ")) + (pend.length > 3 ? " 외" : "") + "</span>",
 					items: pend,
 					acts: [[sv.name + " 재시작", "warn", sv.status !== "running", function () { hideError(); call("restart", { srv: i }); }]] });
@@ -1566,7 +1612,7 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 			var deps = depsOf(sv);
 			if (deps && !deps.ok && !sv.depsBusy) {
 				var stopped = sv.status === "stopped";
-				rows.push({ key: "d" + i, lv: "warn", text: "<b>" + esc(sv.name) + " · 의존 jar " + esc(deps.detail) + "</b>" +
+				rows.push({ key: "d" + sv.id, sig: deps.detail, lv: "warn", text: "<b>" + esc(sv.name) + " · 의존 jar " + esc(deps.detail) + "</b>" +
 					(stopped ? "" : '<span class="sub">서버를 끈 뒤에 받을 수 있습니다</span>'),
 					acts: [["자동으로 채우기", "primary", !stopped, function () {
 						hideError();
@@ -1581,16 +1627,16 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 				var how = [];
 				if (dd.movable) how.push("의존 jar 쪽 " + dd.movable + "개를 치우면 한 판만 올라갑니다" + (idle ? "" : " (서버를 끈 뒤에)"));
 				if (dd.manual) how.push(dd.manual + "종은 프로젝트 WEB-INF/lib 에서 지워야 합니다");
-				rows.push({ key: "dd" + i, lv: "warn", text: "<b>" + esc(sv.name) + " · 같은 jar 다른 판 " + esc(dl[0].split(" · ")[0]) + "</b>" +
+				rows.push({ key: "dd" + sv.id, sig: dup.detail, lv: "warn", text: "<b>" + esc(sv.name) + " · 같은 jar 다른 판 " + esc(dl[0].split(" · ")[0]) + "</b>" +
 					'<span class="sub">' + esc(dl[0].split(" · ").slice(1).join(" · ")) + " · " + esc(how.join(" · ")) + "</span>",
 					lines: dd.lines,
 					acts: (dd.movable ? [["겹친 판 치우기 (" + dd.movable + ")", "primary", !idle, function () { dedupCall(i, "dedup_deps"); }]] : [])
 						.concat([["상태 보기", "", false, function () { go("status"); }]]) });
 			}
 			// 이클립스와 다른 자바로 뜬다 — 「 — 」 앞이 요약, 뒤가 할 일. 핫리로드 모드면 끄는 단추를 붙인다 (끄면 이클립스와 같은 자바로 뜬다)
-			if (sv.javaDiff && !isDismissed("j" + sv.id, sv.javaDiff)) {
+			if (sv.javaDiff) {
 				var jd = sv.javaDiff.split(" — ");
-				rows.push({ key: "j" + i, lv: "warn", close: function () { dismiss("j" + sv.id, sv.javaDiff); },
+				rows.push({ key: "j" + sv.id, sig: sv.javaDiff, keep: true, lv: "warn",
 					text: "<b>" + esc(sv.name) + " · " + esc(jd[0]) + "</b>" + '<span class="sub">' + esc(noDash(jd.slice(1).join(" · "))) + "</span>",
 					acts: state.hotReload
 						? [["핫리로드 끄기", "", false, function () { hideError(); call("set_option", { key: "hotReload", value: false }); showToast("핫리로드를 껐습니다 · 다음 기동부터 이클립스와 같은 자바로 뜹니다"); }]]
@@ -1599,7 +1645,7 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 		});
 		// 2026-10-29 : 상태 탭에만 있던 점검 넷을 먼저 알린다 — 상태 탭은 열어 보지 않는 한 모른다 (이 PC 두 서버가 그래서 탐색을 줄이지 않고 있었다).
 		// 저절로 고치지는 않는다. 점검이 못 보는 길(이름 바꾼 jar · 리플렉션 등록)이 있어 사람이 단추를 누른다.
-		// 이클립스와 결과가 달라지는 것(경고)은 닫을 수 없다. 알고 쓰는 차이일 수 있는 것과 제안만 닫는다.
+		// 모두 닫을 수 있다. 알고 쓰는 차이일 수 있는 것과 제안은 다시 켜도 닫혀 있고(keep), 이클립스와 결과가 달라지는 경고는 이번 실행 동안만 닫힌다.
 		var checksOf = function (key) {
 			return state.servers.map(function (sv) { return { sv: sv, check: sv.checks.filter(function (c) { return c.key === key; })[0] }; })
 				.filter(function (x) { return x.check; });
@@ -1623,11 +1669,11 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 		}]];
 		if (tldMissing) {
 			// 빠진 jar 의 태그를 쓰는 JSP 가 지금 깨진다 — 제안이 아니라 경고 (같은 단추가 채운다)
-			rows.push({ key: "scan", lv: "warn", plain: true, lines: scanLines, short: "TLD jar 빠짐",
+			rows.push({ key: "scanTld", sig: scanSig, lv: "warn", plain: true, lines: scanLines, short: "TLD jar 빠짐",
 				text: "<b>" + names(hints) + " · TLD jar 칸에 빠진 jar 가 있습니다</b>" +
 					'<span class="sub">그 태그를 쓰는 JSP 가 「태그를 찾을 수 없다」로 깨집니다 · 「탐색 줄이기」가 채우고 다음 기동부터 들어갑니다</span>',
 				acts: scanAct });
-		} else if (hints.length && !isDismissed("scan", scanSig)) {
+		} else if (hints.length) {
 			// 이번 실행에서 띄운 기동의 「웹앱 준비」 실측이 있으면 붙인다
 			var took = hints.map(function (h) {
 				var ph = (h.sv.phases || []).filter(function (p) { return p.label.indexOf("웹앱 준비") === 0; })[0];
@@ -1635,8 +1681,7 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 			}).filter(Boolean);
 			// 줄어드는 폭은 앱마다 달라 숫자를 약속하지 않는다 (2026-10-29 이 PC 의 같은 앱에서 17~36초 → 2초 안팎이었다)
 			var slow = took.length ? "지난 기동 웹앱 준비 " + took.join(" · ") + " · 줄이면 대개 몇 초로 줄어듭니다" : "웹앱 준비가 대개 몇 초로 줄어듭니다";
-			rows.push({ key: "scan", lv: "hint", icon: "gauge", plain: true, lines: scanLines, short: "기동 탐색 줄이기",
-				close: function () { dismiss("scan", scanSig); },
+			rows.push({ key: "scan", sig: scanSig, keep: true, lv: "hint", icon: "gauge", plain: true, lines: scanLines, short: "기동 탐색 줄이기",
 				text: "<b>" + names(hints) + " · 기동 탐색을 줄이면 빨리 뜹니다</b>" +
 					'<span class="sub">' + esc(slow) + " · 점검이 jar 와 소스를 보고 괜찮다고 봤습니다 · 다르게 돌면 설정에서 되돌립니다</span>",
 				acts: scanAct });
@@ -1644,7 +1689,7 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 		// ② 건너뛰기가 켜져 있는데 그 서버엔 건너뛰면 빠지는 서블릿 · 필터가 있다 — 기동은 돼도 오류 없이 등록되지 않는다
 		var scanBad = checksOf("scanWarn").filter(function (x) { return x.check.detail.indexOf("건너뛰면 빠지는 것이 있습니다") >= 0; });
 		if (scanBad.length) {
-			rows.push({ key: "scanWarn", lv: "warn", plain: true, lines: perServer(scanBad), short: "탐색 건너뛰기 맞지 않음",
+			rows.push({ key: "scanWarn", sig: scanBad.map(function (x) { return x.sv.id + "\n" + x.check.detail; }).join("\n\n"), lv: "warn", plain: true, lines: perServer(scanBad), short: "탐색 건너뛰기 맞지 않음",
 				text: "<b>" + names(scanBad) + " · 클래스 전체 탐색 건너뛰기가 이 서버에 맞지 않습니다</b>" +
 					'<span class="sub">건너뛰면 빠지는 서블릿 · 필터가 있어 이클립스와 다르게 돕니다 · 끄고 다시 띄우세요</span>',
 				acts: [["건너뛰기 끄기", "primary", !state.skipScan, function () {
@@ -1660,28 +1705,26 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 			var diffs = x.check.detail.split("\n").filter(function (s) {
 				return s && s !== sv.javaDiff && s.indexOf("이클립스 서버 설정을 고쳤다면") !== 0;
 			});
-			if (!diffs.length || isDismissed("e" + sv.id, x.check.detail)) return;
-			rows.push({ key: "e" + sv.id, lv: "warn", plain: true, short: sv.name + " 이클립스와 다름",
+			if (!diffs.length) return;
+			rows.push({ key: "e" + sv.id, sig: x.check.detail, keep: true, lv: "warn", plain: true, short: sv.name + " 이클립스와 다름",
 				lines: x.check.detail.split("\n").filter(function (s) { return s && s !== sv.javaDiff; }).map(noDash),
-				close: function () { dismiss("e" + sv.id, x.check.detail); },
 				text: "<b>" + esc(sv.name) + " · 이클립스와 다르게 도는 곳 " + diffs.length + "가지</b>" + '<span class="sub">' + esc(noDash(diffs[0])) + "</span>",
 				acts: [["설정 › 서버", "", false, function () { openSettings("setServers"); }]] });
 		});
 		// ④ 리소스 필터링 — 이클립스(Maven)는 값을 넣고 실행기는 「${key}」 글자를 그대로 넣는다. 오류 없이 설정값만 틀린다
 		checksOf("filtering").filter(function (x) { return x.check.warn; }).forEach(function (x) {
 			var sv = x.sv, m = /자리표시자\S*\s*(\d+)곳/.exec(x.check.detail);
-			if (!m || isDismissed("f" + sv.id, x.check.detail)) return;
-			rows.push({ key: "f" + sv.id, lv: "warn", plain: true, short: sv.name + " 리소스 필터링",
+			if (!m) return;
+			rows.push({ key: "f" + sv.id, sig: x.check.detail, keep: true, lv: "warn", plain: true, short: sv.name + " 리소스 필터링",
 				lines: x.check.detail.split("\n").filter(Boolean).map(noDash),
-				close: function () { dismiss("f" + sv.id, x.check.detail); },
 				text: "<b>" + esc(sv.name) + " · 리소스 필터링 자리표시자 " + m[1] + "곳이 값으로 바뀌지 않습니다</b>" +
 					'<span class="sub">이클립스는 pom 의 값을 넣고 실행기는 글자를 그대로 읽습니다 · 값을 파일에 적거나 JVM 인자로 받게 하세요</span>' });
 		});
 		var up = state.update, rel = up.release;
-		if (rel && updDismissed !== rel.version) {
+		if (rel) {
 			var mb = function (b) { return (b / 1048576).toFixed(0) + "MB"; };
 			var on = state.servers.filter(function (s) { return s.status !== "stopped"; }).length;
-			rows.push({ key: "upd", lv: "hint", icon: "download", short: "새 판 " + rel.version, close: function () { updDismissed = rel.version; renderAlerts(); },
+			rows.push({ key: "upd", sig: rel.version, lv: "hint", icon: "download", short: "새 판 " + rel.version,
 				text: "<b>새 판 " + esc(rel.version) + " 이 있습니다</b>" +
 					'<span class="sub">' + (up.downloading != null ? "받는 중 " + mb(up.downloading) + " / " + mb(rel.size)
 						: up.error ? esc(up.error) : "지금 " + esc(state.version) +
@@ -1692,7 +1735,7 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 		}
 		var bad = state.checks.filter(function (c) { return !c.ok; });
 		if (bad.length) {
-			rows.push({ key: "chk", lv: "crit", text: "<b>준비 안 된 항목 " + bad.length + "개</b>" +
+			rows.push({ key: "chk", sig: bad.map(function (c) { return c.label; }).join("\n"), lv: "crit", text: "<b>준비 안 된 항목 " + bad.length + "개</b>" +
 				'<span class="sub">' + esc(bad.map(function (c) { return c.label; }).join(", ")) + "</span>",
 				acts: [["상태 보기", "", false, function () { go("status"); }]] });
 		}
@@ -1700,69 +1743,111 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 		// 오류 → 손볼 일 → 제안 순서 (같은 등급은 서버 순서대로)
 		var LV = { crit: 0, warn: 1, hint: 2 };
 		rows = rows.map(function (r, k) { return [r, k]; }).sort(function (a, b) { return LV[a[0].lv] - LV[b[0].lv] || a[1] - b[1]; }).map(function (x) { return x[0]; });
+		// 문제가 풀린 줄의 닫힘 기억을 지운다 — 같은 문제가 다시 생기면 줄이 떠야 한다
+		var live = {};
+		rows.forEach(function (r) {
+			live[r.key] = true;
+			r.dismissed = r.key !== "err" && (r.keep ? dismissedMem[r.key] : dismissedRun[r.key]) === r.sig;
+		});
+		Object.keys(dismissedRun).forEach(function (k) { if (!live[k] && !hold[k]) delete dismissedRun[k]; });
+		return rows;
+	}
+
+	function dismissRow(r) {
+		if (r.key === "err") { errMsg = ""; renderSetErr(); }
+		else if (r.keep) { dismissedMem[r.key] = r.sig; saveDismissed(); }
+		else dismissedRun[r.key] = r.sig;
+	}
+	// 알림 센터는 내용이 같으면 다시 그리지 않으므로 줄이 조금 묵었을 수 있다 — 닫을 때는 지금 문구를 쓴다
+	function closeAlert(r) {
+		dismissRow(noticeRows.filter(function (x) { return x.key === r.key; })[0] || r);
+		renderAlerts();
+	}
+	function restoreAlert(r) {
+		delete dismissedRun[r.key];
+		if (r.keep) { delete dismissedMem[r.key]; saveDismissed(); }
+		renderAlerts();
+	}
+
+	// 알림 한 줄 — 알림 줄과 알림 센터가 같은 단추 · 「자세히」 · 무시 메뉴를 쓴다
+	function alertRowEl(r, inCenter) {
+		var el = document.createElement("div");
+		el.className = "alert " + r.lv;
+		if (!inCenter) el.setAttribute("role", r.lv === "crit" ? "alert" : "status");
+		var open = !!alertOpen[r.key];
+		el.innerHTML = ic(r.icon || (r.lv === "crit" ? "error" : "warn")) + '<div class="alert-text"></div>' + '<div class="alert-acts"></div>' +
+			(r.items && open ? '<ul class="alert-items">' + r.items.map(function (x, k) {
+				return '<li data-srv="' + r.srv + '" data-path="' + esc(x.path) + '"><span class="mono">' + esc(x.path) + "</span><small>" + esc(x.why) + "</small>" +
+					'<button class="btn ghost sm" data-ign="' + k + '" aria-haspopup="menu" title="저장 감시에서 뺄 범위를 고릅니다">무시…</button></li>';
+			}).join("") + "</ul>" : "") +
+			(r.lines && open ? '<ul class="alert-items">' + r.lines.map(function (s) { return "<li><span>" + (r.plain ? esc(s) : planHtml(s)) + "</span></li>"; }).join("") + "</ul>" : "");
+		// 한 줄로 말줄임하므로 전체 문장은 마우스를 올리면 보인다
+		var tx = el.querySelector(".alert-text");
+		tx.innerHTML = r.text;
+		tx.title = tx.textContent;
+		// 재시작이 필요 없는 파일(반영용 SQL 등)이 쌓이면 폴더 · 파일 이름 · 확장자 가운데 골라 무시 목록에 넣는다
+		[].forEach.call(el.querySelectorAll("[data-ign]"), function (b) {
+			var path = r.items[+b.getAttribute("data-ign")].path;
+			b.onclick = function (ev) { ev.stopPropagation(); openMenu(b, ignoreChoices(path)); };
+		});
+		var acts = el.querySelector(".alert-acts");
+		var src = el.querySelector("a.src");
+		if (src && r.src) {
+			src.onclick = function () { invoke("open_source", r.src); };
+			src.setAttribute("data-file", r.src.file);
+			src.setAttribute("data-line", r.src.line);
+		}
+		if (r.items || r.lines) {
+			var t = document.createElement("button");
+			t.className = "btn ghost sm";
+			t.textContent = r.lines ? (open ? "접기" : "자세히") : open ? "목록 접기" : "목록 보기";
+			t.setAttribute("data-fk", r.key + ":more");
+			t.onclick = function () { alertOpen[r.key] = !open; renderAlerts(); };
+			acts.appendChild(t);
+		}
+		(r.acts || []).forEach(function (a) {
+			var b = document.createElement("button");
+			b.className = "btn sm " + a[1];
+			b.textContent = a[0];
+			b.disabled = a[2];
+			b.setAttribute("data-fk", r.key + ":" + a[0]);
+			b.onclick = a[3];
+			acts.appendChild(b);
+		});
+		var c = document.createElement("button");
+		if (r.dismissed) {
+			c.className = "btn ghost sm";
+			c.textContent = "다시 띄우기";
+			c.onclick = function () { restoreAlert(r); };
+		} else {
+			c.className = "x-slot btn ghost sm";
+			c.title = "닫기";
+			c.setAttribute("aria-label", "이 알림 닫기");
+			c.innerHTML = ic("x");
+			c.onclick = function () { closeAlert(r); };
+		}
+		c.setAttribute("data-fk", r.key + ":close");
+		acts.appendChild(c);
+		return el;
+	}
+
+	function alertPlain(r) { return r.text.replace(/<span class="sub">.*$/, "").replace(/<[^>]+>/g, "").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"'); }
+
+	function renderAlerts() {
+		if (!state) return;
+		noticeRows = collectAlerts();
+		renderBell();
+		if (noticeOpen) renderNotice();
+		var rows = noticeRows.filter(function (r) { return !r.dismissed; });
 		// 세 줄까지만 펼친다 — 알림이 쌓이면 한가운데의 반영 기록이 밀린다. 오류는 늘 모두 보인다.
 		// 하나만 남으면 접지 않는다 (요약 한 줄과 알림 한 줄의 높이가 같다)
 		var keep = Math.max(ALERT_ROWS, rows.filter(function (r) { return r.lv === "crit"; }).length);
 		var hidden = rows.length - keep > 1 ? rows.slice(keep) : [];
 		var shown = hidden.length && !alertsAll ? rows.slice(0, keep) : rows;
-		var plainText = function (r) { return r.text.replace(/<span class="sub">.*$/, "").replace(/<[^>]+>/g, "").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"'); };
 
 		var box = $("alerts");
 		box.innerHTML = "";
-		shown.forEach(function (r) {
-			var el = document.createElement("div");
-			el.className = "alert " + r.lv;
-			el.setAttribute("role", r.lv === "crit" ? "alert" : "status");
-			var open = !!alertOpen[r.key];
-			el.innerHTML = ic(r.icon || (r.lv === "crit" ? "error" : "warn")) + '<div class="alert-text"></div>' + '<div class="alert-acts"></div>' +
-				(r.items && open ? '<ul class="alert-items">' + r.items.map(function (x, k) {
-					return '<li data-srv="' + r.srv + '" data-path="' + esc(x.path) + '"><span class="mono">' + esc(x.path) + "</span><small>" + esc(x.why) + "</small>" +
-						'<button class="btn ghost sm" data-ign="' + k + '" aria-haspopup="menu" title="저장 감시에서 뺄 범위를 고릅니다">무시…</button></li>';
-				}).join("") + "</ul>" : "") +
-				(r.lines && open ? '<ul class="alert-items">' + r.lines.map(function (s) { return "<li><span>" + (r.plain ? esc(s) : planHtml(s)) + "</span></li>"; }).join("") + "</ul>" : "");
-			// 한 줄로 말줄임하므로 전체 문장은 마우스를 올리면 보인다
-			var tx = el.querySelector(".alert-text");
-			tx.innerHTML = r.text;
-			tx.title = tx.textContent;
-			// 재시작이 필요 없는 파일(반영용 SQL 등)이 쌓이면 폴더 · 파일 이름 · 확장자 가운데 골라 무시 목록에 넣는다
-			[].forEach.call(el.querySelectorAll("[data-ign]"), function (b) {
-				var path = r.items[+b.getAttribute("data-ign")].path;
-				b.onclick = function (ev) { ev.stopPropagation(); openMenu(b, ignoreChoices(path)); };
-			});
-			var acts = el.querySelector(".alert-acts");
-			var src = el.querySelector("a.src");
-			if (src && r.src) {
-				src.onclick = function () { invoke("open_source", r.src); };
-				src.setAttribute("data-file", r.src.file);
-				src.setAttribute("data-line", r.src.line);
-			}
-			if (r.items || r.lines) {
-				var t = document.createElement("button");
-				t.className = "btn ghost sm";
-				t.textContent = r.lines ? (open ? "접기" : "자세히") : open ? "목록 접기" : "목록 보기";
-				t.onclick = function () { alertOpen[r.key] = !open; renderAlerts(); };
-				acts.appendChild(t);
-			}
-			(r.acts || []).forEach(function (a) {
-				var b = document.createElement("button");
-				b.className = "btn sm " + a[1];
-				b.textContent = a[0];
-				b.disabled = a[2];
-				b.onclick = a[3];
-				acts.appendChild(b);
-			});
-			// 닫기 칸은 없어도 자리를 둔다 — 줄마다 단추의 오른쪽 끝이 맞는다
-			var c = document.createElement(r.close ? "button" : "span");
-			c.className = "x-slot" + (r.close ? " btn ghost sm" : "");
-			if (r.close) {
-				c.title = "닫기";
-				c.setAttribute("aria-label", "이 알림 닫기");
-				c.innerHTML = ic("x");
-				c.onclick = typeof r.close === "function" ? r.close : hideError;
-			}
-			acts.appendChild(c);
-			box.appendChild(el);
-		});
+		shown.forEach(function (r) { box.appendChild(alertRowEl(r, false)); });
 		// 접어 둔 알림 — 무엇이 접혀 있는지 이름만 한 줄로
 		if (hidden.length) {
 			var more = document.createElement("div");
@@ -1770,7 +1855,7 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 			more.setAttribute("role", "status");
 			more.innerHTML = ic("more") + '<div class="alert-text"></div><div class="alert-acts"></div>';
 			more.querySelector(".alert-text").textContent = alertsAll ? "알림 " + rows.length + "개를 모두 펼쳤습니다"
-				: "알림 " + hidden.length + "개 더 · " + hidden.map(function (r) { return r.short || plainText(r); }).join(" · ");
+				: "알림 " + hidden.length + "개 더 · " + hidden.map(function (r) { return r.short || alertPlain(r); }).join(" · ");
 			var tg = document.createElement("button");
 			tg.className = "btn ghost sm";
 			tg.textContent = alertsAll ? "접기" : "모두 보기";
@@ -1786,12 +1871,95 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 		// 창 제목 — 작업 표시줄에 마우스를 올리면 보인다. 제안 · 새 판은 문제가 아니므로 세지 않는다
 		var probs = rows.filter(function (r) { return r.key !== "err" && r.lv !== "hint"; });
 		var first = probs[0];
-		var title = first ? APP_TITLE + " · " + plainText(first) + (probs.length > 1 ? " 외 " + (probs.length - 1) + "건" : "") : APP_TITLE;
+		var title = first ? APP_TITLE + " · " + alertPlain(first) + (probs.length > 1 ? " 외 " + (probs.length - 1) + "건" : "") : APP_TITLE;
 		if (title !== lastTitle) {
 			lastTitle = title;
 			document.title = title;
 			if (appWin) appWin.setTitle(title).catch(function () { /* 권한이 없으면 화면 제목만 바꾼다 */ });
 		}
+	}
+
+	/* ---------- 알림 센터 — 지금 걸린 알림 · 닫아 둔 알림 · 지나간 알림 조각과 오류 ---------- */
+
+	// 숫자는 닫아 둔 것까지 지금 걸린 알림 수다. 색은 가장 높은 단계를 따른다 (제안만 있으면 무채색)
+	function renderBell() {
+		var n = noticeRows.length, lv = n ? noticeRows[0].lv : "";
+		var count = $("sbBellN");
+		count.textContent = n ? n : "";
+		count.className = "sb-count " + lv;
+		$("sbBell").title = n ? "알림 " + n + "개" : "알림";
+		$("sbBell").setAttribute("aria-label", $("sbBell").title);
+	}
+
+	function noticeRecord(lv, msg) {
+		msg = String(msg);
+		var head = noticeLog[0], now = new Date();
+		var at = ("0" + now.getHours()).slice(-2) + ":" + ("0" + now.getMinutes()).slice(-2) + ":" + ("0" + now.getSeconds()).slice(-2);
+		if (head && head.msg === msg && head.lv === lv) { head.n++; head.at = at; }
+		else {
+			noticeLog.unshift({ at: at, lv: lv, msg: msg, n: 1 });
+			if (noticeLog.length > NOTICE_LOG_MAX) noticeLog.pop();
+		}
+		if (noticeOpen) renderNotice();
+	}
+
+	// state 가 올 때마다 불린다. 내용이 같으면 그대로 둔다 — 스크롤 · 포커스 · 누르는 중인 단추가 지켜진다
+	function renderNotice() {
+		var active = noticeRows.filter(function (r) { return !r.dismissed; });
+		var closed = noticeRows.filter(function (r) { return r.dismissed; });
+		$("noticeAll").disabled = !active.length;
+		$("noticeClear").disabled = !noticeLog.length;
+		var next = document.createElement("div");
+		var sec = function (label, n) {
+			var h = document.createElement("div");
+			h.className = "nt-sec";
+			h.textContent = label + " " + n;
+			next.appendChild(h);
+		};
+		if (active.length) {
+			sec("지금 걸린 알림", active.length);
+			active.forEach(function (r) { next.appendChild(alertRowEl(r, true)); });
+		}
+		if (closed.length) {
+			sec("닫아 둔 알림", closed.length);
+			closed.forEach(function (r) { next.appendChild(alertRowEl(r, true)); });
+		}
+		if (noticeLog.length) {
+			sec("최근 기록 · 이번 실행", noticeLog.length);
+			noticeLog.forEach(function (x) {
+				var el = document.createElement("div");
+				el.className = "nt-log " + x.lv;
+				el.innerHTML = '<span class="nt-at num">' + esc(x.at) + "</span><span>" + esc(x.msg) + (x.n > 1 ? " · " + x.n + "번" : "") + "</span>";
+				next.appendChild(el);
+			});
+		}
+		if (!next.childNodes.length) {
+			next.innerHTML = '<div class="nt-empty">알림이 없습니다</div>';
+		}
+		var body = $("noticeBody"), old = body.firstChild;
+		if (old && old.innerHTML === next.innerHTML) return;
+		var top = body.scrollTop, focus = document.activeElement, fk = focus && body.contains(focus) ? focus.getAttribute("data-fk") : null;
+		body.innerHTML = "";
+		body.appendChild(next);
+		body.scrollTop = top;
+		if (fk) {
+			var again = [].filter.call(body.querySelectorAll("[data-fk]"), function (b) { return b.getAttribute("data-fk") === fk; })[0];
+			if (again) again.focus();
+		}
+	}
+
+	function openNotice() {
+		closeMenu();
+		noticeOpen = true;
+		$("notice").hidden = false;
+		$("sbBell").setAttribute("aria-expanded", "true");
+		renderNotice();
+	}
+	function closeNotice() {
+		if (!noticeOpen) return;
+		noticeOpen = false;
+		$("notice").hidden = true;
+		$("sbBell").setAttribute("aria-expanded", "false");
 	}
 
 	/* ---------- 상태 탭 ---------- */
@@ -2127,6 +2295,7 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 	}
 	function openSetup() {
 		closeMenu();
+		closeNotice();
 		$("setupScrim").hidden = false;
 		setupBusy("이클립스 설정을 찾는 중...");
 		invoke("eclipse_scan", { dir: null }).then(setupShow).catch(function () { setupShow([]); });
@@ -2139,6 +2308,7 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 	var setSec = "setServers";   // 마지막에 본 구획 — 다시 열면 그 자리
 	function openSettings(id) {
 		closeMenu();
+		closeNotice();
 		showSetSec(id || setSec);
 		renderSetErr();
 		$("setScrim").hidden = false;
@@ -2479,7 +2649,11 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 	document.addEventListener("click", function (e) { if (!menu.contains(e.target)) closeMenu(); });
 	window.addEventListener("blur", function () { closeMenu(); });
 	document.addEventListener("keydown", function (e) {
-		if (e.key === "Escape") closeMenu();
+		if (e.key === "Escape") {
+			// 판 안에서 연 메뉴가 먼저 닫힌다
+			if (menu.hidden && noticeOpen) { closeNotice(); $("sbBell").focus(); }
+			closeMenu();
+		}
 		if (!menu.hidden && (e.key === "ArrowDown" || e.key === "ArrowUp") && menu.querySelector("button:not(:disabled)")) {
 			var items = [].slice.call(menu.querySelectorAll("button:not(:disabled)")), k = items.indexOf(document.activeElement);
 			k = (k + (e.key === "ArrowDown" ? 1 : items.length - 1)) % items.length;
@@ -5283,6 +5457,7 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 
 	// act : { label, run } — 「되살리기」 처럼 그 자리에서 되돌리는 단추. 누를 시간을 주려고 10초 남긴다
 	function showToast(msg, act) {
+		noticeRecord("info", msg);
 		$("toastText").textContent = msg;
 		$("toast").classList.add("show");
 		$("toast").classList.toggle("act", !!act);
@@ -5296,7 +5471,7 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 		// 긴 알림(자동으로 채운 결과 등)은 읽을 만큼 더 둔다
 		showToast.t = setTimeout(function () { $("toast").classList.remove("show", "act"); }, act ? 10000 : Math.max(2500, String(msg).length * 70));
 	}
-	function showError(msg) { errMsg = msg; renderAlerts(); renderSetErr(); }
+	function showError(msg) { noticeRecord("crit", msg); errMsg = msg; renderAlerts(); renderSetErr(); }
 	function hideError() { if (errMsg) { errMsg = ""; renderAlerts(); renderSetErr(); } }
 	function call(cmd, args) {
 		return invoke(cmd, args || {}).catch(function (e) { showError(String(e)); });
@@ -5315,7 +5490,7 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 	$("optMapper").onchange = function () { call("set_option", { key: "mapperHotswap", value: this.checked }); };
 	$("optSession").onchange = function () { call("set_option", { key: "keepSession", value: this.checked }); };
 	$("optUpdate").onchange = function () { call("set_option", { key: "updateCheck", value: this.checked }); };
-	$("updNow").onclick = function () { updDismissed = ""; call("update_check"); };
+	$("updNow").onclick = function () { delete dismissedRun.upd; call("update_check"); };
 	$("updGo").onclick = function () { updateAsk(); };
 	$("selHeap").onchange = function () { call("set_heap", { mb: parseInt(this.value, 10) }); };
 	$("selCompiler").onchange = function () { call("set_compiler", { name: this.value }); };
@@ -5332,6 +5507,19 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 	};
 	$("sbOpts").title = "누르면 설정의 그 칸으로 갑니다";
 	$("sbMem").onclick = function () { go("status"); };
+	$("sbBell").onclick = function () { if (noticeOpen) closeNotice(); else openNotice(); };
+	$("noticeX").onclick = closeNotice;
+	$("noticeAll").onclick = function () {
+		noticeRows.forEach(function (r) { if (!r.dismissed) dismissRow(r); });
+		renderAlerts();
+	};
+	$("noticeClear").onclick = function () { noticeLog = []; renderNotice(); };
+	// composedPath 로 가린다 — 누른 단추가 다시 그려져 빠졌으면 contains 는 판 바깥으로 본다
+	document.addEventListener("click", function (e) {
+		if (!noticeOpen) return;
+		var path = e.composedPath();
+		if (path.indexOf($("notice")) < 0 && path.indexOf($("sbBell")) < 0 && path.indexOf(menu) < 0) closeNotice();
+	});
 
 /* ---------- 닫기 확인 ---------- */
 
