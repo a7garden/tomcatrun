@@ -576,6 +576,23 @@ struct Rt {
     svn_stamp: AtomicU64, // 작업복사본 .svn/wc.db 의 수정 시각 — 바뀌면(커밋 · 업데이트) 버전 관리 화면을 다시 읽게 한다
     git_stamp: AtomicU64, // .git 의 index · HEAD · FETCH_HEAD 중 가장 늦은 수정 시각 — 같은 용도
     vcs_busy: AtomicBool, // Commit · Update 같은 쓰기가 도는 중 — 한 서버에 하나씩, 그동안 위 두 표지로 다시 읽게 하지 않는다
+    vcs_prog: Mutex<Option<VcsProgress>>, // 그 쓰기의 지금 단계 — 화면이 띠 · 상태 칸에 그린다 (vcs-progress)
+    eclipse_svn: Mutex<Option<(Instant, String, Option<eclipse::EclipseSvn>)>>, // 작업복사본을 연 Eclipse 의 SVN (폴더 · 찾은 시각과 함께 5분 둔다)
+}
+
+/// 버전 관리 쓰기의 지금 단계 (2026.11.04~) — 「Commit 3/3 · 올리는 중」 · 잠금을 기다리면 몇 번째인지와 누가 쥐었을지
+#[derive(Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct VcsProgress {
+    op: String,              // Commit · Cleanup · Update …
+    step: u32,               // 1 부터 · 단계를 나누지 않는 일은 0
+    of: u32,
+    label: String,           // 이 단계에서 하는 일
+    attempt: u32,            // 잠금을 기다려 다시 시도하는 차례 (0 이면 기다리지 않음)
+    attempts: u32,
+    wait_for: String,        // 잠금을 쥐었을 프로그램 (Eclipse · TortoiseSVN …) — 없으면 비움
+    started_at_ms: u64,      // 이 일을 시작한 시각
+    step_at_ms: u64,         // 이 단계에 들어선 시각 — 오래 말이 없으면 화면이 「저장소 응답을 기다리는 중」을 덧붙인다
 }
 
 struct Shared {
@@ -690,6 +707,8 @@ fn new_rt() -> (&'static Rt, Receiver<bool>) {
         svn_stamp: AtomicU64::new(0),
         git_stamp: AtomicU64::new(0),
         vcs_busy: AtomicBool::new(false),
+        vcs_prog: Mutex::new(None),
+        eclipse_svn: Mutex::new(None),
     };
     (Box::leak(Box::new(r)), rx)
 }
@@ -758,6 +777,10 @@ struct ServerSnap {
     svn_cli: String,             // 찾은 svn.exe 와 판 (또는 못 찾은 까닭) — 설정 › 버전 관리에 보인다
     svn_block: Option<String>,   // Allow write 를 켰어도 SVN 쓰기를 못 하는 까닭 — 있으면 쓰기 단추를 잠근다
     svn_missing: bool,           // 경로를 비웠는데 어디서도 svn.exe 를 못 찾았다 — 「svn 받기」 단추를 보인다
+    cleanup_block: Option<String>, // Cleanup 을 못 하는 까닭 (svn.exe 없음 · 판이 맞지 않음) — Allow write 와 상관없이 본다
+    vcs_busy: bool,              // 실행기의 버전 관리 쓰기가 도는 중 — 화면을 다시 열거나 서버를 바꿔도 남는다
+    vcs_progress: Option<VcsProgress>, // 그 쓰기의 지금 단계
+    vcs_log: String,             // svn 실패 진단 기록 (logs/vcs.log) — 아직 실패가 없어 파일이 없으면 비운다
     java: String,                // 서버에 정한 java (핫리로드 끔) — 비면 전역
     java_label: String,          // 핫리로드를 끄고 띄우면 쓰는 java 의 판 (설정 › 서버 › java 칸 아래에 보인다)
     eclipse_java: String,        // 이클립스가 쓰던 java (가져올 때 찾았으면)
@@ -1273,6 +1296,11 @@ fn svn_block(s: &ServerCfg) -> Option<String> {
     if !s.vcs.write || !vcs_kinds(s).contains(&"svn") {
         return None;
     }
+    svn_unready(s)
+}
+
+// 이 서버의 svn 으로 작업복사본에 쓸 수 없는 까닭 — Allow write 와 상관없이 (Cleanup 은 쓰기를 꺼 둔 서버에서도 한다)
+fn svn_unready(s: &ServerCfg) -> Option<String> {
     match svncli::probe(&s.vcs.svn_exe) {
         Err(e) => Some(e),
         Ok(p) => svncli::block_reason(&p, svn::wc_format(Path::new(&vcs_root(s)))),
@@ -1334,6 +1362,10 @@ fn snapshot(app: &AppHandle) -> Snapshot {
                 },
                 svn_block: svn_block(s),
                 svn_missing: s.vcs.svn_exe.trim().is_empty() && svncli::locate("").is_none(),
+                cleanup_block: if vcs_kinds(s).contains(&"svn") { svn_unready(s) } else { None },
+                vcs_busy: r.vcs_busy.load(Ordering::SeqCst),
+                vcs_progress: r.vcs_prog.lock().unwrap().clone(),
+                vcs_log: Some(vcs_log_path(s)).filter(|p| p.is_file()).map(|p| p.to_string_lossy().replace('\\', "/")).unwrap_or_default(),
                 dedup,
             }
         })
@@ -4632,12 +4664,27 @@ fn reveal(path: String) {
 #[tauri::command]
 async fn svn_status(app: AppHandle, srv: usize) -> Result<svn::Status, String> {
     check_srv(&app, srv)?;
-    let wc = PathBuf::from(vcs_root(&cfgs(&app, srv).1));
+    let s = cfgs(&app, srv).1;
+    let wc = PathBuf::from(vcs_root(&s));
     tauri::async_runtime::spawn_blocking(move || {
         let mut st = svn::status(&wc)?;
-        // 잠금이 남아 있을 때만 — 누가 쥐고 있을지 화면이 함께 말한다
-        if !st.locks.is_empty() {
-            st.other_svn = other_svn_programs();
+        st.eclipse = eclipse_of(&app, srv, &s);
+        // 실행기가 쓰는 중이면 그 svn 이 잡은 잠금이다 — 화면은 진행 띠를 보인다
+        if rt(&app, srv).vcs_busy.load(Ordering::SeqCst) {
+            st.lock_kind = "busy".into();
+            return Ok(st);
+        }
+        // 잠금 · 대기열이 보이면 잠깐 뒤 다시 본다 — wc.db 가 바뀐 때(다시 읽는 때)는 마침 다른 프로그램이 쓰는 중이기 쉽다.
+        // 그사이 풀렸으면 잠깐 걸린 것이라 알리지 않는다. 남아 있으면 누가 쥐고 있을지 화면이 함께 말한다.
+        if !st.locks.is_empty() || st.queue > 0 {
+            thread::sleep(Duration::from_millis(800));
+            let h = svn::wc_health(&wc);
+            st.locks = h.locks.clone();
+            st.queue = h.queue;
+            if !h.clean() {
+                st.other_svn = other_svn_programs();
+                st.lock_kind = lock_kind(&h, &st.other_svn).into();
+            }
         }
         Ok(st)
     })
@@ -4945,11 +4992,94 @@ async fn git_rev_diff(app: AppHandle, srv: usize, rel: String, old: String, new:
 //   Conflicted 가 남은 채 Commit · 내가 고친 파일과 겹치는 리비전 되돌리기는 거절
 // 끝나면(실패해도) 표지를 맞추고 vcs-dirty 를 한 번 보내 화면이 다시 읽게 한다.
 // Blame · 충돌 세 쪽 보기는 읽기라 Allow write 와 상관없다.
+// 도는 동안 단계를 vcs-progress 로 알린다 (2026.11.04~) — 화면이 띠 · 저장소 줄의 상태 칸에 「Commit 3/3 · 올리는 중」을 그린다.
 
 struct VcsBusy {
     app: AppHandle,
     srv: usize,
     root: PathBuf,
+    wait_locks: bool, // svn 쓰기 — 시작하기 전에 잠깐 걸린 잠금이 풀리기를 기다린다 (ready)
+}
+
+/// 화면에 보내는 진행 — busy 가 false 면 일이 끝났다
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct VcsProgressEvent {
+    srv: usize,
+    busy: bool,
+    progress: Option<VcsProgress>,
+}
+
+// 잠금이 걸려 있으면 쓰기를 시작하기 전에 이만큼 다시 본다 (1초씩)
+const LOCK_WAITS: u32 = 3;
+
+impl VcsBusy {
+    /// 일을 시작한다 — 이름을 화면에 알리고, svn 이면 작업복사본 잠금이 풀리기를 잠깐 기다린다.
+    /// 2026-11-04 : 잠금을 한 번 보고 바로 거절했더니, 켜 둔 Eclipse 가 잠깐 잡은 잠금에도 Commit 이 막혔다.
+    /// 끝나지 않은 작업 대기열은 기다려도 풀리지 않으므로 바로 Cleanup 을 내민다.
+    fn ready(self, op: &str) -> Result<Self, String> {
+        let now = now_ms();
+        self.set(Some(VcsProgress { op: op.into(), started_at_ms: now, step_at_ms: now, ..Default::default() }));
+        if !self.wait_locks {
+            return Ok(self);
+        }
+        let mut h = svn::wc_health(&self.root);
+        if h.clean() {
+            return Ok(self);
+        }
+        self.step(0, 0, "작업복사본 잠금이 풀리기를 기다리는 중");
+        for i in 1..=LOCK_WAITS {
+            if h.queue > 0 {
+                break;
+            }
+            self.waiting(i, LOCK_WAITS);
+            thread::sleep(Duration::from_secs(1));
+            h = svn::wc_health(&self.root);
+            if h.clean() {
+                return Ok(self);
+            }
+        }
+        Err(locked_msg(&h))
+    }
+
+    fn set(&self, p: Option<VcsProgress>) {
+        *rt(&self.app, self.srv).vcs_prog.lock().unwrap() = p.clone();
+        let _ = self.app.emit("vcs-progress", VcsProgressEvent { srv: self.srv, busy: p.is_some(), progress: p });
+    }
+
+    fn update(&self, f: impl FnOnce(&mut VcsProgress)) {
+        let p = {
+            let mut g = rt(&self.app, self.srv).vcs_prog.lock().unwrap();
+            let Some(p) = g.as_mut() else { return };
+            f(p);
+            p.clone()
+        };
+        let _ = self.app.emit("vcs-progress", VcsProgressEvent { srv: self.srv, busy: true, progress: Some(p) });
+    }
+
+    /// n / of 단계에 들어선다 (of 가 0 이면 단계 수 없이 이름만)
+    fn step(&self, n: u32, of: u32, label: &str) {
+        let now = now_ms();
+        self.update(|p| {
+            p.step = n;
+            p.of = of;
+            p.label = label.into();
+            p.attempt = 0;
+            p.attempts = 0;
+            p.wait_for.clear();
+            p.step_at_ms = now;
+        });
+    }
+
+    /// 잠금을 기다려 다시 시도한다 — 지금 켜져 있는 SVN 프로그램을 함께 적는다
+    fn waiting(&self, attempt: u32, attempts: u32) {
+        let who = other_svn_programs().join(" · ");
+        self.update(|p| {
+            p.attempt = attempt;
+            p.attempts = attempts;
+            p.wait_for = who;
+        });
+    }
 }
 
 impl Drop for VcsBusy {
@@ -4963,32 +5093,32 @@ impl Drop for VcsBusy {
             r.git_stamp.store(s, Ordering::Relaxed);
         }
         r.vcs_busy.store(false, Ordering::SeqCst);
+        self.set(None);
         let _ = self.app.emit("vcs-dirty", self.srv);
+        // 진단 기록이 처음 생겼을 수 있다 — 화면의 「진단 기록 열기」가 알게 상태를 다시 보낸다
+        emit_state(&self.app);
     }
 }
 
 fn vcs_begin(app: &AppHandle, srv: usize, kind: &str) -> Result<(ServerCfg, PathBuf, VcsBusy), String> {
-    vcs_begin_with(app, srv, kind, true)
+    vcs_begin_with(app, srv, kind, true, true)
 }
 
-// locks : 작업복사본 잠금이 남아 있으면 svn 을 부르기 전에 멈춘다. 부르면 E155004 로 실패하는데, 그 전에 add · delete 가 반쯤 돌 수 있다.
-// Cleanup 만 잠금을 풀려고 부르므로 false 로 건너뛴다.
-fn vcs_begin_with(app: &AppHandle, srv: usize, kind: &str, locks: bool) -> Result<(ServerCfg, PathBuf, VcsBusy), String> {
+// locks : 작업복사본 잠금이 남아 있으면 svn 을 부르기 전에 기다리고(ready), 그래도 남으면 멈춘다.
+//         부르면 E155004 로 실패하는데, 그 전에 add · delete 가 반쯤 돌 수 있다. Cleanup 은 잠금을 풀려고 부르므로 false 로 건너뛴다.
+// write : Allow write 를 켠 서버만. Cleanup 은 저장소에 쓰지 않고 작업복사본 잠금만 풀므로 false 다 (2026.11.04~).
+fn vcs_begin_with(app: &AppHandle, srv: usize, kind: &str, locks: bool, write: bool) -> Result<(ServerCfg, PathBuf, VcsBusy), String> {
     check_srv(app, srv)?;
     let s = cfgs(app, srv).1;
-    if !s.vcs.write {
+    if write && !s.vcs.write {
         return Err(format!("{} 은 「설정 › 버전 관리 › Allow write」가 꺼져 있습니다.", s.name));
     }
     if !vcs_kinds(&s).contains(&kind) {
         return Err(format!("{} 에서 쓰는 버전 관리가 아닙니다: {kind}", s.name));
     }
     if kind == "svn" {
-        if let Some(why) = svn_block(&s) {
+        if let Some(why) = svn_unready(&s) {
             return Err(why);
-        }
-        let held = svn::wc_locks(Path::new(&vcs_root(&s)));
-        if locks && !held.is_empty() {
-            return Err(locked_msg(&held));
         }
     }
     let r = rt(app, srv);
@@ -4996,53 +5126,64 @@ fn vcs_begin_with(app: &AppHandle, srv: usize, kind: &str, locks: bool) -> Resul
         return Err("이 서버에서 다른 버전 관리 작업이 도는 중입니다.".into());
     }
     let root = PathBuf::from(vcs_root(&s));
-    Ok((s, root.clone(), VcsBusy { app: app.clone(), srv, root }))
+    Ok((s, root.clone(), VcsBusy { app: app.clone(), srv, root, wait_locks: locks && kind == "svn" }))
 }
 
-// 잠금이 남은 폴더와, 그것을 쥐고 있을지 모르는 다른 SVN 프로그램
-fn locked_msg(held: &[String]) -> String {
-    let others = other_svn_programs();
-    let who = if others.is_empty() {
-        "쓰는 SVN 프로그램이 없다면 끊긴 작업이 남긴 잠금입니다.".to_string()
+fn eclipse_running(others: &[String]) -> bool {
+    others.iter().any(|o| o == "Eclipse" || o == "STS")
+}
+
+// 작업복사본 상태 칸의 갈래 (svn::Status.lock_kind)
+fn lock_kind(h: &svn::WcHealth, others: &[String]) -> &'static str {
+    if h.clean() {
+        ""
+    } else if h.queue > 0 {
+        "queue"
+    } else if eclipse_running(others) {
+        "eclipse"
+    } else if !others.is_empty() {
+        "other"
     } else {
-        format!("켜져 있는 SVN 프로그램: {}. 그쪽 SVN 작업이 끝났는지 보거나 닫은 뒤", others.join(" · "))
-    };
-    format!("{}작업복사본이 잠겨 있습니다 ({}). {who} Cleanup 하면 풀립니다.", svncli::LOCKED, held.join(", "))
+        "stale"
+    }
 }
 
-// 같은 작업복사본을 잠글 수 있는 다른 SVN 프로그램 — Eclipse 의 Subversive · Subclipse(SVNKit)는 svn.exe 없이 wc.db 를 직접 잠근다
-// 2026-10-29 : 남은 잠금을 쥔 것이 켜 둔 Eclipse 였다. 프로세스 이름만 보므로 Eclipse 에 SVN 플러그인이 없어도 이름이 나온다.
-fn other_svn_programs() -> Vec<String> {
-    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
-    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
-        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+// 잠금이 남은 폴더 · 끝나지 않은 작업과, 그것을 쥐고 있을지 모르는 다른 SVN 프로그램
+fn locked_msg(h: &svn::WcHealth) -> String {
+    let others = other_svn_programs();
+    let what = if h.locks.is_empty() {
+        format!("작업복사본에 끝나지 않은 작업이 {}개 남아 있습니다.", h.queue)
+    } else {
+        let at: Vec<&str> = h.locks.iter().map(|l| if l == "." { "맨 위 폴더" } else { l.as_str() }).collect();
+        format!("작업복사본이 잠겨 있습니다 ({}).", at.join(", "))
     };
-    const KNOWN: [(&str, &str); 4] = [("eclipse.exe", "Eclipse"), ("sts.exe", "STS"), ("TortoiseProc.exe", "TortoiseSVN"), ("svn.exe", "다른 svn")];
-    let mut found: Vec<String> = Vec::new();
-    unsafe {
-        let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-        if snap == INVALID_HANDLE_VALUE {
-            return found;
+    let who = match lock_kind(h, &others) {
+        "queue" => "svn 이 파일을 옮기다 막혔던 것입니다 (다른 프로그램 · 백신이 파일을 잡음). Cleanup 하면 마저 끝냅니다.".to_string(),
+        "eclipse" => "켜 둔 Eclipse 의 SVN 이 잡은 잠금일 수 있습니다. Eclipse 쪽 작업(새로 고침 · 동기화)이 끝나면 풀립니다. 끝났는데도 남으면 Cleanup 하세요.".to_string(),
+        "other" => format!("켜져 있는 SVN 프로그램: {}. 그쪽 SVN 작업이 끝났는지 보거나 닫은 뒤 Cleanup 하세요.", others.join(" · ")),
+        _ => "쓰는 SVN 프로그램이 없으니 끊긴 작업이 남긴 잠금입니다. Cleanup 하면 풀립니다.".to_string(),
+    };
+    format!("{}{what} {who}", svncli::LOCKED)
+}
+
+// 같은 작업복사본을 잠글 수 있는 다른 SVN 프로그램 (svncli::HOLDERS)
+// 2026-10-29 : 남은 잠금을 쥔 것이 켜 둔 Eclipse 였다. 프로세스 이름만 보므로 Eclipse 에 SVN 플러그인이 없어도 이름이 나온다 — 플러그인은 eclipse_of 가 본다.
+fn other_svn_programs() -> Vec<String> {
+    svncli::running(&svncli::HOLDERS)
+}
+
+// 작업복사본을 연 Eclipse 의 SVN 플러그인 · 자동 새로 고침 설정 — 작업 공간을 찾느라 드라이브를 훑을 수 있어 5분 둔다
+fn eclipse_of(app: &AppHandle, srv: usize, s: &ServerCfg) -> Option<eclipse::EclipseSvn> {
+    let dir = if s.project.trim().is_empty() { vcs_root(s) } else { s.project.clone() };
+    let r = rt(app, srv);
+    if let Some((at, d, e)) = r.eclipse_svn.lock().unwrap().as_ref() {
+        if *d == dir && at.elapsed() < Duration::from_secs(300) {
+            return e.clone();
         }
-        let mut e: PROCESSENTRY32W = std::mem::zeroed();
-        e.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
-        if Process32FirstW(snap, &mut e) != 0 {
-            loop {
-                let len = e.szExeFile.iter().position(|&c| c == 0).unwrap_or(e.szExeFile.len());
-                let name = String::from_utf16_lossy(&e.szExeFile[..len]);
-                for (exe, label) in KNOWN {
-                    if name.eq_ignore_ascii_case(exe) && !found.iter().any(|f| f == label) {
-                        found.push(label.to_string());
-                    }
-                }
-                if Process32NextW(snap, &mut e) == 0 {
-                    break;
-                }
-            }
-        }
-        CloseHandle(snap);
     }
-    found
+    let e = eclipse::svn_for(Path::new(&dir));
+    *r.eclipse_svn.lock().unwrap() = Some((Instant::now(), dir, e.clone()));
+    e
 }
 
 // 쓰기 중인 서버가 하나라도 있는가 — 닫기 · 업데이트 설치가 끝나기를 기다린다
@@ -5052,7 +5193,12 @@ fn any_vcs_busy(app: &AppHandle) -> bool {
 
 fn svn_cli(s: &ServerCfg, wc: &Path) -> Result<svncli::Svn, String> {
     let p = svncli::probe(&s.vcs.svn_exe)?;
-    Ok(svncli::Svn { exe: PathBuf::from(p.exe), wc: wc.to_path_buf() })
+    Ok(svncli::Svn { exe: PathBuf::from(p.exe), wc: wc.to_path_buf(), log: Some(vcs_log_path(s)) })
+}
+
+// svn 실패를 그때의 잠금 · 켜진 프로그램과 함께 남기는 진단 기록 (2026.11.04~) — 화면의 「진단 기록 열기」가 연다
+fn vcs_log_path(s: &ServerCfg) -> PathBuf {
+    Path::new(&s.catalina_base).join("logs").join("vcs.log")
 }
 
 // 실행기에 넣어 둔 SVN 계정 — 없으면 svn 자신의 인증 캐시에만 기댄다
@@ -5143,7 +5289,7 @@ async fn vcs_commit(app: AppHandle, srv: usize, kind: String, paths: Vec<String>
     let (s, root, busy) = vcs_begin(&app, srv, &kind)?;
     let cred = if kind == "svn" { svn_cred(&app, &root) } else { None };
     let r = tauri::async_runtime::spawn_blocking(move || -> Result<String, String> {
-        let _busy = busy;
+        let busy = busy.ready("Commit")?;
         if kind == "git" {
             let st = git::status(&root)?;
             let mut all = paths.clone();
@@ -5177,11 +5323,19 @@ async fn vcs_commit(app: AppHandle, srv: usize, kind: String, paths: Vec<String>
                 _ => {}
             }
         }
+        // 단계마다 화면에 알리고, 잠깐 걸린 잠금은 그 단계만 기다렸다 다시 한다 — 앞 단계는 이미 끝났으므로 다시 하지 않는다
+        let of = 1 + u32::from(!adds.is_empty()) + u32::from(!gone.is_empty());
+        let mut n = 0;
+        let wait = |a: u32, k: u32| busy.waiting(a, k);
         if !adds.is_empty() {
-            cli.call(&svncli::add_args(&adds), cred.as_ref()).map_err(web_err)?;
+            n += 1;
+            busy.step(n, of, &format!("새 파일 더하기 ({}개)", adds.len()));
+            cli.call_retry(&svncli::add_args(&adds), cred.as_ref(), &wait).map_err(web_err)?;
         }
         if !gone.is_empty() {
-            cli.call(&svncli::delete_args(&gone), cred.as_ref()).map_err(web_err)?;
+            n += 1;
+            busy.step(n, of, &format!("지운 파일 빼기 ({}개)", gone.len()));
+            cli.call_retry(&svncli::delete_args(&gone), cred.as_ref(), &wait).map_err(web_err)?;
         }
         // Commit 은 --depth empty 라 새 폴더의 안쪽을 하나하나 넣는다 (무시 목록에 걸린 것은 svn add 가 이미 뺐다)
         let mut targets = paths.clone();
@@ -5213,7 +5367,8 @@ async fn vcs_commit(app: AppHandle, srv: usize, kind: String, paths: Vec<String>
                 ));
             }
         }
-        let rev = cli.commit(&msg, &targets, deep, cred.as_ref()).map_err(web_err)?;
+        busy.step(of, of, &format!("저장소에 올리는 중 (파일 {}개)", paths.len()));
+        let rev = cli.commit(&msg, &targets, deep, cred.as_ref(), &wait).map_err(web_err)?;
         match rev {
             Some(r) => Ok(format!("Commit 했습니다 · r{r} · 파일 {}개", paths.len())),
             None => Err("올라간 것이 없습니다. 고른 파일의 내용이 BASE 와 같습니다 (저장만 다시 했거나 고쳤다가 되돌린 파일).".into()),
@@ -5226,18 +5381,28 @@ async fn vcs_commit(app: AppHandle, srv: usize, kind: String, paths: Vec<String>
 }
 
 // 작업복사본 잠금 · 끊긴 작업만 푼다 (svn cleanup · 옵션 없음). 고친 파일 · 버전 관리 밖 파일은 건드리지 않는다.
+// 2026.11.04~ : Allow write 를 꺼 둔 서버에서도 한다 — 저장소에 쓰지 않는다. 다른 프로그램이 잠깐 잡고 있으면 기다렸다 다시 한다.
 #[tauri::command]
 async fn vcs_cleanup(app: AppHandle, srv: usize) -> Result<String, String> {
-    let (s, root, busy) = vcs_begin_with(&app, srv, "svn", false)?;
+    let (s, root, busy) = vcs_begin_with(&app, srv, "svn", false, false)?;
     let r = tauri::async_runtime::spawn_blocking(move || -> Result<String, String> {
-        let _busy = busy;
-        svn_cli(&s, &root)?.call(&svncli::cleanup_args(), None).map_err(web_err)?;
-        let left = svn::wc_locks(&root);
-        if left.is_empty() {
-            Ok("Cleanup 했습니다 · 잠금이 풀렸습니다".into())
-        } else {
-            Err(locked_msg(&left))
+        let busy = busy.ready("Cleanup")?;
+        let before = svn::wc_health(&root);
+        busy.step(1, 2, "잠금 · 끊긴 작업 정리");
+        svn_cli(&s, &root)?.call_retry(&svncli::cleanup_args(), None, &|a, k| busy.waiting(a, k)).map_err(web_err)?;
+        busy.step(2, 2, "다시 확인");
+        let left = svn::wc_health(&root);
+        if !left.clean() {
+            return Err(locked_msg(&left));
         }
+        let mut done = Vec::new();
+        if !before.locks.is_empty() {
+            done.push(format!("잠금 {}곳", before.locks.len()));
+        }
+        if before.queue > 0 {
+            done.push(format!("끝나지 않은 작업 {}개", before.queue));
+        }
+        Ok(if done.is_empty() { "Cleanup 했습니다 · 남은 잠금이 없습니다".into() } else { format!("Cleanup 했습니다 · {}를 풀었습니다", done.join(" · ")) })
     })
     .await
     .map_err(|e| e.to_string())?;
@@ -5257,7 +5422,7 @@ async fn vcs_update(app: AppHandle, srv: usize, kind: String, paths: Option<Vec<
     let cred = if kind == "svn" { svn_cred(&app, &root) } else { None };
     let what = if kind == "git" { "Pull" } else { "Update" };
     let r = tauri::async_runtime::spawn_blocking(move || -> Result<VcsDone, String> {
-        let _busy = busy;
+        let _busy = busy.ready("Update")?;
         if kind == "git" {
             let groot = git::toplevel(&root)?;
             let cmd = if s.vcs.git_update.trim().is_empty() { "git pull --ff-only" } else { s.vcs.git_update.as_str() };
@@ -5306,7 +5471,7 @@ async fn vcs_revert(app: AppHandle, srv: usize, kind: String, paths: Vec<String>
     let (s, root, busy) = vcs_begin(&app, srv, &kind)?;
     let cred = if kind == "svn" { svn_cred(&app, &root) } else { None };
     let r = tauri::async_runtime::spawn_blocking(move || -> Result<VcsDone, String> {
-        let _busy = busy;
+        let _busy = busy.ready("Revert")?;
         // 폴더는 복사하지 않는다 — 「.」 의 속성만 되돌릴 때 작업복사본 전체를 복사하게 된다. 새로 더한 폴더의 파일은 Revert 뒤에도 남는다.
         let files = |items: &[svn::Item]| -> Vec<String> { paths.iter().filter(|p| items.iter().any(|i| &i.path == *p && !i.dir && i.code != "?")).cloned().collect() };
         if kind == "git" {
@@ -5371,10 +5536,10 @@ async fn vcs_restore(app: AppHandle, srv: usize, kind: String, picks: Vec<(Strin
     for (_, p) in &picks {
         safe_rel(p)?;
     }
-    let (s, root, busy) = vcs_begin_with(&app, srv, &kind, false)?;
+    let (s, root, busy) = vcs_begin_with(&app, srv, &kind, false, true)?;
     let cred = if kind == "svn" { svn_cred(&app, &root) } else { None };
     let r = tauri::async_runtime::spawn_blocking(move || -> Result<VcsDone, String> {
-        let _busy = busy;
+        let _busy = busy.ready("되살리기")?;
         let wc = if kind == "git" { git::toplevel(&root)? } else { root.clone() };
         let rels: Vec<String> = picks.iter().map(|(_, p)| p.clone()).collect();
         let (note, backup) = kept_info(keep("되살리기 전", &wc, &rels)?);
@@ -5457,7 +5622,7 @@ async fn vcs_resolve(app: AppHandle, srv: usize, kind: String, path: String, acc
     let (s, root, busy) = vcs_begin(&app, srv, &kind)?;
     let cred = if kind == "svn" { svn_cred(&app, &root) } else { None };
     let r = tauri::async_runtime::spawn_blocking(move || -> Result<VcsDone, String> {
-        let _busy = busy;
+        let _busy = busy.ready("Resolve")?;
         let ci = if kind == "git" { git::conflict_info(&root, &path)? } else { svn::conflict_info(&root, &path)? };
         // 고를 수 있는 풀이는 충돌 기록이 정한다 (svn::tree_choices) — 화면이 낡아 맞지 않는 것을 보내도 여기서 막는다
         let Some(how) = ci.choices.iter().find(|c| c.id == accept).map(|c| c.label) else {
@@ -5500,7 +5665,7 @@ async fn vcs_revert_revision(app: AppHandle, srv: usize, kind: String, rev: Stri
     let (s, root, busy) = vcs_begin(&app, srv, &kind)?;
     let cred = if kind == "svn" { Some(svn::wc_info(&root).and_then(|i| creds_for(&app, &i.url))) } else { None };
     let r = tauri::async_runtime::spawn_blocking(move || -> Result<VcsDone, String> {
-        let _busy = busy;
+        let _busy = busy.ready("리비전 되돌리기")?;
         // 내가 고친 파일과 겹치면 되돌린 변경과 내 변경이 한 파일에 섞여 가리지 못한다
         let check = |changed: Vec<String>, mine: Vec<String>| -> Result<(), String> {
             if changed.is_empty() {
@@ -5837,7 +6002,7 @@ async fn svn_op(app: AppHandle, srv: usize, op: SvnOp) -> Result<VcsDone, String
     let (s, root, busy) = vcs_begin(&app, srv, "svn")?;
     let cred = svn_cred(&app, &root);
     let r = tauri::async_runtime::spawn_blocking(move || {
-        let _busy = busy;
+        let _busy = busy.ready(what)?;
         svn_op_run(&svn_cli(&s, &root)?, &root, op, cred.as_ref())
     })
     .await
@@ -5903,7 +6068,7 @@ async fn vcs_pick_file(app: AppHandle, save: bool, name: String) -> Result<Optio
 async fn vcs_fetch(app: AppHandle, srv: usize) -> Result<String, String> {
     let (_, root, busy) = vcs_begin(&app, srv, "git")?;
     let r = tauri::async_runtime::spawn_blocking(move || -> Result<String, String> {
-        let _busy = busy;
+        let _busy = busy.ready("Fetch")?;
         gitwrite::fetch(&git::toplevel(&root)?)?;
         let st = git::status(&root)?;
         Ok(match &st.upstream {
@@ -5929,7 +6094,7 @@ async fn git_outgoing(app: AppHandle, srv: usize) -> Result<git::Outgoing, Strin
 async fn vcs_push(app: AppHandle, srv: usize) -> Result<String, String> {
     let (_, root, busy) = vcs_begin(&app, srv, "git")?;
     let r = tauri::async_runtime::spawn_blocking(move || -> Result<String, String> {
-        let _busy = busy;
+        let _busy = busy.ready("Push")?;
         let groot = git::toplevel(&root)?;
         gitwrite::push_target(&groot)?;
         let n = git::outgoing(&groot)?.entries.len();

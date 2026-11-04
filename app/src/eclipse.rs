@@ -761,6 +761,50 @@ pub fn read_workspace(ws: &Path) -> Workspace {
     Workspace { path: p(ws), servers: out }
 }
 
+/* ---------- 같은 작업복사본을 쓰는 Eclipse 의 SVN (2026.11.04~) ---------- */
+// 켜 둔 Eclipse 의 SVN 플러그인(Subversive · Subclipse)은 svn.exe 없이 같은 .svn/wc.db 를 잠근다.
+// 실행기가 파일 · .svn 을 바꾸면 Eclipse 가 새로 고치며 잠금을 잡고, 그 사이 svn commit 은 기다리지 않고 E155004 로 실패한다.
+// 읽기만 한다 — Eclipse 설정은 고치지 않는다.
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EclipseSvn {
+    pub workspace: String,
+    pub plugin: String,         // Subversive · Subclipse
+    pub refresh: Option<bool>,  // Preferences › General › Workspace › Refresh using native hooks or polling (없으면 Eclipse 기본값)
+}
+
+const SVN_PLUGINS: [(&str, &str); 2] = [("org.eclipse.team.svn.core", "Subversive"), ("org.tigris.subversion.subclipse.core", "Subclipse")];
+
+fn same_dir(a: &Path, b: &Path) -> bool {
+    p(a).trim_end_matches('/').eq_ignore_ascii_case(p(b).trim_end_matches('/'))
+}
+
+/// 작업 공간에 이 폴더가 프로젝트로 들어 있는가 — .projects 의 이름마다 실제 폴더를 견준다
+fn has_project(ws: &Path, project: &Path) -> bool {
+    let dir = ws.join(".metadata/.plugins/org.eclipse.core.resources/.projects");
+    fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|e| project_dir(ws, &e.file_name().to_string_lossy()).is_some_and(|d| same_dir(&d, project)))
+}
+
+/// 이 작업복사본(project)을 연 작업 공간에 SVN 플러그인이 있으면 그 이름과 자동 새로 고침 설정
+/// 작업 공간은 프로젝트의 위 폴더들에서 먼저 찾고, 없으면 흔한 자리(find_workspaces)를 본다.
+pub fn svn_for(project: &Path) -> Option<EclipseSvn> {
+    let has_meta = |d: &Path| d.join(".metadata/.plugins").is_dir();
+    let mut cands: Vec<PathBuf> = project.ancestors().skip(1).filter(|d| has_meta(d)).map(Path::to_path_buf).collect();
+    if cands.is_empty() {
+        cands = find_workspaces(&[]);
+    }
+    let ws = cands.into_iter().find(|w| has_project(w, project))?;
+    let plugin = SVN_PLUGINS.iter().find(|(dir, _)| ws.join(".metadata/.plugins").join(dir).is_dir())?.1;
+    let text = fs::read_to_string(ws.join(".metadata/.plugins/org.eclipse.core.runtime/.settings/org.eclipse.core.resources.prefs")).unwrap_or_default();
+    let refresh = prefs(&text).into_iter().find(|(k, _)| k == "refresh.enabled").map(|(_, v)| v.trim() == "true");
+    Some(EclipseSvn { workspace: p(&ws), plugin: plugin.into(), refresh })
+}
+
 /// 이클립스 배포본의 jar 를 deps 로 — deps.new 에 다 옮긴 뒤에만 바꾼다. 옮긴 수를 돌려준다.
 pub fn copy_deps(lib_dir: &str, project: &str, deps: &Path) -> Result<usize, String> {
     let lib = Path::new(lib_dir);
@@ -827,6 +871,30 @@ mod tests {
         let b: Vec<NamingBrief> = v.iter().map(brief).collect();
         assert!(b[0].secret && !b[2].secret && b[1].missing && b[4].secret);
         assert_eq!(b[0].type_, "javax.sql.DataSource");
+    }
+
+    #[test]
+    fn 작업복사본을_연_eclipse_의_svn_을_찾는다() {
+        let ws = std::env::temp_dir().join(format!("tomcatrun-eclipse-svn-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&ws);
+        let w = |rel: &str, body: &str| {
+            let f = ws.join(rel);
+            fs::create_dir_all(f.parent().unwrap()).unwrap();
+            fs::write(f, body).unwrap();
+        };
+        w("shop/.project", "<projectDescription/>");
+        w(".metadata/.plugins/org.eclipse.core.resources/.projects/shop/.markers", "");
+        // 플러그인이 없으면 알릴 것이 없다
+        assert!(svn_for(&ws.join("shop")).is_none());
+        w(".metadata/.plugins/org.eclipse.team.svn.core/x", "");
+        let e = svn_for(&ws.join("shop")).unwrap();
+        assert_eq!((e.plugin.as_str(), e.refresh), ("Subversive", None));
+        w(".metadata/.plugins/org.eclipse.core.runtime/.settings/org.eclipse.core.resources.prefs", "eclipse.preferences.version=1\nrefresh.enabled=true\n");
+        assert_eq!(svn_for(&ws.join("shop")).unwrap().refresh, Some(true));
+        // 작업 공간에 없는 폴더는 남의 것이다
+        fs::create_dir_all(ws.join("other")).unwrap();
+        assert!(svn_for(&ws.join("other")).is_none());
+        let _ = fs::remove_dir_all(&ws);
     }
 
     #[test]

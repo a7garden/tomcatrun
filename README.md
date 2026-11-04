@@ -149,8 +149,8 @@ HotswapAgent 의 원문 줄(`Reloading classes …` · `Registering Spring bean 
 
 | 자리 | 무엇 |
 | - | - |
-| 저장소 줄 | 서버 · 저장소 경로 · 리비전, 받을 커밋 수, Update(Git 은 Fetch · Pull · Push) 단추. 쓰기를 끈 서버는 명령 복사 단추 |
-| 띠 | 지금 손댈 것 — 쓰기 실패(무엇을 하면 되는지와 svn 원문), 남은 작업복사본 잠금, 쓰기를 못 하는 까닭. 도는 동안은 걸린 시간 |
+| 저장소 줄 | 서버 · 저장소 경로 · 리비전, 받을 커밋 수, Update(Git 은 Fetch · Pull · Push) 단추. 쓰기를 끈 서버는 명령 복사 단추. SVN 은 작업복사본 상태 칸(아래)이 늘 붙는다 |
+| 띠 | 지금 손댈 것 — 쓰기 실패(무엇을 하면 되는지와 svn 원문), 남은 작업복사본 잠금, 쓰기를 못 하는 까닭. 도는 동안은 단계(「Commit 3/3 · 저장소에 올리는 중」) · 걸린 시간 · 잠금을 기다리는 차례 |
 | Changes | 맨 위에 받을 커밋(Update 하면 들어올 것 · 내 변경과 겹치는 것), 그 아래 Conflicted · Changes · Unversioned 묶음. 파일 찾기 · 모두 고르기 · 화살표와 Space 로 고르기 |
 | History | 최근 커밋. 고르면 오른쪽에 메시지 · 바뀐 파일 · 그 Diff |
 | Commit 칸 | 제목 · 설명 · 자동 생성 · Commit 단추. 누를 수 없으면 그 까닭이 단추 아래에 뜬다. Ctrl+Enter 로 Commit 한다 |
@@ -174,11 +174,13 @@ HotswapAgent 의 원문 줄(`Reloading classes …` · `Registering Spring bean 
 | Push | 없음 (Commit 이 곧 올리기) | 지금 브랜치를 원격 추적 브랜치(`@{u}`)에만 올린다. 확인 창에 올라갈 커밋을 보인다. 원격 추적 브랜치가 없는 새 브랜치는 올리지 않는다 (`git push -u` 는 직접). `--force` 는 쓰지 않는다 |
 | Revert | BASE 로 되돌린다. Added 는 Unversioned 로 돌아가고 파일은 남는다 | HEAD 로 되돌린다. Added 는 색인에서만 빠진다 |
 | Resolve | Use mine · Use theirs · Mark as resolved. BASE ↔ mine · BASE ↔ theirs 를 나란히 본다 | 같은 세 가지 (`--ours` · `--theirs` · `git add`) |
-| Cleanup | `svn cleanup` (옵션 없음 · 잠금과 끊긴 작업만 푼다. 고친 파일 · Unversioned 는 그대로) | 없음 |
+| Cleanup | `svn cleanup` (옵션 없음 · 잠금과 끊긴 작업만 푼다. 고친 파일 · Unversioned 는 그대로). 저장소에 쓰지 않으므로 **Allow write 를 꺼도** 한다. 잠금으로 실패한 Commit 은 띠의 「Cleanup 뒤 다시 Commit」으로 같은 파일 · 메시지를 이어서 올린다 | 없음 |
 | 리비전 되돌리기 (History) | `svn merge -c -N` · 결과는 Changes 에 남고 Commit 은 따로 | `git revert --no-commit` |
 
 - Conflicted 가 남은 파일은 Commit 하지 않는다. 내가 고친 파일과 겹치는 리비전은 되돌리지 않는다. 고른 파일 내용이 모두 BASE 와 같아 올라간 것이 없으면 성공이라 하지 않고 그렇게 알린다.
-- **작업복사본 잠금** — svn 이 쓰는 도중 끊기면(IDE 의 SVN 이 죽거나, 쓰는 중에 프로그램을 닫거나) `.svn/wc.db` 에 잠금이 남아 Commit · Update 가 `E155004` 로 실패한다. 실행기는 쓰기 전에 잠금을 먼저 보고, 남아 있으면 svn 을 부르지 않고 띠에 잠긴 폴더와 Cleanup 단추를 보인다. Eclipse(Subversive · Subclipse 는 svn.exe 없이 같은 작업복사본을 잠근다) · TortoiseSVN 이 켜져 있으면 그 이름도 함께 적는다. Commit · Update 가 도는 중에 실행기를 닫으면 그 일이 끝난 뒤에 닫힌다.
+- **작업복사본 잠금** — svn 이 쓰는 동안 `.svn/wc.db` 를 잠근다. 다른 프로그램이 쓰는 중이거나 쓰다 끊기면 Commit · Update 가 `E155004` 로 실패한다. 켜 둔 Eclipse 의 SVN(Subversive · Subclipse 는 svn.exe 없이 같은 작업복사본을 잠근다)이 실행기가 바꾼 파일을 새로 고치느라 잠깐 잠그는 일이 잦다. 실행기는 잠금이 보이면 바로 멈추지 않고 1초씩 세 번 기다리고, svn 이 잠금 때문에 실패하면 1 · 2 · 4초 기다렸다 그 단계만 다시 한다(svn 이 이미 무엇이든 찍었으면 두 번 올리지 않게 다시 하지 않는다). 그래도 남으면 띠에 잠긴 폴더와 Cleanup 단추를 보인다. 끝나지 않은 작업 대기열(`E155037` · svn 이 파일을 옮기다 막힘)은 기다려도 풀리지 않아 바로 Cleanup 을 내민다. Commit · Update 가 도는 중에 실행기를 닫으면 그 일이 끝난 뒤에 닫힌다.
+- **작업복사본 상태 칸** — 저장소 줄에 늘 한 칸: 작업복사본 정상 · 실행기가 쓰는 중(단계 · 초) · 잠금 기다리는 중 n/3 · Eclipse 가 잡은 잠금 · 다른 SVN 프로그램이 잡은 잠금 · Cleanup 필요. 누르면 띠에 자세히(이 폴더를 연 Eclipse 에 SVN 플러그인이 있는지 · Eclipse 쪽 자동 새로 고침 설정과 끄는 법)가 펼쳐진다. 잠금은 0.8초 뒤 다시 봐도 남아 있을 때만 알린다. 서버 단추에도 쓰는 중이면 도는 점이 붙는다.
+- **진단 기록** — svn 이 실패하면 그 서버의 톰캣 로그 폴더 `logs/vcs.log` 에 명령 · 걸린 시간 · svn 원문과 그 순간의 잠금 · 작업 대기열 · 켜진 프로그램(Eclipse · TortoiseSVN · TortoiseSVN 상태 캐시 …)을 덧붙인다. 경로 목록과 비밀번호는 적지 않는다. 더 보기의 「SVN 진단 기록 열기」나 띠의 「진단 기록」으로 연다.
 - 실패하면 svn 오류 번호로 무엇을 하면 되는지를 띠에 먼저 적는다 — 잠금은 Cleanup, 저장소가 더 새로우면(`out of date`) Update, 연결 실패 · 다른 사람의 lock · pre-commit hook 거절 따위.
 - 복사하는 명령은 `pushd "<작업 폴더>"` 로 시작하고 svn 은 실행기가 찾은 svn.exe 경로를 쓴다. cmd · PowerShell 어느 쪽에 붙여도 돌고, PATH 에 svn 이 없어도 된다.
 - SVN 쓰기 · Blame 은 **svn.exe 1.10 이상**이 필요하다. 못 찾으면 「설정 › 버전 관리」의 **svn 받기** 단추가 VisualSVN 이 배포하는 Apache Subversion 명령줄 도구 zip 을 받아 SHA-256 을 대조한 뒤 `%LOCALAPPDATA%\tomcatrun\svn` 에 푼다 (TortoiseSVN 을 설치할 때 「command line client tools」를 고르거나, 설정에 경로를 적어도 된다). 찾는 순서는 설정 경로 → PATH → TortoiseSVN · SlikSVN → 받은 svn 이다. 판이나 작업복사본 형식이 맞지 않으면 쓰기 단추를 잠그고 까닭을 보인다. `svn upgrade` 는 하지 않는다.

@@ -13,8 +13,10 @@
 //   계정은 먼저 svn 자신의 인증 캐시를 쓰고, 인증에 실패하면 실행기 계정을 --password-from-stdin 으로 넣어 한 번 더 부른다.
 //   비밀번호는 명령줄 · 프로세스 목록 · svn 캐시(--no-auth-cache) 어디에도 남지 않는다. --password-from-stdin 은 svn 1.10 부터다.
 //   실패하면 오류 번호로 무엇을 하면 되는지를 앞에 붙인다(explain). 잠금 · 낡은 작업복사본은 화면이 Cleanup · Update 단추를 내밀도록 표지를 단다.
+//   잠깐 걸린 잠금(다른 SVN 프로그램이 쓰는 중)은 call_retry 가 기다렸다 다시 부른다 (2026.11.04~). 실패는 서버의 logs/vcs.log 에 그때의 잠금 · 프로그램과 함께 남는다.
 //
-// 목차 : 프로세스(run · gitwrite 도 쓴다) · svn.exe 찾기 · 판(probe · block_reason) · 명령 인자 · 오류 풀이(explain) · Svn(call · commit) · blame 읽기
+// 목차 : 프로세스(run · gitwrite 도 쓴다) · svn.exe 찾기 · 판(probe · block_reason) · 명령 인자 · 오류 풀이(explain) · Svn(call · call_retry · commit)
+//        · 잠글 수 있는 프로그램 · 진단 기록 · blame 읽기
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -169,11 +171,23 @@ pub fn block_reason(p: &Probe, wc_format: Option<i64>) -> Option<String> {
 
 /* ---------- 오류 풀이 ---------- */
 
+// 잠깐 걸린 잠금 — 다른 프로그램이 쓰는 동안 잡은 작업복사본 잠금(E155004) · wc.db 를 쓰는 중(E200033 SQLite busy · E200030 SQLite 오류)
+// 기다렸다 다시 부르면 풀린다. 끊긴 작업이 남긴 잠금도 같은 번호라 몇 번 해 보고 그래도 남으면 Cleanup 을 내민다.
+const TRANSIENT: [&str; 3] = ["E155004", "E200033", "E200030"];
+// 끝나지 않은 작업 대기열(E155037) — 기다려도 풀리지 않고 Cleanup 이 마저 한다
+const NEEDS_CLEANUP: [&str; 1] = ["E155037"];
+
+pub fn transient_lock(err: &str) -> bool {
+    TRANSIENT.iter().any(|k| err.contains(k)) && !NEEDS_CLEANUP.iter().any(|k| err.contains(k))
+}
+
 /// svn 오류를 「무엇을 하면 되는가」로 옮긴다. 원문의 오류 줄은 뒤에 남겨 오류 번호로 찾을 수 있게 한다.
 /// 2026-10-29 : 잠금(E155004)이 원문 세 줄로만 떠서 무엇을 해야 할지 몰랐다.
 pub fn explain(err: &str) -> String {
     let has = |ks: &[&str]| ks.iter().any(|k| err.contains(k));
-    let (mark, why) = if has(&["E155004", "E155037", "E200033", "E200030"]) {
+    let (mark, why) = if has(&NEEDS_CLEANUP) {
+        (LOCKED, "작업복사본에 끝나지 않은 작업이 남아 있습니다. svn 이 파일을 옮기다 막혔던 것입니다 (다른 프로그램 · 백신이 파일을 잡음). Cleanup 하면 마저 끝냅니다.")
+    } else if has(&TRANSIENT) {
         (LOCKED, "작업복사본이 잠겨 있습니다. 다른 SVN 프로그램(Eclipse 의 SVN · TortoiseSVN)이 작업 중이면 끝나기를 기다리고, 아니면 끊긴 작업이 남긴 잠금이니 Cleanup 하세요.")
     } else if has(&["E155011", "E160024", "E160028", "E170004", "E160042"]) {
         (STALE, "저장소에 더 새 변경이 있어 Commit 이 거절됐습니다. 먼저 Update 한 뒤 다시 Commit 하세요.")
@@ -443,7 +457,14 @@ pub fn blame_args(path: &str) -> Vec<String> {
 pub struct Svn {
     pub exe: PathBuf,
     pub wc: PathBuf,
+    pub log: Option<PathBuf>, // 실패를 덧붙여 남길 진단 기록 (서버의 logs/vcs.log) — 없으면 남기지 않는다
 }
+
+/// 잠금을 기다리는 동안 부르는 쪽에 알린다 — (몇 번째 다시 시도 · 모두 몇 번)
+pub type OnWait<'a> = &'a dyn Fn(u32, u32);
+
+// 잠깐 걸린 잠금을 기다리는 간격 — 세 번 (1 · 2 · 4초)
+const RETRY_WAITS: [u64; 3] = [1, 2, 4];
 
 impl Svn {
     fn once(&self, args: &[String], cred: Option<&(String, String)>) -> Result<Out, String> {
@@ -457,31 +478,78 @@ impl Svn {
     }
 
     /// 먼저 svn 의 인증 캐시로, 계정 문제로 실패하면 실행기 계정으로 한 번 더. 그래도 안 되면 로그인 필요.
+    /// 실패해도 Ok(Out) 이다 — 오류 글로 바꾸는 것은 finish 가 한다. 실패는 진단 기록에 남긴다.
+    fn exec(&self, args: &[String], cred: Option<&(String, String)>) -> Result<Out, WebErr> {
+        let began = Instant::now();
+        // 시간이 다 돼 끊으면 svn 이 잡은 잠금이 남는다 — Cleanup 을 내민다
+        let cut = |e: String| {
+            self.diag(args, &e, "", began.elapsed());
+            WebErr::Other(if e.contains("초 안에") { format!("{LOCKED}{e} 끊긴 svn 이 작업복사본에 잠금을 남겼을 수 있습니다. Cleanup 하세요.") } else { e })
+        };
+        let mut out = self.once(args, None).map_err(&cut)?;
+        if !out.ok && auth_failed(&out.stderr) {
+            let Some(c) = cred else { return Err(WebErr::NeedLogin("SVN 계정이 필요합니다.".into())) };
+            out = self.once(args, Some(c)).map_err(&cut)?;
+            if !out.ok && auth_failed(&out.stderr) {
+                return Err(WebErr::NeedLogin("SVN 계정이 없거나 맞지 않습니다.".into()));
+            }
+        }
+        if !out.ok {
+            self.diag(args, &out.stderr, &decode(&out.stdout), began.elapsed());
+        }
+        Ok(out)
+    }
+
+    fn finish(args: &[String], out: Out) -> Result<Vec<u8>, WebErr> {
+        if out.ok {
+            return Ok(out.stdout);
+        }
+        let first = args.first().map(String::as_str).unwrap_or("");
+        Err(WebErr::Other(if out.stderr.is_empty() { format!("svn {first} 이 실패했습니다.") } else { explain(&out.stderr) }))
+    }
+
     pub fn call(&self, args: &[String], cred: Option<&(String, String)>) -> Result<String, WebErr> {
         self.call_raw(args, cred).map(|b| decode(&b))
     }
 
     /// 출력 그대로 — patch 처럼 파일 내용(EUC-KR 소스 따위)이 섞인 출력은 글자로 풀면 깨진다
     pub fn call_raw(&self, args: &[String], cred: Option<&(String, String)>) -> Result<Vec<u8>, WebErr> {
-        // 시간이 다 돼 끊으면 svn 이 잡은 잠금이 남는다 — Cleanup 을 내민다
-        let cut = |e: String| WebErr::Other(if e.contains("초 안에") { format!("{LOCKED}{e} 끊긴 svn 이 작업복사본에 잠금을 남겼을 수 있습니다. Cleanup 하세요.") } else { e });
-        let mut out = self.once(args, None).map_err(cut)?;
-        if !out.ok && auth_failed(&out.stderr) {
-            let Some(c) = cred else { return Err(WebErr::NeedLogin("SVN 계정이 필요합니다.".into())) };
-            out = self.once(args, Some(c)).map_err(cut)?;
-            if !out.ok && auth_failed(&out.stderr) {
-                return Err(WebErr::NeedLogin("SVN 계정이 없거나 맞지 않습니다.".into()));
+        Self::finish(args, self.exec(args, cred)?)
+    }
+
+    /// 잠깐 걸린 잠금(E155004 · E200033 · E200030)이면 1 · 2 · 4초 기다렸다 다시 부른다 (2026.11.04~).
+    /// 2026-11-04 : 켜 둔 Eclipse 의 SVN 이 실행기의 add · commit 뒤 새로 고치며 잠금을 잡아 Commit 이 자주 E155004 로 실패했다.
+    /// svn 이 무엇이든 찍었으면(Adding · Sending · Committed revision) 이미 일을 시작한 것이라 다시 부르지 않는다 — 두 번 올리지 않게.
+    pub fn call_retry(&self, args: &[String], cred: Option<&(String, String)>, on_wait: OnWait) -> Result<String, WebErr> {
+        let mut out = self.exec(args, cred)?;
+        for (i, secs) in RETRY_WAITS.iter().enumerate() {
+            if out.ok || !transient_lock(&out.stderr) || !out.stdout.iter().all(u8::is_ascii_whitespace) {
+                break;
             }
+            on_wait(i as u32 + 1, RETRY_WAITS.len() as u32);
+            thread::sleep(Duration::from_secs(*secs));
+            out = self.exec(args, cred)?;
         }
-        if !out.ok {
-            let first = args.first().map(String::as_str).unwrap_or("");
-            return Err(WebErr::Other(if out.stderr.is_empty() { format!("svn {first} 이 실패했습니다.") } else { explain(&out.stderr) }));
+        Self::finish(args, out).map(|b| decode(&b))
+    }
+
+    // 실패한 순간을 진단 기록에 덧붙인다 — 무엇이 잠금을 쥐었는지는 지나면 알 수 없으므로 그때의 작업복사본 · 프로그램을 함께 적는다
+    fn diag(&self, args: &[String], err: &str, out: &str, took: Duration) {
+        let Some(path) = &self.log else { return };
+        let h = crate::svn::wc_health(&self.wc);
+        let mut progs = running(&HOLDERS);
+        progs.extend(running(&WATCHERS));
+        let text = diag_text(&now_text(), args, err, out, took, &h, &progs);
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
         }
-        Ok(out.stdout)
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+            let _ = f.write_all(text.as_bytes());
+        }
     }
 
     /// 올린 리비전. 고른 파일 내용이 모두 BASE 와 같으면 svn 이 아무것도 올리지 않고 성공하므로 None 이다.
-    pub fn commit(&self, msg: &str, paths: &[String], deep: bool, cred: Option<&(String, String)>) -> Result<Option<i64>, WebErr> {
+    pub fn commit(&self, msg: &str, paths: &[String], deep: bool, cred: Option<&(String, String)>, on_wait: OnWait) -> Result<Option<i64>, WebErr> {
         let file = temp_message(msg).map_err(WebErr::Other)?;
         let list: Vec<String> = paths.iter().map(|p| arg_path(p)).collect();
         let targets = match temp_file("targets", &list.join("
@@ -492,7 +560,7 @@ impl Svn {
                 return Err(WebErr::Other(e));
             }
         };
-        let r = self.call(&commit_args(&file, &targets, deep), cred);
+        let r = self.call_retry(&commit_args(&file, &targets, deep), cred, on_wait);
         let _ = std::fs::remove_file(&file);
         let _ = std::fs::remove_file(&targets);
         Ok(committed_rev(&r?))
@@ -508,6 +576,82 @@ fn temp_file(tag: &str, text: &str) -> Result<PathBuf, String> {
 
 pub fn temp_message(text: &str) -> Result<PathBuf, String> {
     temp_file("msg", text)
+}
+
+/* ---------- 같은 작업복사본을 잠글 수 있는 프로그램 · 진단 기록 ---------- */
+
+/// 작업복사본 잠금을 쥘 수 있는 프로그램 — Eclipse 의 Subversive · Subclipse(SVNKit)는 svn.exe 없이 wc.db 를 직접 잠근다.
+/// eclipse.exe 런처는 JVM 을 띄운 뒤에도 끝날 때까지 남으므로 javaw.exe 는 보지 않는다 (실행기가 띄운 톰캣과 섞인다).
+pub const HOLDERS: [(&str, &str); 4] = [("eclipse.exe", "Eclipse"), ("sts.exe", "STS"), ("TortoiseProc.exe", "TortoiseSVN"), ("svn.exe", "다른 svn")];
+/// 잠금은 쥐지 않지만 wc.db · 파일을 읽느라 잡는 것 — 진단 기록에만 적는다 (TortoiseSVN 을 깔면 늘 떠 있다)
+pub const WATCHERS: [(&str, &str); 1] = [("TSVNCache.exe", "TortoiseSVN 상태 캐시")];
+
+/// 켜져 있는 프로그램 가운데 known 에 든 것의 이름 (겹치지 않게)
+pub fn running(known: &[(&str, &str)]) -> Vec<String> {
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS};
+    let mut found: Vec<String> = Vec::new();
+    unsafe {
+        let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snap == INVALID_HANDLE_VALUE {
+            return found;
+        }
+        let mut e: PROCESSENTRY32W = std::mem::zeroed();
+        e.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+        if Process32FirstW(snap, &mut e) != 0 {
+            loop {
+                let len = e.szExeFile.iter().position(|&c| c == 0).unwrap_or(e.szExeFile.len());
+                let name = String::from_utf16_lossy(&e.szExeFile[..len]);
+                for (exe, label) in known {
+                    if name.eq_ignore_ascii_case(exe) && !found.iter().any(|f| f == label) {
+                        found.push(label.to_string());
+                    }
+                }
+                if Process32NextW(snap, &mut e) == 0 {
+                    break;
+                }
+            }
+        }
+        CloseHandle(snap);
+    }
+    found
+}
+
+// 이 PC 의 시각 (2026-11-04 10:12:33)
+fn now_text() -> String {
+    let mut t: windows_sys::Win32::Foundation::SYSTEMTIME = unsafe { std::mem::zeroed() };
+    unsafe { windows_sys::Win32::System::SystemInformation::GetLocalTime(&mut t) };
+    format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond)
+}
+
+/// 진단 기록 한 덩어리 — 명령 · 걸린 시간 · svn 원문 · 그때의 작업복사본 · 켜진 프로그램.
+/// 경로 목록은 길어지므로 경로 수만 적는다. 비밀번호는 인자에 없으므로(--password-from-stdin) 그대로 적어도 된다.
+pub fn diag_text(at: &str, args: &[String], err: &str, out: &str, took: Duration, h: &crate::svn::WcHealth, progs: &[String]) -> String {
+    let (head, paths) = match args.iter().position(|a| a == "--") {
+        Some(i) => (&args[..i], args.len() - i - 1),
+        None => (args, 0),
+    };
+    let mut s = format!(
+        "==== {at} · svn {}{} · {:.1}초 · 실패\n",
+        head.join(" "),
+        if paths > 0 { format!(" -- (경로 {paths}개)") } else { String::new() },
+        took.as_secs_f32()
+    );
+    for l in err.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        s.push_str(&format!("  {l}\n"));
+    }
+    let out_lines: Vec<&str> = out.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    if !out_lines.is_empty() {
+        s.push_str(&format!("  출력 {}줄 · 마지막: {}\n", out_lines.len(), out_lines[out_lines.len() - 1]));
+    }
+    s.push_str(&format!(
+        "  작업복사본: 잠금 {} · 작업 대기열 {}개 · 저널 {}\n",
+        if h.locks.is_empty() { "없음".to_string() } else { h.locks.join(", ") },
+        h.queue,
+        if h.journal { "있음" } else { "없음" }
+    ));
+    s.push_str(&format!("  켜진 프로그램: {}\n\n", if progs.is_empty() { "없음".to_string() } else { progs.join(" · ") }));
+    s
 }
 
 // 올린 것이 없으면 svn 은 아무 줄도 내지 않는다 — 그때는 None
@@ -626,6 +770,23 @@ mod tests {
         assert!(explain("svn: E160028: File '/trunk/a.java' is out of date").starts_with(STALE));
         assert!(explain("svn: E170013: Unable to connect").contains("네트워크"));
         assert_eq!(explain("svn: E999999: 낯선 오류"), "E999999: 낯선 오류");
+        // 작업 대기열은 기다려도 풀리지 않는다 — 다시 시도하지 않고 Cleanup 을 내민다
+        let q = "svn: E155037: Previous operation has not finished; run 'cleanup' if it was interrupted\nsvn: E155004: Working copy locked.";
+        assert!(explain(q).starts_with(LOCKED) && explain(q).contains("끝나지 않은 작업"));
+        assert!(!transient_lock(q));
+        assert!(transient_lock(lock));
+        assert!(transient_lock("svn: E200033: database is locked"));
+        assert!(!transient_lock("svn: E160028: out of date"));
+    }
+
+    #[test]
+    fn 진단_기록을_적는다() {
+        let args: Vec<String> = ["commit", "--depth", "empty", "--", "a.java", "b.java"].iter().map(|s| s.to_string()).collect();
+        let h = crate::svn::WcHealth { locks: vec![".".into()], queue: 2, journal: true };
+        let t = diag_text("2026-11-04 10:00:00", &args, "svn: E155004: locked\n", "", Duration::from_millis(1500), &h, &["Eclipse".into()]);
+        assert!(t.starts_with("==== 2026-11-04 10:00:00 · svn commit --depth empty -- (경로 2개) · 1.5초 · 실패\n"));
+        assert!(t.contains("svn: E155004: locked") && t.contains("잠금 . · 작업 대기열 2개 · 저널 있음") && t.contains("켜진 프로그램: Eclipse"));
+        assert!(!t.contains("a.java"));
     }
 
     #[test]

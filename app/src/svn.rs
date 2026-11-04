@@ -63,6 +63,26 @@ pub struct Status {
     pub locks: Vec<String>, // 작업복사본 잠금이 걸린 폴더 (「.」 은 맨 위) — 남아 있으면 svn 쓰기가 E155004 로 막힌다
     pub other_svn: Vec<String>, // 잠금이 있을 때 켜져 있던 다른 SVN 프로그램 (Eclipse 등) — main.rs 가 채운다
     pub my_locks: Vec<RepoLock>, // 내가 svn lock 으로 잡은 파일 — 고치지 않은 파일은 Changes 에 없어 따로 준다 (Unlock 메뉴)
+    pub queue: usize, // 끝나지 않은 작업 대기열(WORK_QUEUE) — 남아 있으면 Cleanup 전에는 svn 쓰기가 E155037 로 막힌다
+    // 작업복사본 상태 칸 (2026.11.04~) — main.rs 가 채운다
+    //   "" 정상 · "eclipse" 켜 둔 Eclipse 가 잡은 잠금 · "other" 다른 SVN 프로그램이 잡은 잠금 · "stale" 쓰는 프로그램 없이 남은 잠금 · "queue" 끊긴 작업
+    pub lock_kind: String,
+    pub eclipse: Option<crate::eclipse::EclipseSvn>, // 이 작업복사본을 연 Eclipse 의 SVN 플러그인 · 자동 새로 고침 설정
+}
+
+/// 작업복사본이 svn 쓰기를 받을 수 있는가 — 잠금 · 끝나지 않은 작업 대기열 · 쓰다 만 SQLite 저널
+#[derive(Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WcHealth {
+    pub locks: Vec<String>,
+    pub queue: usize,
+    pub journal: bool,
+}
+
+impl WcHealth {
+    pub fn clean(&self) -> bool {
+        self.locks.is_empty() && self.queue == 0
+    }
 }
 
 #[derive(Serialize)]
@@ -301,6 +321,7 @@ pub fn status(wc: &Path) -> Result<Status, String> {
         )
         .unwrap_or_default();
     let locks = locks_of(&c);
+    let queue = queue_of(&c);
     let my_locks = repo_locks(&c);
     drop(c);
 
@@ -412,7 +433,7 @@ pub fn status(wc: &Path) -> Result<Status, String> {
         let kb = ORDER.iter().position(|c| *c == b.code).unwrap_or(9);
         ka.cmp(&kb).then_with(|| a.path.cmp(&b.path))
     });
-    Ok(Status { url, rev_min, rev_max, nodes: nodes.len(), hashed, took_ms: began.elapsed().as_millis() as u64, items: list, locks, other_svn: Vec::new(), my_locks })
+    Ok(Status { url, rev_min, rev_max, nodes: nodes.len(), hashed, took_ms: began.elapsed().as_millis() as u64, items: list, locks, other_svn: Vec::new(), my_locks, queue, lock_kind: String::new(), eclipse: None })
 }
 
 // UTF-8 이 아니면 MS949 로 읽는다 (로그와 같은 규칙). svn.exe 의 출력(콘솔 코드페이지)도 같은 규칙으로 읽는다.
@@ -655,8 +676,18 @@ pub fn wc_format(wc: &Path) -> Option<i64> {
 /// 작업복사본 잠금 (WC_LOCK) — svn 이 쓰는 동안 잡고 끝나면 푼다. 쓰는 svn 이 없는데 남아 있으면
 /// 끊긴 작업(실행기 · IDE 의 SVN 이 중간에 죽음)이 남긴 것이고 svn cleanup 이 푼다.
 /// 2026-10-29 : 이 잠금으로 Commit 이 E155004 에 막혔다. 쓰기 전에 먼저 보고 까닭과 Cleanup 을 내민다.
-pub fn wc_locks(wc: &Path) -> Vec<String> {
-    open(wc).map(|c| locks_of(&c)).unwrap_or_default()
+/// 잠금 · 작업 대기열 · 저널을 한 번에 본다 (2026.11.04~). 대기열은 svn 이 파일을 옮기다 막혀(백신 · 색인 · 다른 프로그램이 파일을 잡음)
+/// 남긴 일이라 기다려도 풀리지 않고 Cleanup 이 마저 한다. 저널은 진단 기록에만 쓴다 — 쓰는 중이거나 쓰다 끊긴 표지다.
+pub fn wc_health(wc: &Path) -> WcHealth {
+    let journal = wc.join(".svn").join("wc.db-journal").exists() || wc.join(".svn").join("wc.db-wal").exists();
+    match open(wc) {
+        Ok(c) => WcHealth { locks: locks_of(&c), queue: queue_of(&c), journal },
+        Err(_) => WcHealth { journal, ..Default::default() },
+    }
+}
+
+fn queue_of(c: &Connection) -> usize {
+    c.query_row("SELECT COUNT(*) FROM WORK_QUEUE", [], |r| r.get::<_, i64>(0)).map(|n| n.max(0) as usize).unwrap_or(0)
 }
 
 fn locks_of(c: &Connection) -> Vec<String> {

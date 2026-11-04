@@ -415,6 +415,26 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .repo-where .state { overflow: hidden; text-overflow: ellipsis; font-size: 12px; }
 .repo-where .state.bad { color: var(--crit); font-weight: 600; }
 .repo-where .state.warn { color: var(--warn); font-weight: 600; }
+/* 작업복사본 상태 칸 (2026.11.04~) — 정상 · 실행기가 쓰는 중 · 잠금 기다림 · 다른 프로그램이 쥠 · Cleanup 필요. 누르면 띠에 자세히 */
+.wc-state { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 9px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--muted); font: inherit; font-size: 12px; white-space: nowrap; cursor: pointer; max-width: 300px; }
+.wc-state:hover { color: var(--text); border-color: var(--line-strong); }
+.wc-state[aria-expanded="true"] { color: var(--text); background: var(--panel-2); }
+.wc-state span { overflow: hidden; text-overflow: ellipsis; }
+.wc-state .dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--faint); }
+.wc-state.busy .dot { background: var(--text); animation: pulse 1.4s ease-in-out infinite; }
+.wc-state.warn { color: var(--warn); border-color: var(--warn-line); }
+.wc-state.warn .dot { background: var(--warn-solid); }
+.wc-state.crit { color: var(--crit); border-color: color-mix(in oklch, var(--crit) 45%, transparent); font-weight: 600; }
+.wc-state.crit .dot { background: var(--crit); }
+#svnSrv button.busy::after { content: ""; display: inline-block; width: 6px; height: 6px; margin-left: 6px; vertical-align: middle; border-radius: 50%; background: currentColor; animation: pulse 1.4s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .wc-state.busy .dot, #svnSrv button.busy::after { animation: none; } }
+/* 진행 띠의 단계 — 끝난 단계 ✓ · 지금 단계 굵게 · 남은 단계 흐리게 */
+.vsteps { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 4px; font-size: 12px; color: var(--faint); }
+.vsteps .done { color: var(--muted); }
+.vsteps .now { color: var(--text); font-weight: 600; }
+.vband details { margin-top: 4px; color: var(--muted); }
+.vband details summary { cursor: pointer; width: max-content; }
+.vband details p { margin: 4px 0 0; white-space: pre-wrap; }
 .repo-acts { display: flex; align-items: center; gap: 6px; flex: none; }
 .btn .cnt { font: 600 11px/16px var(--ui); min-width: 16px; padding: 0 4px; border-radius: 8px; text-align: center; background: var(--panel-2); color: var(--text); }
 .btn.primary .cnt { background: var(--panel); color: var(--text); }
@@ -424,7 +444,8 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .vband { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 0 10px; align-items: start; padding: 8px 14px; border-bottom: 1px solid var(--line); font-size: 12.5px; }
 .vband.crit { background: var(--crit-weak); }
 .vband.warn { background: var(--warn-weak); }
-.vband.busy { background: var(--panel); }
+.vband.busy, .vband.info { background: var(--panel); }
+.vband.info > .ic { color: var(--muted); }
 .vband > .ic { margin-top: 2px; }
 .vband.crit > .ic { color: var(--crit); }
 .vband.warn > .ic { color: var(--warn); }
@@ -853,6 +874,7 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 	<symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></symbol>
 	<symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="M15.5 15.5l4 4"/></symbol>
 	<symbol id="i-warn" viewBox="0 0 24 24"><path d="M12 4.5l8.5 15h-17z"/><path d="M12 10v4"/><path d="M12 16.8v.2"/></symbol>
+	<symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 11v5"/><path d="M12 7.8v.2"/></symbol>
 	<symbol id="i-error" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M9.2 9.2l5.6 5.6M14.8 9.2l-5.6 5.6"/></symbol>
 	<symbol id="i-check" viewBox="0 0 24 24"><path d="M5.5 12.5l4 4 9-9"/></symbol>
 	<symbol id="i-x" viewBox="0 0 24 24"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></symbol>
@@ -915,6 +937,7 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 			<div class="seg" id="vcsKind" hidden></div>
 			<div class="repo-where" id="svnWhere"></div>
 			<div class="repo-acts" id="svnSync"></div>
+			<button class="wc-state" id="svnWcState" hidden aria-expanded="false"></button>
 			<button class="btn ghost icon" id="svnPalBtn" title="찾기와 명령 (Ctrl+K)" aria-label="찾기와 명령"><svg class="ic"><use href="#i-search"/></svg></button>
 			<button class="btn ghost icon" id="svnRefresh" title="새로 고침"><svg class="ic"><use href="#i-restart"/></svg></button>
 			<button class="btn ghost icon" id="svnMore" title="더 보기" aria-haspopup="menu"><svg class="ic"><use href="#i-more"/></svg></button>
@@ -2911,7 +2934,10 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 	var svn = { srv: 0, kind: "svn", view: "local", data: {}, stale: {}, sel: null, checked: {}, timer: null, loading: false,
 		remote: {},         // 열쇠마다 { incoming, incAt, incBusy, incNeed, incErr, log, logRel }
 		logRel: "", selRev: null, selFile: null, retry: null, sig: "",
-		busy: false, busyText: "", busyAt: 0, busyTick: null,   // 쓰기가 도는 중 — 단추를 잠그고 띠에 걸린 시간을 보인다
+		busy: false, busyText: "", busyAt: 0, busyTick: null, busySrv: -1,   // 쓰기가 도는 중 — 단추를 잠그고 띠에 걸린 시간을 보인다
+		// 실행기가 알려 준 진행 (vcs-progress · 2026.11.04~) — 서버마다 { busy, progress }. 화면을 다시 열거나 서버를 바꿔도 실행기 값을 따른다
+		prog: {}, stepNames: {},  // stepNames : 서버마다 지나온 단계 이름 — 띠의 「① 더하기 ✓ → ② 올리는 중」
+		wcOpen: false,      // 상태 칸을 눌러 띠에 작업복사본 자세히를 펼쳤다
 		band: null,         // 마지막 실패 { msg } — 닫거나 다음 쓰기가 성공할 때까지 남는다
 		filter: "", fold: { unver: true, inc: false }, draft: {},
 		blameFor: null,     // Blame 을 받는 중인 파일 — 그 사이 다른 것을 고르면 결과를 버린다
@@ -2950,6 +2976,24 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 	// Allow write 를 켰어도 SVN 쓰기를 못 하는 까닭 (svn.exe 없음 · 판이 맞지 않음). Git 은 실행기가 따로 막지 않는다.
 	function writeBlock() { return isGit() ? null : state.servers[svn.srv].svnBlock || null; }
 	function canRun() { return canWrite() && !writeBlock(); }
+	// Cleanup 은 저장소에 쓰지 않으므로 Allow write 와 상관없다 (2026.11.04~) — svn.exe 가 있고 판이 맞으면 된다
+	function cleanupBlock() { return isGit() ? "Git 에는 Cleanup 이 없습니다" : state.servers[svn.srv].cleanupBlock || null; }
+	function canCleanup() { return kindsOf(svn.srv).indexOf("svn") >= 0 && !cleanupBlock(); }
+	// 이 서버에서 실행기의 쓰기가 도는 중인가 — 실행기가 알려 준 값이 먼저, 아직 오지 않았으면 화면이 막 시작한 일
+	function progOf(i) {
+		var p = svn.prog[i];
+		if (p && p.busy && p.progress) return p.progress;
+		if ((p && p.busy) || (svn.busy && svn.busySrv === i)) {
+			var op = svn.busySrv === i ? svn.busyText.replace(/ 하는 중\.\.\.$/, "") : "";
+			return { op: op, step: 0, of: 0, label: "", attempt: 0, startedAtMs: svn.busyAt, stepAtMs: svn.busyAt };
+		}
+		return null;
+	}
+	function vcsLogOpen() {
+		var f = state.servers[svn.srv].vcsLog;
+		if (f) invoke("open_source", { file: f, line: 1 });
+		else showToast("아직 남긴 진단 기록이 없습니다. svn 이 실패하면 톰캣 로그 폴더의 vcs.log 에 남습니다.");
+	}
 	// 작업복사본 · 저장소 맨 위 폴더 — git 은 status 가 알려 준 맨 위 폴더 기준으로 경로가 온다
 	function rootOf(i) {
 		var st = svn.data[i + ":" + svn.kind];
@@ -2984,6 +3028,9 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 	}
 	// 설정에서 종류 · 폴더를 바꾸면 화면을 다시 세운다 (상태가 올 때마다 다시 그리면 보던 차이가 지워지므로 바뀐 때만)
 	function svnOnState(s) {
+		// 실행기의 진행을 상태에서도 받는다 — 화면을 다시 열면 vcs-progress 를 놓쳤어도 도는 중임을 안다
+		s.servers.forEach(function (sv, i) { svn.prog[i] = { busy: !!sv.vcsBusy, progress: sv.vcsProgress || null }; });
+		if ($("svnSrv").children.length) paintSrvTabs();
 		var sig = JSON.stringify(s.servers.map(function (sv) { return [sv.vcsKinds, sv.vcsRoot, sv.vcs, sv.svnBlock]; }));
 		if (sig === svn.sig) return;
 		var first = !svn.sig;
@@ -2996,7 +3043,7 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 	function svnRenderSrv() {
 		svnFixKind();
 		if (rv && rv.key !== K()) reviewClose();
-		[].forEach.call($("svnSrv").children, function (b, i) { b.classList.toggle("on", i === svn.srv); });
+		paintSrvTabs();
 		$("svnSrv").hidden = $("svnSrv").children.length < 2;
 		var ks = kindsOf(svn.srv), none = !ks.length, local = svn.view === "local";
 		var kb = $("vcsKind");
@@ -3024,11 +3071,71 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 			loadDraft();
 			msgCheck();
 		}
-		renderWhere(); renderSync(); renderBand(); commitState();
+		renderWhere(); renderSync(); renderWcState(); renderBand(); commitState();
 		$("svnDiff").innerHTML = none ? "" : '<div class="empty">' + (local
 			? (isGit() ? "파일을 고르면 마지막 커밋(HEAD)과의 Diff 를 보여 줍니다." : "파일을 고르면 마지막으로 받은 내용(BASE)과의 Diff 를 보여 줍니다.") + " 두 번 누르면 편집기로 엽니다."
 			: "커밋을 고르면 메시지와 바뀐 파일, 그 Diff 를 보여 줍니다.") + "</div>";
 	}
+
+	// 서버 단추 — 고른 것 · 쓰기가 도는 서버에는 도는 점 (다른 서버를 보고 있어도 보인다)
+	function paintSrvTabs() {
+		[].forEach.call($("svnSrv").children, function (b, i) {
+			var p = progOf(i);
+			b.classList.toggle("on", i === svn.srv);
+			b.classList.toggle("busy", !!p);
+			b.title = p ? (p.op || "버전 관리 작업") + " 하는 중" : "";
+		});
+	}
+
+	/* --- 작업복사본 상태 칸 (2026.11.04~) — 지금 쓰는 중인지 · 잠겼는지 · 누가 쥐었을지를 늘 한 칸에 --- */
+
+	var WC_KIND = {
+		eclipse: ["warn", "Eclipse 가 잡은 잠금"],
+		other: ["warn", "다른 SVN 프로그램이 잡은 잠금"],
+		stale: ["crit", "Cleanup 필요 · 남은 잠금"],
+		queue: ["crit", "Cleanup 필요 · 끝나지 않은 작업"]
+	};
+	function secsSince(ms) { return Math.max(0, Math.floor((Date.now() - (ms || Date.now())) / 1000)); }
+	function progTitle(p) {
+		return (p.op || "작업") + (p.of ? " " + p.step + "/" + p.of : "") + (p.label ? " · " + p.label : "");
+	}
+	// [갈래, 글] — 갈래는 "" · busy · warn · crit
+	function wcStateOf() {
+		var st = svn.data[K()], p = progOf(svn.srv);
+		if (p) {
+			if (p.attempt) return ["warn", "잠금 기다리는 중 " + p.attempt + "/" + p.attempts + (p.waitFor ? " · " + p.waitFor : "")];
+			return ["busy", progTitle(p) + " · " + secsSince(p.startedAtMs) + "초"];
+		}
+		if (!st) return null;
+		var k = WC_KIND[st.lockKind];
+		if (k) return k;
+		return ["", "작업복사본 정상"];
+	}
+	function renderWcState() {
+		var el = $("svnWcState");
+		var s = !isGit() && kindsOf(svn.srv).length ? wcStateOf() : null;
+		el.hidden = !s;
+		if (!s) return;
+		el.className = "wc-state" + (s[0] ? " " + s[0] : "");
+		el.innerHTML = '<i class="dot"></i><span>' + esc(s[1]) + "</span>";
+		el.title = s[1] + " · 누르면 자세히";
+		el.setAttribute("aria-expanded", svn.wcOpen ? "true" : "false");
+	}
+	$("svnWcState").onclick = function () { svn.wcOpen = !svn.wcOpen; if (svn.wcOpen) svn.band = null; renderWcState(); renderBand(); };
+
+	listen("vcs-progress", function (e) {
+		var d = e.payload, i = d.srv, p = d.progress;
+		svn.prog[i] = { busy: d.busy, progress: p };
+		// 지나온 단계 이름을 모은다 — 새 일이 시작되면(단계 없이 이름만) 지운다
+		if (!d.busy || !p || (!p.step && !p.label)) svn.stepNames[i] = {};
+		else if (p.step) (svn.stepNames[i] = svn.stepNames[i] || {})[p.step] = p.label;
+		paintSrvTabs();
+		if (i === svn.srv && kindsOf(i).length) { renderWcState(); renderBand(); renderSync(); commitState(); }
+	});
+	// 일이 도는 동안 초를 센다 — 화면이 연 일이 아니어도 (다시 연 화면 · 다른 서버에서 시작한 일)
+	setInterval(function () {
+		if (tab === "svn" && progOf(svn.srv)) { renderWcState(); if (!svn.busy) renderBand(); }
+	}, 1000);
 
 	/* --- 저장소 줄 : 어디 · 받을 것 · Update --- */
 
@@ -3064,7 +3171,7 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 	function renderSync() {
 		var box = $("svnSync"), st = svn.data[K()], inc = R().incoming;
 		if (!kindsOf(svn.srv).length) { box.innerHTML = ""; return; }
-		var git = isGit(), block = writeBlock(), dis = block || svn.busy ? " disabled" : "";
+		var git = isGit(), block = writeBlock(), dis = block || svn.busy || progOf(svn.srv) ? " disabled" : "";
 		var html;
 		if (!canWrite()) {
 			html = '<button class="btn" data-a="copyUpdate">' + ic("copy") + (git ? "Pull" : "Update") + " 명령 복사</button>";
@@ -3091,49 +3198,107 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 		var el = $("svnBand"), st = svn.data[K()];
 		var html = "", acts = [];
 		if (!kindsOf(svn.srv).length) { el.innerHTML = ""; return; }
-		if (svn.busy) {
-			var sec = Math.floor((Date.now() - svn.busyAt) / 1000);
-			html = '<span class="busy-dot"></span><div class="t"><b>' + esc(svn.busyText) + "</b>" + (sec >= 2 ? " · " + sec + "초" : "") +
+		renderWcState();   // 띠와 상태 칸은 같은 것을 말한다 — Changes 를 다시 읽을 때도 함께 고친다
+		var p = progOf(svn.srv);
+		if (p) {
+			// 도는 일 — 실행기가 알려 준 단계 · 잠금을 기다리는 차례 · 오래 말이 없으면 저장소를 기다리는 중
+			var sec = secsSince(p.startedAtMs), quiet = secsSince(p.stepAtMs);
+			var sub2 = p.attempt
+				? "작업복사본이 잠겨 있어 기다렸다 다시 합니다 (" + p.attempt + "/" + p.attempts + ")" + (p.waitFor ? " · 켜진 SVN 프로그램: " + p.waitFor : "") + "."
+				: quiet >= 60 && p.step && p.step === p.of ? "저장소 응답을 기다리는 중입니다 · " + quiet + "초째. 파일이 많거나 네트워크가 느리면 오래 걸립니다." : "";
+			html = '<span class="busy-dot"></span><div class="t"><b>' + esc(progTitle(p)) + "</b>" + (sec >= 2 ? " · " + sec + "초" : "") +
+				stepsHtml(p, svn.stepNames[svn.srv] || {}) +
+				(sub2 ? '<span class="sub">' + esc(sub2) + "</span>" : "") +
 				'<span class="sub">도는 동안 실행기를 닫으면 끝난 뒤에 닫힙니다.</span></div>';
-			el.innerHTML = '<div class="vband busy">' + html + "<div></div></div>";
+			el.innerHTML = '<div class="vband busy" role="status">' + html + "<div></div></div>";
 			return;
 		}
-		var cls = "", msg = "", raw = "", sub = "";
+		var cls = "", msg = "", raw = "", sub = "", more = "";
+		var k = !isGit() && st ? st.lockKind || "" : "";
 		if (svn.band) {
 			var m = svn.band.msg, mark = m.indexOf(LOCKED) === 0 ? "lock" : m.indexOf(STALE) === 0 ? "stale" : "";
 			if (mark) m = m.slice(mark === "lock" ? LOCKED.length : STALE.length);
 			var lines = m.split("\n");
 			cls = "crit"; msg = lines[0]; raw = lines.slice(1).join("\n");
-			if (mark === "lock") acts.push(cleanupAct());
+			if (mark === "lock") {
+				// 잠금으로 Commit 이 실패했으면 고른 파일 · 메시지 그대로 이어서 (2026.11.04~)
+				if (svn.band.commit && canCleanup() && canRun()) acts.push('<button class="btn sm primary" data-b="cleanupCommit">Cleanup 뒤 다시 Commit…</button>');
+				acts.push(cleanupAct());
+				acts.push('<button class="btn sm ghost" data-b="log">진단 기록</button>');
+				if (k === "eclipse" || /Eclipse/.test(m)) more = eclipseHtml(st);
+			}
 			if (mark === "stale" && canRun()) acts.push('<button class="btn sm" data-b="update">Update…</button>');
 			acts.push('<button class="btn sm ghost icon" data-b="close" title="닫기">' + ic("x") + "</button>");
-		} else if (st && st.locks && st.locks.length && !isGit()) {
-			cls = "warn";
-			msg = "작업복사본이 잠겨 있습니다 · " + st.locks.join(", ");
-			sub = (st.otherSvn && st.otherSvn.length
-				? "켜져 있는 SVN 프로그램: " + st.otherSvn.join(" · ") + ". 그쪽 SVN 작업이 끝나면 잠금이 풀립니다. 끝났는데도 남아 있으면 그 프로그램을 닫고 Cleanup 하세요."
-				: "쓰는 SVN 프로그램이 없다면 끊긴 작업이 남긴 잠금입니다. Cleanup 하면 풀립니다.") + "\n잠금이 남아 있으면 Commit · Update 가 실패합니다.";
+		} else if (WC_KIND[k]) {
+			// 잠깐 뒤 다시 봐도 남은 잠금 · 끝나지 않은 작업만 온다 — 누가 쥐었을지에 따라 할 일이 다르다
+			cls = WC_KIND[k][0];
+			msg = k === "queue" ? "작업복사본에 끝나지 않은 작업이 " + st.queue + "개 남아 있습니다"
+				: "작업복사본이 잠겨 있습니다 · " + st.locks.map(function (l) { return l === "." ? "맨 위 폴더" : l; }).join(", ");
+			sub = k === "queue" ? "svn 이 파일을 옮기다 막혔던 것입니다 (다른 프로그램 · 백신이 파일을 잡음). Cleanup 하면 마저 끝냅니다. 그 전에는 Commit · Update 가 실패합니다."
+				: k === "eclipse" ? "켜 둔 Eclipse 의 SVN(" + (st.eclipse ? st.eclipse.plugin : "플러그인") + ")이 잡은 잠금일 수 있습니다. Eclipse 쪽 작업(새로 고침 · 동기화)이 끝나면 풀립니다.\n끝났는데도 남아 있으면 Cleanup 하세요. Commit 은 잠금이 풀리기를 잠깐 기다렸다 합니다."
+				: k === "other" ? "켜져 있는 SVN 프로그램: " + st.otherSvn.join(" · ") + ". 그쪽 SVN 작업이 끝나면 잠금이 풀립니다. 끝났는데도 남아 있으면 그 프로그램을 닫고 Cleanup 하세요."
+				: "쓰는 SVN 프로그램이 없으니 끊긴 작업이 남긴 잠금입니다. Cleanup 하면 풀립니다. 그 전에는 Commit · Update 가 실패합니다.";
+			if (k === "eclipse") more = eclipseHtml(st);
 			acts.push(cleanupAct());
+			acts.push('<button class="btn sm ghost" data-b="log">진단 기록</button>');
+			if (svn.wcOpen) acts.push('<button class="btn sm ghost icon" data-b="wcClose" title="접기">' + ic("x") + "</button>");
+		} else if (svn.wcOpen && !isGit() && st) {
+			// 상태 칸을 눌렀을 때 — 지금은 막힌 것이 없다는 것과 확인한 것
+			cls = "info";
+			msg = "작업복사본 정상 · 잠금 없음 · 끝나지 않은 작업 없음";
+			sub = st.eclipse
+				? "이 폴더를 연 Eclipse 에 SVN 플러그인(" + st.eclipse.plugin + ")이 있습니다. Eclipse 를 켜 두면 Commit 하는 동안 잠금이 잠깐 걸릴 수 있습니다 — 실행기가 기다렸다 다시 합니다."
+				: "같은 작업복사본을 쓰는 Eclipse SVN 플러그인은 찾지 못했습니다.";
+			if (st.eclipse) more = eclipseHtml(st);
+			if (canCleanup()) acts.push('<button class="btn sm" data-b="cleanup">Cleanup…</button>');
+			acts.push('<button class="btn sm ghost" data-b="log">진단 기록</button>');
+			acts.push('<button class="btn sm ghost icon" data-b="wcClose" title="접기">' + ic("x") + "</button>");
 		} else if (canWrite() && writeBlock()) {
 			cls = "warn"; msg = writeBlock();
 			sub = "쓰기 단추를 잠갔습니다. 보기 · Diff · History 는 그대로 됩니다.";
 			acts.push('<button class="btn sm" data-b="settings">설정 › 버전 관리</button>');
 		}
 		if (!cls) { el.innerHTML = ""; return; }
-		el.innerHTML = '<div class="vband ' + cls + '" role="' + (cls === "crit" ? "alert" : "status") + '">' + ic(cls === "crit" ? "error" : "warn") +
-			'<div class="t"><b>' + esc(msg) + "</b>" + (sub ? '<span class="sub">' + esc(sub) + "</span>" : "") + (raw ? '<span class="raw">' + esc(raw) + "</span>" : "") + "</div>" +
+		el.innerHTML = '<div class="vband ' + cls + '" role="' + (cls === "crit" ? "alert" : "status") + '">' + ic(cls === "crit" ? "error" : cls === "info" ? "info" : "warn") +
+			'<div class="t"><b>' + esc(msg) + "</b>" + (sub ? '<span class="sub">' + esc(sub) + "</span>" : "") + (raw ? '<span class="raw">' + esc(raw) + "</span>" : "") + more + "</div>" +
 			'<div class="acts">' + acts.join("") + "</div></div>";
 		[].forEach.call(el.querySelectorAll("[data-b]"), function (b) {
 			var a = b.getAttribute("data-b");
 			b.onclick = a === "close" ? function () { svn.band = null; renderBand(); }
+				: a === "wcClose" ? function () { svn.wcOpen = false; renderWcState(); renderBand(); }
 				: a === "update" ? vcsUpdateAsk
-				: a === "cleanup" ? vcsCleanupAsk
+				: a === "cleanup" ? function () { vcsCleanupAsk(); }
+				: a === "cleanupCommit" ? function () { vcsCleanupAsk(svn.band && svn.band.commit); }
 				: a === "copyCleanup" ? copyCleanupCmd
+				: a === "log" ? vcsLogOpen
 				: function () { openSettings("setVcs"); };
 		});
 	}
+	// Allow write 를 꺼도 Cleanup 은 한다 — svn.exe 가 없거나 판이 맞지 않을 때만 명령을 복사해 준다
 	function cleanupAct() {
-		return canRun() ? '<button class="btn sm" data-b="cleanup">Cleanup…</button>' : '<button class="btn sm" data-b="copyCleanup">' + ic("copy") + "Cleanup 명령 복사</button>";
+		return canCleanup() ? '<button class="btn sm" data-b="cleanup">Cleanup…</button>' : '<button class="btn sm" data-b="copyCleanup">' + ic("copy") + "Cleanup 명령 복사</button>";
+	}
+	// 진행 띠의 단계 — 지나온 단계 이름은 화면이 모은 것 (처음부터 보지 못했으면 번호만)
+	function stepsHtml(p, names) {
+		if (!p.of || p.of < 2) return "";
+		var out = [];
+		for (var n = 1; n <= p.of; n++) {
+			var name = n === p.step ? p.label : names[n] || "";
+			var cls = n < p.step ? "done" : n === p.step ? "now" : "";
+			out.push('<span class="' + cls + '">' + "①②③④⑤⑥⑦⑧⑨".charAt(n - 1) + " " + esc(name.replace(/ \(.*\)$/, "") || (n < p.step ? "" : "…")) + (n < p.step ? " ✓" : "") + "</span>");
+		}
+		return '<span class="vsteps">' + out.join("") + "</span>";
+	}
+	// 켜 둔 Eclipse 의 SVN 과 함께 쓸 때 — 잠금이 잦으면 Eclipse 쪽 자동 새로 고침을 끈다 (실행기는 Eclipse 설정을 고치지 않는다)
+	function eclipseHtml(st) {
+		var e = st && st.eclipse;
+		var now = !e ? "" : e.refresh === true ? "지금 켜져 있습니다." : e.refresh === false ? "지금 꺼져 있습니다." : "따로 정하지 않아 Eclipse 기본값을 따릅니다.";
+		return "<details><summary>잠금이 자주 생기면 — Eclipse 쪽에서 할 일</summary><p>" + esc(
+			"1. Eclipse 메뉴 Window › Preferences › General › Workspace 에서 「Refresh using native hooks or polling」을 끕니다. " + now + "\n" +
+			"   켜 두면 실행기가 파일을 바꿀 때마다 Eclipse 가 바로 새로 고치며 SVN 상태를 읽느라 작업복사본을 잠급니다.\n" +
+			"2. Commit 하는 동안 Eclipse 의 SVN 작업(Synchronize · Update · Commit)을 함께 돌리지 않습니다.\n" +
+			"3. 그래도 잦으면 Commit 하는 동안 Eclipse 를 닫습니다." +
+			(e ? "\n작업 공간: " + e.workspace : "")) + "</p></details>";
 	}
 
 	/* --- Changes (내 변경) --- */
@@ -3954,7 +4119,9 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 		var items = [];
 		if (!none) {
 			if (!git) items.push({ label: "계정…", sub: "Windows 자격 증명 관리자", run: svnAccount });
-			if (!git) items.push({ label: "Cleanup…", sub: "작업복사본의 잠금 · 끊긴 작업 정리", disabled: !w || !!writeBlock(), run: vcsCleanupAsk });
+			// Allow write 와 상관없다 — 저장소에 쓰지 않는다 (2026.11.04~)
+			if (!git) items.push({ label: "Cleanup…", sub: cleanupBlock() || "작업복사본의 잠금 · 끊긴 작업 정리", disabled: !canCleanup(), run: function () { vcsCleanupAsk(); } });
+			if (!git) items.push({ label: "SVN 진단 기록 열기", sub: state.servers[svn.srv].vcsLog ? "svn 이 실패한 때의 잠금 · 켜진 프로그램 (logs/vcs.log)" : "아직 남은 기록이 없습니다", run: vcsLogOpen });
 			// 2026-10-29 : TortoiseSVN 에서 하던 일 — 쓰기를 끈 서버에서는 잠근 채 어디서 켜는지를 보인다
 			if (!git) {
 				var off = !w || !!writeBlock(), why = !w ? "Allow write 를 켜면 씁니다" : writeBlock() || "", nl = myLocks().length;
@@ -4044,13 +4211,16 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 	function commitBlock() {
 		var st = svn.data[K()], items = svnChecked();
 		if (svn.busy) return svn.busyText;
+		var p = progOf(svn.srv);
+		if (p) return progTitle(p) + " · 끝나면 Commit 할 수 있습니다";
 		if (!st) return "Changes 를 읽는 중입니다";
 		if (!items.length) return "올릴 파일을 고르세요";
 		var conf = items.filter(function (it) { return it.conflict || inConflict(st, it.path); });
 		if (conf.length) return "Conflicted " + conf.length + "개는 Resolve 하거나 빼야 합니다";
 		if (!commitMsg()) return "Commit message 를 적으세요";
 		if (canWrite() && writeBlock()) return writeBlock();
-		if (canWrite() && !isGit() && st.locks && st.locks.length) return "작업복사본 잠금을 풀어야 Commit 됩니다 (위 띠의 Cleanup)";
+		// 다른 프로그램이 쥔 잠금은 막지 않는다 — Commit 이 풀리기를 잠깐 기다렸다 한다. 쓰는 이 없이 남은 잠금 · 끝나지 않은 작업만 막는다
+		if (canWrite() && !isGit() && (st.lockKind === "stale" || st.lockKind === "queue")) return "Cleanup 해야 Commit 됩니다 (위 띠의 Cleanup)";
 		return "";
 	}
 	function commitState() {
@@ -4282,20 +4452,25 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 			svn.busy = on;
 			svn.busyText = busyText;
 			svn.busyAt = Date.now();
+			svn.busySrv = on ? args.srv : -1;
 			clearInterval(svn.busyTick);
 			if (on) svn.busyTick = setInterval(function () { if (key === K()) renderBand(); }, 1000);
 			$("svnDiff").classList.toggle("busy", on);
-			renderBand(); renderSync(); commitState();
+			paintSrvTabs(); renderWcState(); renderBand(); renderSync(); commitState();
 			if (svn.view === "local" && svn.data[K()]) svnRender();
 		};
 		svn.band = null;
+		svn.wcOpen = false;
 		setBusy(true);
 		invoke(cmd, args).then(function (r) {
 			setBusy(false);
 			done(r);
 		}).catch(function (e) {
 			setBusy(false);
-			if (!remoteErr(e, function () { vcsRun(busyText, cmd, args, done); })) { /* remoteErr 가 띠에 남겼다 */ }
+			if (!remoteErr(e, function () { vcsRun(busyText, cmd, args, done); })) {
+				// remoteErr 가 띠에 남겼다. 잠금으로 실패한 Commit 은 같은 파일 · 메시지로 「Cleanup 뒤 다시 Commit」 할 수 있게 남긴다
+				if (cmd === "vcs_commit" && svn.band && String(e).indexOf(LOCKED) === 0) { svn.band.commit = { args: args, done: done }; renderBand(); }
+			}
 		});
 	}
 	function vcsArgs(more) {
@@ -4388,18 +4563,33 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 		}
 	}
 	// 잠금 · 끊긴 작업만 푼다 — 고친 파일과 버전 관리 밖 파일은 그대로다
-	function vcsCleanupAsk() {
+	// Allow write 를 꺼 둔 서버에서도 한다 — 저장소에 쓰지 않는다 (2026.11.04~)
+	// commit : 잠금으로 실패한 Commit ({ args, done }) — 주면 Cleanup 이 잠금을 다 푼 뒤 같은 파일 · 메시지로 이어서 Commit 한다.
+	//          Cleanup 뒤에도 잠금이 남으면 실행기가 실패로 돌려주므로 Commit 으로 넘어가지 않는다.
+	function vcsCleanupAsk(commit) {
 		var st = svn.data[K()];
 		var others = st && st.otherSvn && st.otherSvn.length ? st.otherSvn : [];
+		var ecl = others.indexOf("Eclipse") >= 0 || others.indexOf("STS") >= 0;
+		var srv = svn.srv;
+		var items = (st && st.locks || []).map(function (p) { return [p, "잠김"]; });
+		if (st && st.queue) items.push(["끝나지 않은 작업", st.queue + "개"]);
+		if (commit) items = items.concat(commit.args.paths.map(function (p) { return [p, "이어서 Commit"]; }));
 		vcsConfirm({
-			title: srvName() + " · Cleanup",
-			html: "작업복사본의 잠금과 끊긴 작업을 정리합니다 (svn cleanup). 고친 파일과 " + untrackedName() + " 파일은 그대로 둡니다.\n" +
-				'<span class="flag">' + (others.length ? "켜져 있는 SVN 프로그램: " + esc(others.join(" · ")) + ". " : "") +
-				"다른 SVN 프로그램(Eclipse 의 SVN · TortoiseSVN)이 작업 중이면 먼저 끝내거나 닫으세요. 쓰는 중에 잠금을 풀면 그 작업이 깨집니다.</span>",
-			items: (st && st.locks || []).map(function (p) { return [p, "잠김"]; }),
-			ok: "Cleanup",
+			title: srvName() + (commit ? " · Cleanup 뒤 다시 Commit" : " · Cleanup"),
+			html: "작업복사본의 잠금과 끊긴 작업을 정리합니다 (svn cleanup). 고친 파일과 " + untrackedName() + " 파일은 그대로 둡니다." +
+				(commit ? " 잠금이 다 풀리면 같은 파일 · 메시지로 다시 Commit 합니다." : "") + "\n" +
+				'<span class="flag' + (ecl ? " warn" : "") + '">' +
+				(ecl ? "Eclipse 가 켜져 있습니다. Eclipse 아래 상태 줄에 SVN 작업(새로 고침 · Synchronize · Update)이 도는지 보고, 끝난 뒤에 누르세요. "
+					: others.length ? "켜져 있는 SVN 프로그램: " + esc(others.join(" · ")) + ". " : "") +
+				"다른 SVN 프로그램이 쓰는 중에 잠금을 풀면 그 작업이 깨집니다.</span>",
+			items: items,
+			ok: commit ? "Cleanup 뒤 Commit" : "Cleanup",
 			run: function () {
-				vcsRun("Cleanup 하는 중...", "vcs_cleanup", { srv: svn.srv }, function (m) { showToast(m); svnActivate(true); });
+				vcsRun("Cleanup 하는 중...", "vcs_cleanup", { srv: srv }, function (m) {
+					showToast(m);
+					if (commit) vcsRun("Commit 하는 중...", "vcs_commit", commit.args, commit.done);
+					else svnActivate(true);
+				});
 			}
 		});
 	}
