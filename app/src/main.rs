@@ -2813,18 +2813,56 @@ fn stop_blocking(app: &AppHandle, i: usize) {
 
 /* ---------- 컴파일 ---------- */
 
-fn collect_java(dir: &Path, since_ms: u64, out: &mut Vec<PathBuf>) {
+// 컴파일할 소스를 모은다. 스탬프보다 늦게 고친 소스 · 짝 클래스가 없거나 소스보다 오래된 소스.
+// 2026.11.09 : 짝 클래스 비교를 더했다. 스탬프만 보면 원래 수정 시각을 둔 채 복사해 온 소스(copy2 · robocopy · cp -p · 압축 풀기)가
+//              스탬프보다 이르다는 이유로 영영 빠지고, 쓰는 쪽만 컴파일되어 옛 클래스와 맞춰 보다 「undefined」 로 실패했다.
+// classes 는 소스 폴더와 같은 자리의 컴파일 결과 폴더 — None 이면(전체 컴파일) 스탬프만 본다.
+// 폴더마다 read_dir 한 번으로 클래스 시각을 읽는다 — Windows 는 목록에 시각이 함께 와서 파일마다 따로 묻지 않는다.
+fn collect_java(dir: &Path, classes: Option<&Path>, since_ms: u64, out: &mut Vec<PathBuf>) {
+    let ms = |m: &fs::Metadata| m.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_millis() as u64);
     let Ok(rd) = fs::read_dir(dir) else { return };
+    let mut class_ms: Option<HashMap<std::ffi::OsString, u64>> = None;
     for e in rd.filter_map(Result::ok) {
         let path = e.path();
         let Ok(meta) = e.metadata() else { continue };
         if meta.is_dir() {
-            collect_java(&path, since_ms, out);
-        } else if path.extension().map_or(false, |x| x == "java") {
-            let m = meta.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_millis() as u64).unwrap_or(u64::MAX);
-            if m > since_ms {
-                out.push(path);
-            }
+            let sub = classes.map(|c| c.join(e.file_name()));
+            collect_java(&path, sub.as_deref(), since_ms, out);
+            continue;
+        }
+        if !path.extension().map_or(false, |x| x == "java") {
+            continue;
+        }
+        let m = ms(&meta).unwrap_or(u64::MAX);
+        if m > since_ms {
+            out.push(path);
+            continue;
+        }
+        let Some(cdir) = classes else { continue };
+        let Some(stem) = path.file_stem() else { continue };
+        // package-info · module-info · 빈 파일은 클래스를 안 만들 수 있다 — 짝이 없다고 저장마다 다시 컴파일하지 않게 뺀다
+        // (mhms 에 0바이트 MidtermAPI.java 가 있다)
+        if stem == "package-info" || stem == "module-info" || meta.len() == 0 {
+            continue;
+        }
+        let map = class_ms.get_or_insert_with(|| {
+            fs::read_dir(cdir)
+                .map(|rd| {
+                    rd.filter_map(Result::ok)
+                        .filter_map(|c| {
+                            let name = PathBuf::from(c.file_name());
+                            if name.extension()? != "class" {
+                                return None;
+                            }
+                            Some((name.file_stem()?.to_os_string(), ms(&c.metadata().ok()?)?))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        });
+        // 짝이 없으면(패키지와 폴더가 다르거나 이름이 다른 클래스만 든 드문 파일 포함) 넣는다 — 더 컴파일할 뿐 빠지지는 않는다
+        if map.get(stem).map_or(true, |&c| c < m) {
+            out.push(path);
         }
     }
 }
@@ -2848,7 +2886,8 @@ fn run_compile(app: &AppHandle, i: usize, full: bool) -> Option<CompileResult> {
     let src = Path::new(&sv.project).join("src/main/java");
     let mut files = Vec::new();
     // 2026.10.29 : 저장마다 소스 폴더 전체를 훑어 바뀐 파일을 찾는다 — 그 시간을 완료 줄에 따로 보인다 (크면 저장 감시가 준 경로를 먼저 쓰는 쪽으로)
-    collect_java(&src, if full { 0 } else { stamp }, &mut files);
+    // 짝 클래스는 앱에 올라가 있는 classes 와 견준다 (임시 폴더는 컴파일 때마다 비운다)
+    collect_java(&src, (!full).then_some(classes.as_path()), if full { 0 } else { stamp }, &mut files);
     let find_ms = began.elapsed().as_millis();
     if files.is_empty() {
         log(app, Some(i), "compile", "", format!("바뀐 자바 파일이 없습니다 (찾기 {find_ms}ms)."));
@@ -6359,6 +6398,50 @@ mod tests {
             ]),
         ];
         assert_eq!(svn_maybe_reverted(&v), ["twice.xml"]);
+    }
+
+    #[test]
+    fn 옛_수정_시각으로_들어온_소스도_짝_클래스와_견줘_모은다() {
+        let root = std::env::temp_dir().join(format!("tomcatrun-collect-{}", std::process::id()));
+        let (src, cls) = (root.join("src/a/b"), root.join("classes/a/b"));
+        fs::create_dir_all(&src).unwrap();
+        fs::create_dir_all(&cls).unwrap();
+        let at = |f: &Path, ms: u64| {
+            if !f.exists() {
+                fs::write(f, if f.ends_with("Empty.java") { "" } else { "class X {}" }).unwrap();
+            }
+            fs::File::options().write(true).open(f).unwrap().set_modified(UNIX_EPOCH + Duration::from_millis(ms)).unwrap();
+        };
+        let stamp = 1_000_000;
+        // 복사해 온 소스 — 스탬프보다 이르지만 클래스는 그보다 더 옛것 (2026.11.09 에 실제로 빠진 매퍼 인터페이스)
+        at(&src.join("Mapper.java"), stamp - 500);
+        at(&cls.join("Mapper.class"), stamp - 900);
+        // 손대지 않은 소스 — 클래스가 더 새것
+        at(&src.join("Plain.java"), stamp - 900);
+        at(&cls.join("Plain.class"), stamp - 500);
+        at(&cls.join("Plain$Inner.class"), stamp - 500);
+        // 스탬프 뒤에 고친 소스 · 클래스가 없는 소스 · 클래스를 안 만드는 package-info
+        at(&src.join("Service.java"), stamp + 10);
+        at(&cls.join("Service.class"), stamp + 20);
+        at(&src.join("Fresh.java"), stamp - 900);
+        at(&src.join("package-info.java"), stamp - 900);
+        at(&src.join("Empty.java"), stamp - 900);
+        let names = |classes: Option<&Path>, since| {
+            let mut out = Vec::new();
+            collect_java(&root.join("src"), classes, since, &mut out);
+            let mut v: Vec<_> = out.iter().map(|f| f.file_name().unwrap().to_string_lossy().into_owned()).collect();
+            v.sort();
+            v
+        };
+        let classes = root.join("classes");
+        assert_eq!(names(Some(&classes), stamp), ["Fresh.java", "Mapper.java", "Service.java"]);
+        // 전체 컴파일은 스탬프 0 · 클래스를 보지 않는다
+        assert_eq!(names(None, 0).len(), 6);
+        // 다 컴파일한 뒤 저장만 하면 0개 — package-info · 빈 파일은 짝이 없어도 다시 잡지 않는다
+        at(&cls.join("Mapper.class"), stamp + 30);
+        at(&cls.join("Fresh.class"), stamp + 30);
+        assert!(names(Some(&classes), stamp + 30).is_empty());
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
