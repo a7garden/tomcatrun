@@ -38,6 +38,7 @@ mod svn;
 mod svncli;
 mod svnget;
 mod svnweb;
+mod tray;
 mod update;
 mod vcsbackup;
 
@@ -2153,8 +2154,15 @@ struct MemSnap {
 
 // 3초마다 메모리를 재서 화면에 보낸다. 같은 김에 매퍼 다시 읽기 확인 · 쉬는 상주 컴파일러 내리기도 한다.
 fn monitor(app: AppHandle) {
+    let mut tray_running: Option<Vec<String>> = None;
     loop {
         thread::sleep(Duration::from_secs(3));
+        // 트레이 풍선 도움말 — 켜진 서버가 바뀔 때만 고친다
+        let running = running_names(&app);
+        if tray_running.as_ref() != Some(&running) {
+            tray::set_running(&app, &running);
+            tray_running = Some(running);
+        }
         let s = app.state::<Shared>();
         let mut servers = Vec::new();
         let mut changed = false;
@@ -3905,6 +3913,22 @@ fn running_names(app: &AppHandle) -> Vec<String> {
 #[tauri::command]
 fn quit(app: AppHandle) {
     quit_then(app, |_| {});
+}
+
+// 트레이 「종료」 — 창을 닫는 것과 달리 실행기를 끝낸다. 켜진 톰캣이 있으면 창을 다시 띄워 닫기 확인과 같이 묻는다
+fn quit_from_tray(app: &AppHandle) {
+    // 이미 끄는 중(닫기 확인 뒤 · 업데이트 설치)이면 다시 묻지 않고 창만 보인다 — 진행 상태가 창에 있다
+    if shared(app).quitting.load(Ordering::Relaxed) {
+        tray::show(app);
+        return;
+    }
+    let running = running_names(app);
+    if running.is_empty() {
+        quit_then(app.clone(), |_| {});
+    } else {
+        tray::show(app);
+        let _ = app.emit("close-ask", running);
+    }
 }
 
 // 켜진 톰캣을 모두 정상 종료한 뒤 after 를 부르고 실행기를 끝낸다 (닫기 · 업데이트 설치)
@@ -6300,10 +6324,7 @@ fn main() {
     tauri::Builder::default()
         // 두 번 띄우면 두 실행기가 같은 포트 · 폴더를 두고 다툰다. 이미 떠 있으면 그 창을 앞으로 가져온다.
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if let Some(w) = app.get_webview_window("main") {
-                let _ = w.unminimize();
-                let _ = w.set_focus();
-            }
+            tray::show(app); // 트레이로 숨겨 둔 창이면 다시 보인다
         }))
         // 폴더 고르기 창 — 실행기 쪽(pick_project)에서만 부르므로 화면 권한(capabilities)은 더하지 않는다
         .plugin(tauri_plugin_dialog::init())
@@ -6331,6 +6352,9 @@ fn main() {
                 thread::sleep(Duration::from_millis(1500));
                 auto_setup(h8)
             });
+            if let Err(e) = tray::build(&h) {
+                log(&h, None, "app", "warn", format!("트레이 아이콘을 만들지 못했습니다: {e}"));
+            }
             let h6 = h.clone();
             thread::spawn(move || monitor(h6));
             Ok(())
@@ -6340,16 +6364,23 @@ fn main() {
                 update_on_focus(window.app_handle());
             }
             if let WindowEvent::CloseRequested { api, .. } = event {
-                // 2026-10-28 : 켜진 톰캣이 있으면 바로 끄지 않고 화면에 묻는다. 끄는 몇 초 동안 창이 그대로라 닫기가 안 먹은 것처럼 보였다.
-                // 제목 줄 단추 · Alt+F4 · 작업 표시줄 모두 여기로 온다. 확인하면 화면이 `quit` 를 부른다.
+                // 제목 줄 단추 · Alt+F4 · 작업 표시줄 모두 여기로 온다.
+                // 2026.11.13 : 켜진 톰캣이 있으면 묻지 않고 창만 트레이로 숨긴다 — 톰캣은 그대로 돈다 (tray.rs).
+                //              2026-10-28 부터는 「종료하고 닫기」를 물었는데, 창만 치우고 싶을 때도 톰캣을 끄거나 취소해야 했다.
+                //              실행기를 끝내는 것은 트레이 「종료」다 (켜진 톰캣이 있으면 그때 묻는다).
                 let app = window.app_handle().clone();
                 if app.state::<Shared>().quitting.load(Ordering::Relaxed) {
                     api.prevent_close();
                 } else {
                     let running = running_names(&app);
-                    if !running.is_empty() {
+                    if !running.is_empty() && !tray::exists(&app) {
+                        // 트레이 아이콘을 못 만들었다 — 숨기면 돌아올 길이 없으니 전처럼 묻는다
                         api.prevent_close();
                         let _ = app.emit("close-ask", running);
+                    } else if !running.is_empty() {
+                        api.prevent_close();
+                        tray::hide(&app);
+                        log(&app, None, "app", "", format!("창을 트레이로 숨겼습니다. 톰캣은 계속 돕니다 ({}). 끝내려면 트레이 아이콘 › 종료.", running.join(", ")));
                     } else if any_vcs_busy(&app) {
                         // 켜진 톰캣은 없지만 Commit · Update 가 도는 중 — 끝난 뒤 닫는다
                         api.prevent_close();

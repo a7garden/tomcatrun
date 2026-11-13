@@ -1,0 +1,7 @@
+<!-- tomcatrun 앱 아이콘 원본 (2026.11.13) · 고양이 머리 + 재생 삼각형. icon.ico · icon.png · 제목 줄 아이콘(ui/index.html)이 이 그림을 따른다.
+     Apache Tomcat 로고를 본뜨지 않고 새로 그렸다(상표). 바탕 남색 · 강조 파랑은 앞 아이콘에서 이어받았다. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+	<rect width="24" height="24" rx="5.5" fill="#22344f"/>
+	<path d="M3.9 13.4C3.9 17.4 7.5 20 12 20s8.1-2.6 8.1-6.6c0-1.6-.5-3-1.3-4.1l.4-5.1-4.3 2.4a9 9 0 0 0-5.8 0L4.8 4.2l.4 5.1c-.8 1.1-1.3 2.5-1.3 4.1z" fill="#e6edf5"/>
+	<path d="M10.3 10.9v5.4l4.5-2.7z" fill="#2f9bf0" stroke="#2f9bf0" stroke-width=".6" stroke-linejoin="round"/>
+</svg>

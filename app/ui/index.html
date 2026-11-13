@@ -242,9 +242,10 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 #log a.src { color: inherit; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
 .empty { color: var(--muted); padding: 28px 16px; font: 13px/1.6 var(--ui); max-width: 640px; white-space: normal; }
 
-/* 반영 기록 표 */
+/* 반영 기록 — 저장 한 번이 한 줄 (반영 사슬 · 2026.11.13)
+   시각 · 서버 · 끝 상태 모양 · 무엇을 › 단계 레일 · 걸린 시간 */
 .ev, .ev-head {
-	display: grid; grid-template-columns: 64px 64px 96px minmax(0, 1fr) 64px; gap: 0 12px; align-items: baseline;
+	display: grid; grid-template-columns: 64px 64px 16px minmax(0, 1fr) 64px; gap: 0 12px; align-items: baseline;
 	padding: 5px 14px;
 }
 .ev-head {
@@ -257,27 +258,40 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .ev.warn { background: var(--warn-weak); }
 .ev .t { color: var(--muted); font-size: 12px; }
 .ev .who { font-size: 12px; color: var(--muted); }
-/* 2026-10-28 : docket Chip — 20px 알약 · 1px 테두리. 바로 반영 · 클래스 교체(info · hot)는 무채색이고 칩 글자로만 가른다. */
-.ev .k {
-	justify-self: start; display: inline-flex; align-items: center; height: 20px; padding: 0 8px; border-radius: 999px;
-	font-size: 11.5px; font-weight: 500; white-space: nowrap;
-	background: var(--panel-2); color: var(--muted); border: 1px solid var(--line);
-}
-.ev .k.info, .ev .k.hot { color: var(--text); border-color: var(--line-strong); }
-.ev .k.ok { background: var(--ok-weak); color: var(--ok); border-color: color-mix(in oklch, var(--ok) 30%, transparent); }
-.ev .k.warn { background: var(--warn-weak); color: var(--warn); border-color: var(--warn-line); }
-.ev .k.crit { background: var(--crit-weak); color: var(--crit); border-color: var(--crit-line); }
-/* 2026-10-28 : 내용은 한 줄로 접고 흐린 글씨로 둔다. 긴 경로 · 기동 단계 줄이 여러 줄로 늘어나 표가 어지러웠다.
-   넘치는 줄(.fold)만 눌러서 펼치고, 펼친 줄은 본문 색으로 되돌려 지금 읽는 줄이 드러나게 한다. */
+/* 끝 상태는 모양으로 — ✓ 들어감(무채색 · 정상은 조용히) · ◌ 넣는 중 · △ 재시작해야 · ⊗ 실패. 색은 뒤의 둘에만 */
+.ev .mk { align-self: center; display: inline-flex; width: 14px; height: 14px; }
+.ev .mk .ic { width: 14px; height: 14px; }
+.ev .mk[data-s="done"] { color: var(--muted); }
+.ev .mk[data-s="warn"] { color: var(--warn); }
+.ev .mk[data-s="fail"] { color: var(--crit); }
+.ev .mk[data-s="wait"]::before, .ev .mk[data-s="lost"]::before, .ev .mk[data-s="note"]::before { content: ""; margin: auto; border-radius: 50%; }
+.ev .mk[data-s="wait"]::before { width: 9px; height: 9px; border: 1.5px solid var(--text); border-right-color: transparent; animation: mk-spin 1s linear infinite; }
+.ev .mk[data-s="lost"]::before { width: 9px; height: 9px; border: 1.5px dashed var(--faint); }
+.ev .mk[data-s="note"]::before { width: 4px; height: 4px; background: var(--faint); }
+@keyframes mk-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .ev .mk[data-s="wait"]::before { animation: none; border-right-color: var(--text); border-style: dotted; } }
+/* 2026-10-28 : 내용은 한 줄로 접는다. 긴 경로 · 기동 단계 줄이 여러 줄로 늘어나 표가 어지러웠다.
+   넘치거나 원문이 더 있는 줄(.fold)만 눌러서 펼친다. */
 .ev .m { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ev.open .m { color: var(--text); white-space: normal; overflow-wrap: anywhere; }
+.ev.open .m { white-space: normal; overflow-wrap: anywhere; }
 .ev.fold { cursor: pointer; }
 /* 꺾쇠 자리는 모든 줄에 비워 둔다 — 줄마다 글 시작이 어긋나지 않고, 꺾쇠가 붙고 떨어져도 넘침 판정이 흔들리지 않는다 */
 .ev .m::before { content: ""; display: inline-block; width: 12px; color: var(--faint); font-size: 10px; }
 .ev.fold .m::before { content: "▸"; }
 .ev.open .m::before { content: "▾"; }
+/* 「무엇을」이 줄의 주인 — 본문 색. 단계 레일은 흐린 글씨로 뒤에 잇고 지금 기다리는 단계만 본문 색 */
+.ev .subj { color: var(--text); margin-right: 14px; }
+.ev .subj.plain { color: var(--muted); margin-right: 0; }
+.ev.err .subj.plain, .ev.warn .subj.plain { color: var(--text); }
+.ev .st .num { font-size: 12px; }
+.ev .st.bad { color: var(--crit); font-weight: 600; }
+.ev .st.wait { color: var(--text); }
+.ev .st.lost { color: var(--faint); }
+.ev .arr { color: var(--faint); margin: 0 7px; }
 .ev .m .mono, .alert-text .mono { font-size: 12px; }
-.ev .errs { grid-column: 4 / -1; margin: 3px 0 1px; }
+.ev .raw { display: none; grid-column: 4 / -1; margin: 3px 0 1px 12px; font: 12px/1.6 var(--mono); color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+.ev.open .raw { display: block; }
+.ev .errs { grid-column: 4 / -1; margin: 3px 0 1px 12px; }
 .ev .errs a { display: block; font: 12px/1.6 var(--mono); color: var(--crit); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; overflow-wrap: anywhere; }
 .ev .errs a.more { font-family: var(--ui); color: var(--muted); }
 .ev .d { text-align: right; color: var(--muted); font-size: 12px; }
@@ -915,11 +929,11 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 
 <header class="titlebar" id="titlebar">
 	<div class="tb-drag" data-tauri-drag-region="deep">
-		<svg class="tb-icon" viewBox="0 0 16 16" aria-hidden="true">
-			<rect width="16" height="16" rx="3.5" fill="#22344f"/>
-			<path d="M5.2 4.6A4.6 4.6 0 1 0 10.5 4" fill="none" stroke="#e6edf5" stroke-width="1.5" stroke-linecap="round"/>
-			<path d="M4.1 2.7l2.6.6-1 2.4z" fill="#e6edf5"/>
-			<path d="M7 5.9v4.2l3.4-2.1z" fill="#38b6ff"/>
+		<!-- 앱 아이콘과 같은 그림 (app/icons/icon.svg · 2026.11.13) -->
+		<svg class="tb-icon" viewBox="0 0 24 24" aria-hidden="true">
+			<rect width="24" height="24" rx="5.5" fill="#22344f"/>
+			<path d="M3.9 13.4C3.9 17.4 7.5 20 12 20s8.1-2.6 8.1-6.6c0-1.6-.5-3-1.3-4.1l.4-5.1-4.3 2.4a9 9 0 0 0-5.8 0L4.8 4.2l.4 5.1c-.8 1.1-1.3 2.5-1.3 4.1z" fill="#e6edf5"/>
+			<path d="M10.3 10.9v5.4l4.5-2.7z" fill="#2f9bf0" stroke="#2f9bf0" stroke-width=".6" stroke-linejoin="round"/>
 		</svg>
 		<span class="tb-title">tomcatrun<span class="tb-ver num" id="tbVer"></span></span>
 	</div>
@@ -946,7 +960,7 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 			</div>
 		</div>
 		<div id="buildCtl"></div>
-		<div class="ev-head" id="evHead"><span>시각</span><span>서버</span><span>구분</span><span>내용</span><span style="text-align:right">걸린 시간</span></div>
+		<div class="ev-head" id="evHead"><span>시각</span><span>서버</span><span></span><span>무엇을 · 어떻게 들어갔나</span><span style="text-align:right">걸린 시간</span></div>
 		<div id="log"></div>
 	</section>
 
@@ -1177,7 +1191,7 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 	if (appWin) {
 		document.getElementById("tbMin").onclick = function () { appWin.minimize(); };
 		document.getElementById("tbMax").onclick = function () { appWin.toggleMaximize(); };
-		document.getElementById("tbClose").onclick = function () { appWin.close(); };   // 닫기 요청 → 톰캣이 켜져 있으면 실행기가 「close-ask」로 묻는다
+		document.getElementById("tbClose").onclick = function () { appWin.close(); };   // 닫기 요청 → 톰캣이 켜져 있으면 실행기가 창을 트레이로 숨긴다 (2026.11.13~)
 		var syncMax = function () {
 			appWin.isMaximized().then(function (m) {
 				var b = document.getElementById("tbMax");
@@ -2412,37 +2426,30 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 		return !q || it.text.toLowerCase().indexOf(q) >= 0;
 	}
 
-	// 반영 기록 한 줄을 구분 · 내용 · 걸린 시간으로 나눈다 (실행기가 남기는 문구를 그대로 읽는다)
+	// 기록 줄 하나를 단계 이름 · 내용 · 걸린 시간으로 나눈다 (실행기가 남기는 문구를 그대로 읽는다 · 반영 사슬 evStage 가 쓴다)
 	function eventInfo(it) {
 		var t = it.text, m;
-		var r = { label: "기록", cls: "", msg: t, dur: "" };
+		var r = { label: "기록", msg: t, dur: "" };
 		if (it.src === "compile") {
 			r.label = it.kind === "err" ? "컴파일 실패" : "컴파일";
-			r.cls = it.kind === "err" ? "crit" : "ok";
 			r.msg = t.replace(/^(전체 )?컴파일 (완료|실패|더함) · /, "").replace(/^(\d+)개 · /, "$1개 파일 · ");
 		} else if (it.src === "deps") {
 			r.label = "의존 jar";
-			r.cls = it.kind === "err" ? "crit" : it.kind === "ok" ? "ok" : "";
 		} else if (it.kind === "live") {
-			r.cls = "info";
 			if ((m = /^바로 반영 · (.*)$/.exec(t))) { r.label = "바로 반영"; r.msg = m[1]; }
 			else if ((m = /^매퍼 (.*)$/.exec(t))) { r.label = "매퍼"; r.msg = m[1]; }
 		} else if (it.kind === "hot") {
-			r.cls = "hot";
 			if ((m = /^매퍼를 다시 읽었습니다 · (.*)$/.exec(t))) { r.label = "매퍼 다시 읽음"; r.msg = m[1]; }
 			else if ((m = /^(자바 교체|Spring 반영) · (.*)$/.exec(t))) { r.label = m[1]; r.msg = m[2]; }
 			else { r.label = "클래스 교체"; r.msg = t.replace(/^HOTSWAP AGENT:\s*[\d:.]+\s+\w+\s+\([^)]*\)\s*-\s*/, ""); }
 		} else if (it.kind === "ok") {
-			r.cls = "ok";
 			if ((m = /^기동 ([\d.]+초) · (.*)$/.exec(t))) { r.label = "기동 완료"; r.dur = m[1]; r.msg = m[2]; }
 			else r.label = "완료";
 		} else if (it.kind === "warn") {
-			r.cls = "warn";
 			if ((m = /^재시작해야 반영 · (.*)$/.exec(t))) { r.label = "재시작 필요"; r.msg = m[1]; }
 			else r.label = "알림";
 		} else if (it.kind === "err") {
 			r.label = "오류";
-			r.cls = "crit";
 		}
 		if (!r.dur && (m = / · ([\d.]+초)(?=[ (]|$)/.exec(r.msg))) {
 			r.dur = m[1];
@@ -2463,11 +2470,148 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 		return out + esc(t.slice(last));
 	}
 
+	/* ---------- 반영 사슬 — 저장 한 번을 한 줄로 ----------
+	   2026.11.13 : 이벤트 하나에 한 줄 + 「구분」 칩이었다. 자바 하나를 저장하면 컴파일 · 자바 교체 · Spring 반영이 세 줄로 흩어져
+	   「들어갔나 · 다 해서 몇 초인가」를 머리로 합쳐야 했다. 같은 저장에서 나온 줄을 한 항목으로 묶고
+	   「무엇을」(파일 · 클래스) 앞에, 단계 레일(컴파일 › 교체 › Spring 반영)을 뒤에, 끝 상태는 줄 머리 모양(✓ ◌ △ ⊗)으로 보인다.
+	   자바 교체 · Spring 반영의 초는 컴파일을 시작한 때부터 잰 값이다(실행기 watch_java) — 그래서 전체 시간은 단계 초의 합이 아니라 가장 큰 값이다.
+	   교체 줄이 컴파일 완료 줄보다 먼저 올 수 있어(실행기가 컴파일 전에 기다림을 건다) 어느 쪽이 먼저 와도 같은 사슬에 붙인다. */
+	var WAIT_MS = 60000;                              // 넣는 중인데 이만큼 지나도 다음 단계가 없으면 기다림을 접는다 (실행기도 60초 뒤 지켜보기를 그만둔다)
+	// 이 안에 온 같은 서버의 다음 단계는 같은 저장으로 본다 (Spring 반영은 수십 초 걸리기도 한다).
+	// 기다림(WAIT_MS)보다 짧으면 늦게 끝난 단계가 새 줄로 떨어지고 원래 줄은 「기록 없음」으로 남는다 — 그래서 매퍼도 기다림과 같게 둔다
+	var CHAIN_MS = { java: 90000, mapper: WAIT_MS };
+	var chains = {};                                  // 「서버:종류」 → 아직 단계를 더 받을 수 있는 사슬
+
+	// 기록 줄 하나 → 사슬 종류와 단계 하나
+	function evStage(it) {
+		var r = eventInfo(it), t = it.text, m;
+		var st = { label: r.label, dur: r.dur, kind: it.kind, text: t, detail: r.msg };
+		var x = { type: "", subject: r.msg, stage: st, wait: false, restart: false };
+		if (it.src === "compile") {
+			x.type = "java";
+			if (it.kind === "err") {
+				st.label = "컴파일 실패";
+				st.detail = r.msg.replace(/ · 오류 줄을 누르면 편집기로 엽니다$/, "");
+				x.subject = "";   // 오류 줄의 파일 이름으로 채운다 (chainSubject)
+			} else {
+				st.label = "컴파일";
+				x.full = /^전체 /.test(t);
+				x.count = (m = /^(\d+)개/.exec(r.msg)) ? +m[1] : 0;
+				x.wait = / · 실행 중인 앱에 넣는 중$/.test(t);
+				x.restart = /재시작해야 반영됩니다$/.test(t);
+				x.subject = "";
+			}
+		} else if (it.kind === "hot" && (m = /^(자바 교체|Spring 반영|클래스 교체)$/.exec(r.label))) {
+			x.type = "java";
+			st.label = m[1] === "Spring 반영" ? "Spring 반영" : "교체";
+			// 「FdrController 외 1개 · 빈 다시 등록 · URL 매핑 새로 만듦」 → 이름만 앞에, 나머지는 단계 설명으로
+			var parts = r.msg.split(" · ");
+			x.subject = parts[0];
+			st.detail = parts.slice(1).join(" · ");
+		} else if (it.kind === "live" && r.label === "매퍼") {
+			x.type = "mapper";
+			m = /^(.*?) · (.*)$/.exec(r.msg) || [0, r.msg, ""];
+			x.subject = m[2] || m[1];
+			x.wait = /바뀐 파일만 다시 읽는 중/.test(m[1]);
+			st.label = x.wait ? "다시 읽기" : "묶음 전체 다시 해석";
+			st.detail = m[1];
+		} else if (it.kind === "hot" && r.label === "매퍼 다시 읽음") {
+			x.type = "mapper";
+			st.label = "다시 읽음";
+		} else if (r.label === "바로 반영") {
+			x.type = "live";
+		} else if (r.label === "재시작 필요") {
+			x.type = "restart";
+			st.label = "재시작해야 반영";
+		} else if (r.label === "기동 완료") {
+			x.type = "boot";
+			st.label = "기동";
+		}
+		return x;
+	}
+
+	function secsOf(dur) { var n = parseFloat(dur); return isNaN(n) ? -1 : n; }
+
+	// 반영 기록에 한 줄을 넣는다. 앞 사슬에 붙였으면 그 사슬을, 새로 만들었으면 null 을 돌려준다 (새 줄만 읽지 않은 수에 센다)
+	function putEvent(it) {
+		var x = evStage(it), key = it.srv + ":" + x.type;
+		var c = x.type && CHAIN_MS[x.type] ? chains[key] : null;
+		var steps = c ? c.stages.map(function (s) { return s.label; }) : [];
+		// 같은 단계가 이미 있으면(다음 저장) 새 사슬이다 · 실패한 컴파일 뒤에는 붙이지 않는다
+		if (c && (it.at - c.last > CHAIN_MS[x.type] || steps.indexOf(x.stage.label) >= 0 || c.kind === "err" ||
+			(x.stage.label === "컴파일" || x.stage.label === "컴파일 실패") && (steps.indexOf("컴파일") >= 0 || steps.indexOf("컴파일 실패") >= 0))) c = null;
+		// 교체 · Spring 반영의 초는 「가장 최근 컴파일을 시작한 때」부터다 (실행기는 컴파일마다 기다림을 새로 건다).
+		// 그 초가 이 사슬의 컴파일 시작부터 지금까지보다 한참 짧으면 다음 저장의 단계다 — 교체 없이 멈춘 앞 줄에 붙이지 않는다
+		var comp = c && c.stages.filter(function (s) { return s.label === "컴파일"; })[0];
+		if (comp && secsOf(x.stage.dur) >= 0 && secsOf(x.stage.dur) + 2 < (it.at - comp.at) / 1000 + Math.max(0, secsOf(comp.dur))) c = null;
+		if (!c) {
+			c = { srv: it.srv, src: it.src, at: it.at, last: it.at, kind: "", type: x.type, subject: "", stages: [], texts: [], text: "" };
+			if (x.type && CHAIN_MS[x.type]) chains[key] = c;
+			addStage(c, x, it);
+			push("events", c);
+			return null;
+		}
+		addStage(c, x, it);
+		return c;
+	}
+
+	function addStage(c, x, it) {
+		var rank = { err: 3, warn: 2 };
+		x.stage.at = it.at;
+		c.last = it.at;
+		if ((rank[it.kind] || 0) > (rank[c.kind] || 0)) c.kind = it.kind;
+		// 컴파일은 늘 맨 앞 — 교체 줄이 먼저 왔어도 레일은 일어난 차례(컴파일 › 교체 › Spring 반영)로 읽힌다
+		if (x.stage.label === "컴파일" || x.stage.label === "컴파일 실패") c.stages.unshift(x.stage); else c.stages.push(x.stage);
+		if (x.wait) c.wait = true;
+		if (x.restart) c.restart = true;
+		if (x.full) c.full = true;
+		if (x.count) c.count = x.count;
+		if (it.errs) c.errs = it.errs;
+		// 교체 · Spring 의 클래스 이름이 컴파일의 「N개 파일」보다 무엇을 바꿨는지 잘 말한다
+		if (x.subject && (!c.subject || x.stage.label === "교체")) c.subject = x.subject;
+		c.texts.push(it.text);
+		c.text = c.texts.join("\n");
+	}
+
+	// 줄 머리 모양 — 색이 아니라 모양이 끝 상태를 말한다 (정상은 무채색 ✓ · 색은 실패 · 재시작에만)
+	function chainMark(c) {
+		var labels = c.stages.map(function (s) { return s.label; });
+		if (c.kind === "err") return ["fail", "error", "실패"];
+		if (c.restart || c.type === "restart" || c.kind === "warn") return ["warn", "warn", "재시작해야 반영"];
+		var done = c.type === "java" ? labels.indexOf("교체") >= 0 || labels.indexOf("Spring 반영") >= 0
+			: c.type === "mapper" ? labels.indexOf("다시 읽음") >= 0 : true;
+		if (c.wait && !done) return Date.now() - c.at < WAIT_MS ? ["wait", "", "넣는 중"] : ["lost", "", "교체 기록이 오지 않았습니다"];
+		if (!c.type) return ["note", "", ""];
+		return ["done", "check", "들어감"];
+	}
+
+	function chainSubject(c) {
+		if (c.subject) return c.subject;
+		if (c.errs && c.errs.length) {
+			var seen = {};
+			c.errs.forEach(function (t) { var m = SRC_RE.exec(t); if (m) seen[baseName(m[1])] = 1; });
+			var names = Object.keys(seen);
+			if (names.length) return names[0] + (names.length > 1 ? " 외 " + (names.length - 1) + "개" : "");
+		}
+		if (c.type === "java") return "자바 " + (c.full ? "전체 " : "") + (c.count ? c.count + "개 파일" : "");
+		return "";
+	}
+
+	// 넣는 중인 사슬은 기다림이 끝나는 때 한 번 다시 그린다 (다음 단계가 오면 그 전에 다시 그려진다)
+	function refreshChain(c) {
+		var old = c._el;
+		if (!old || !old.parentNode) return;
+		var d = eventEl(c);
+		old.parentNode.replaceChild(d, old);
+		markFold([d]);
+	}
+
 	function eventEl(it) {
-		var r = eventInfo(it);
+		var mark = chainMark(it);
 		var d = document.createElement("div");
-		d.className = "ev" + (r.cls === "crit" ? " err" : r.cls === "warn" ? " warn" : "") + (it.open ? " open" : "");
+		d.className = "ev" + (mark[0] === "fail" ? " err" : mark[0] === "warn" ? " warn" : "") + (it.open ? " open" : "");
 		d._it = it;   // 우클릭 메뉴가 읽는다
+		it._el = d;   // 다음 단계가 오면 이 줄을 바꿔 그린다
 		// 펼친 상태는 항목에 둔다 — 찾기 · 거르기로 다시 그려도 펼친 줄이 접히지 않는다.
 		// 글자를 드래그로 고른 때는 접고 펴지 않는다 (경로를 복사하려다 줄이 접히지 않도록)
 		d.onclick = function () {
@@ -2475,11 +2619,34 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 			it.open = !it.open;
 			d.classList.toggle("open", it.open);
 		};
+		var top = -1, rail = it.stages.map(function (s) {
+			top = Math.max(top, secsOf(s.dur));
+			var tip = s.detail && s.detail !== it.subject ? ' title="' + esc(noDash(s.detail)) + '"' : "";
+			return '<span class="st' + (s.kind === "err" ? " bad" : "") + '"' + tip + ">" + esc(s.label) + (s.dur ? ' <span class="num">' + esc(s.dur) + "</span>" : "") + "</span>";
+		});
+		if (mark[0] === "wait") {
+			rail.push('<span class="st wait">' + (it.type === "mapper" ? "읽는 중" : "넣는 중") + "</span>");
+			// 사슬마다 타이머 하나 — 찾기 · 다시 그리기마다 새로 걸면 기다림이 끝날 때 같은 줄을 여러 번 바꿔 그린다
+			clearTimeout(it._timer);
+			it._timer = setTimeout(function () { it._timer = 0; refreshChain(it); }, Math.max(0, WAIT_MS - (Date.now() - it.at)) + 100);
+		}
+		if (mark[0] === "lost") rail.push('<span class="st lost">교체 기록 없음</span>');
+		var subj = chainSubject(it);
+		// 사슬이 아닌 줄(실행기 기록 · 알림 · 오류)은 단계가 곧 내용이다 — 이름표 없이 글만
+		var body = it.type ? (subj ? '<span class="subj">' + pathify(subj) + "</span>" : "") + rail.join('<span class="arr" aria-hidden="true">›</span>')
+			: '<span class="subj plain">' + pathify(it.stages[0].detail) + "</span>";
 		d.innerHTML = '<span class="t num">' + fmtTime(it.at) + "</span>" +
 			'<span class="who">' + (it.srv != null && state ? esc(state.servers[it.srv].name) : "실행기") + "</span>" +
-			'<span class="k ' + r.cls + '">' + esc(r.label) + "</span>" +
-			'<span class="m">' + pathify(r.msg) + "</span>" +
-			'<span class="d num">' + esc(r.dur) + "</span>";
+			'<span class="mk" data-s="' + mark[0] + '" role="img" aria-label="' + esc(mark[2]) + '" title="' + esc(mark[2]) + '">' + (mark[1] ? ic(mark[1]) : "") + "</span>" +
+			'<span class="m">' + body + "</span>" +
+			'<span class="d num">' + (top >= 0 ? top.toFixed(1) + "초" : "") + "</span>";
+		// 펼치면 사슬을 이룬 원문 줄을 그대로 보인다 (바뀐 파일 찾기 시간 · 컴파일러 · 빈 이름 같은 자세한 것)
+		if (it.texts.length > 1 || it.type && it.stages[0].detail && it.stages[0].detail !== subj) {
+			var raw = document.createElement("div");
+			raw.className = "raw";
+			raw.textContent = it.texts.map(noDash).join("\n");
+			d.appendChild(raw);
+		}
 		// 컴파일 실패 줄 아래에 그 컴파일의 오류 줄을 단다 (누르면 편집기로 연다)
 		if (it.errs && it.errs.length) {
 			var box = document.createElement("div");
@@ -2512,7 +2679,7 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 	function markFold(els) {
 		[].forEach.call(els, function (d) {
 			var m = d.querySelector(".m");
-			d.classList.toggle("fold", d.classList.contains("open") || m.scrollWidth > m.clientWidth);
+			d.classList.toggle("fold", d.classList.contains("open") || m.scrollWidth > m.clientWidth || !!d.querySelector(".raw"));
 		});
 	}
 	var foldW = 0;
@@ -2616,7 +2783,7 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 	var early = [];   // 뼈대가 서기 전에 온 로그
 	function onLogs(lines) {
 		if (!built) { early = early.concat(lines); return; }
-		var now = Date.now(), added = [], compiled = false;
+		var now = Date.now(), added = [], compiled = false, redrawAfter = false;
 		function put(name, it) {
 			if (!store[name]) return;
 			push(name, it);
@@ -2639,7 +2806,21 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 			}
 			if (l.src === "compile" || l.src === "deps") put("build", it);
 			else if (l.srv != null) put("srv" + l.srv, it);
-			if (isEvent(l)) put("events", it);
+			if (isEvent(l)) {
+				// 반영 기록은 저장 한 번이 한 줄이다 — 앞 사슬에 붙은 단계는 새 줄로 세지 않고 그 줄만 다시 그린다
+				var c = putEvent(it);
+				if (c) {
+					if (tab !== "events") { if (it.kind === "err") unreadErr.events = true; }   // 나중에 붙은 실패도 탭 배지를 빨갛게
+					// 찾기 · 오류만에 걸려 안 보이던 줄이 이제 맞거나, 보이던 줄이 이제 안 맞으면 다시 그린다 (드문 일이라 통째로)
+					else if (matches(c) !== !!(c._el && c._el.parentNode)) redrawAfter = true;
+					else if (c._el && c._el.parentNode) refreshChain(c);
+				}
+				else {
+					var ev = store.events[store.events.length - 1];
+					if (tab === "events") added.push(ev);
+					else { unread.events++; if (it.kind === "err") unreadErr.events = true; }
+				}
+			}
 		});
 		var shown = added.filter(matches);
 		if (shown.length && logEl.querySelector(".empty")) logEl.textContent = "";
@@ -2650,6 +2831,7 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 		if (tab === "events") markFold(fresh);
 		while (logEl.childNodes.length > SHOW) logEl.removeChild(logEl.firstChild);
 		if ($("follow").checked) logEl.scrollTop = logEl.scrollHeight;
+		if (redrawAfter) redraw();
 		renderTabs();
 		if (compiled) renderAlerts();
 	}
@@ -5845,7 +6027,7 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 
 /* ---------- 닫기 확인 ---------- */
 
-	// 켜진 톰캣이 있을 때 닫으면 실행기가 「close-ask」로 묻는다. 확인하면 끄는 동안 서버별 상태를 보여 준다.
+	// 켜진 톰캣이 있을 때 트레이 「종료」를 누르면 실행기가 「close-ask」로 묻는다 (창 닫기는 트레이로 숨길 뿐이다). 확인하면 끄는 동안 서버별 상태를 보여 준다.
 	var quitting = false;
 	var STATUS_TEXT = { stopped: "꺼짐", starting: "켜는 중", running: "실행 중", stopping: "끄는 중" };
 	function quitList(names) {
@@ -5865,8 +6047,8 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 		$("quitTitle").textContent = "톰캣이 실행 중입니다";
 		$("quitText").textContent = upd
 			? state.update.release.version + " 으로 업데이트하면 아래 서버를 끄고 설치한 뒤 실행기를 다시 엽니다. 받는 동안 켠 서버도 함께 꺼집니다."
-			: "닫으면 함께 종료됩니다.";
-		$("quitOk").textContent = upd ? "끄고 업데이트" : "종료하고 닫기";
+			: "실행기를 종료하면 함께 꺼집니다. 창만 닫으면 트레이에서 계속 돕니다.";
+		$("quitOk").textContent = upd ? "끄고 업데이트" : "톰캣 끄고 종료";
 		quitList(names);
 		$("quitActs").hidden = false;
 		$("quitScrim").hidden = false;
