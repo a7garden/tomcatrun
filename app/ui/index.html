@@ -38,9 +38,11 @@
 }
 @media (prefers-color-scheme: dark) {
 	:root {
-		--bg: oklch(0.2 0 0); --side: oklch(0.215 0 0); --panel: oklch(0.235 0 0); --panel-2: oklch(0.275 0 0);
-		--line: oklch(0.305 0 0); --line-soft: oklch(0.255 0 0); --line-strong: oklch(0.4 0 0);
-		--text: oklch(0.93 0 0); --muted: oklch(0.77 0 0); --faint: oklch(0.65 0 0);
+		/* 2026-11-17 : 회색 단계를 벌렸다. 바탕 0.2 · 판 0.235 · hover 0.275 · 선 0.305 로 단 사이가 0.015~0.04 라
+		   영역 경계 · 고른 줄 · hover 가 구분되지 않는다는 사용자 지적. 바탕을 내리고 판 · 올린 판 · 선을 올렸다. */
+		--bg: oklch(0.17 0 0); --side: oklch(0.205 0 0); --panel: oklch(0.245 0 0); --panel-2: oklch(0.325 0 0);
+		--line: oklch(0.38 0 0); --line-soft: oklch(0.3 0 0); --line-strong: oklch(0.5 0 0);
+		--text: oklch(0.94 0 0); --muted: oklch(0.8 0 0); --faint: oklch(0.68 0 0);
 		--brand: oklch(0.82 0.14 80); --brand-ink: oklch(0.22 0.03 75); --brand-text: oklch(0.84 0.13 82);
 		--ok: oklch(0.77 0.14 152);
 		--crit: oklch(0.71 0.17 25); --crit-solid: oklch(0.56 0.2 27);   /* 꽉 찬 바탕은 흰 글자가 읽히도록 어둡게 */
