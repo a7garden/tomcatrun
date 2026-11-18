@@ -615,6 +615,24 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .svn-diff tr.ctx td.s::before { content: "  "; }
 .svn-diff tr.hunk td { color: var(--muted); background: var(--line-soft); padding: 2px 8px; }
 .svn-diff .empty { font-family: var(--ui); }
+/* 스켈레톤 (2026-11-18) — 버전 관리가 svn · git 을 읽는 동안 올 모양(파일 줄 · 커밋 줄 · Diff 줄)을 회색 막대로 먼저 그린다.
+   「읽는 중...」 한 줄만 있으면 어디에 무엇이 올지 몰라 화면이 비어 보였다. 움직임은 투명도만 (화면 엔진 GPU 를 끈 채라 가볍게) */
+.sk { display: block; height: 10px; border-radius: 3px; background: var(--panel-2); animation: sk 1.4s ease-in-out infinite; }
+@keyframes sk { 50% { opacity: .45; } }
+@media (prefers-reduced-motion: reduce) { .sk { animation: none; } }
+.sk-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.skel-note { padding: 10px 14px 4px; color: var(--muted); font: 12px var(--ui); }
+.sk-row.f { display: grid; grid-template-columns: 14px 15px minmax(0, 1fr) 30px; gap: 0 6px; align-items: center; min-height: 26px; padding: 2px 10px; }
+.sk-row.f .sq { width: 12px; height: 12px; }
+.sk-row.f .ico { width: 13px; height: 13px; }
+.sk-row.f .sm { height: 8px; }
+.sk-row.c { display: grid; gap: 7px; padding: 9px 10px 9px 12px; border-bottom: 1px solid var(--line-soft); }
+.sk-row.c .meta { height: 8px; }
+.sk-head { display: grid; gap: 7px; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+.sk-head .sm { height: 8px; }
+.sk-code { padding: 6px 0; }
+.sk-line { display: grid; grid-template-columns: 26px minmax(0, 1fr); gap: 0 12px; align-items: center; height: 18px; padding: 0 8px; }
+.sk-line .no { justify-self: end; width: 16px; height: 8px; opacity: .7; }
 .diff-note { padding: 6px 14px; border-bottom: 1px solid var(--line-soft); color: var(--warn); font: 600 12px var(--ui); }
 .prop-diff { border-bottom: 1px solid var(--line); }
 .prop-diff th { padding: 4px 8px; text-align: left; vertical-align: top; width: 1%; white-space: nowrap; font: 600 12px var(--mono); color: var(--text); }
@@ -1278,6 +1296,23 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 	// 사람이 읽는 글에 줄표를 쓰지 않는다 (PRODUCT.md) — 점검 문장에 섞인 「 — 」는 가운뎃점으로 보인다
 	function noDash(s) { return String(s).replace(/\s*[—–]\s*/g, " · "); }
 	function ic(name, cls) { return '<svg class="ic' + (cls ? " " + cls : "") + '"><use href="#i-' + name + '"/></svg>'; }
+	// 스켈레톤 — files(파일 줄) · commits(커밋 줄) · diff(머리 + 코드 줄) · code(코드 줄만). note 는 막대 위 안내 한 줄.
+	// 폭은 고정 목록을 돌려 써서 다시 그려도 같은 모양이다 (매번 흔들리면 깜빡이는 것처럼 보인다)
+	var SK_W = [62, 44, 78, 53, 70, 38, 66, 49, 74, 57, 81, 35];
+	var SK_IND = [0, 1, 2, 2, 3, 2, 1, 2, 3, 3, 2, 0];   // 코드 줄 들여쓰기 단
+	function skel(kind, n, note) {
+		var w = function (k, base) { return (base || 0) + SK_W[k % SK_W.length] + "%"; }, out = "", k;
+		n = n || ({ files: 9, commits: 8, diff: 18, code: 8 })[kind];
+		if (kind === "files") for (k = 0; k < n; k++) out += '<div class="sk-row f"><i class="sk sq"></i><i class="sk ico"></i><i class="sk" style="width:' + w(k) + '"></i><i class="sk sm"></i></div>';
+		if (kind === "commits") for (k = 0; k < n; k++) out += '<div class="sk-row c"><i class="sk" style="width:' + w(k + 3) + '"></i><i class="sk meta" style="width:' + (20 + SK_W[k % SK_W.length] / 3).toFixed(0) + '%"></i></div>';
+		if (kind === "diff") out += '<div class="sk-head"><i class="sk" style="width:46%"></i><i class="sk sm" style="width:28%"></i></div>';
+		if (kind === "diff" || kind === "code") {
+			out += '<div class="sk-code">';
+			for (k = 0; k < n; k++) out += '<div class="sk-line"><i class="sk no"></i><i class="sk" style="margin-left:' + SK_IND[k % SK_IND.length] * 16 + 'px;width:calc(' + w(k + 5) + ' - ' + SK_IND[k % SK_IND.length] * 16 + 'px)"></i></div>';
+			out += "</div>";
+		}
+		return '<div class="skel" role="status">' + (note ? '<div class="skel-note">' + esc(note) + "</div>" : '<span class="sk-sr">읽는 중</span>') + out + "</div>";
+	}
 	function fmtDur(ms) {
 		var s = Math.max(0, Math.floor(ms / 1000)), h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60);
 		if (h) return h + "시간 " + m + "분";
@@ -3611,7 +3646,7 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 		if (svn.loading) { svn.again = true; return; }
 		svn.loading = true;
 		var key = K(), kind = svn.kind;
-		if (!svn.data[key]) renderWhere();
+		if (!svn.data[key]) { renderWhere(); if (svn.view === "local") $("svnList").innerHTML = skel("files"); }
 		invoke(kind + "_status", { srv: svn.srv }).then(function (st) {
 			svn.data[key] = st;
 			svn.stale[key] = false;
@@ -4098,7 +4133,7 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 	function svnLogLoad() {
 		var key = K(), rel = svn.logRel;
 		renderLogHead();
-		$("svnList").innerHTML = '<div class="empty">History 를 읽는 중...</div>';
+		$("svnList").innerHTML = skel("commits");
 		invoke(svn.kind + "_log", { srv: svn.srv, rel: rel, limit: 100 }).then(function (entries) {
 			var r = svn.remote[key] || (svn.remote[key] = {});
 			r.log = entries; r.logRel = rel;
@@ -4222,7 +4257,7 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 		var st = svn.data[key];
 		var it = st && st.items.filter(function (x) { return x.path === path; })[0];
 		svn.blameFor = null;
-		if (!quiet) $("svnDiff").innerHTML = '<div class="empty">Diff 를 계산하는 중...</div>';
+		if (!quiet) $("svnDiff").innerHTML = skel("diff");
 		var args = { srv: svn.srv, path: path === "." ? "" : path };
 		if (it && it.orig) args.orig = it.orig;
 		invoke(svn.kind + "_diff", args).then(function (d) {
@@ -4295,7 +4330,7 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 	function svnBlame(path) {
 		var key = K(), git = isGit();
 		svn.blameFor = path;
-		$("svnDiff").innerHTML = '<div class="empty">' + (git ? "Blame 을 계산하는 중..." : "저장소에서 Blame 을 받는 중... (오래된 큰 파일은 수십 초 걸립니다)") + "</div>";
+		$("svnDiff").innerHTML = skel("diff", 0, git ? "" : "저장소에서 Blame 을 받는 중입니다. 오래된 큰 파일은 수십 초 걸립니다.");
 		invoke("vcs_blame", { srv: svn.srv, kind: svn.kind, path: path }).then(function (b) {
 			if (key !== K() || svn.blameFor !== path) return;
 			// git 은 지금 파일 기준이라 줄 번호가 편집기와 맞는다. svn 은 BASE 기준이라 맞지 않을 수 있다
@@ -4397,7 +4432,7 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 		}
 		var key = K();
 		svn.diffFile = null;
-		body.innerHTML = '<div class="empty">Diff 를 계산하는 중...</div>';
+		body.innerHTML = skel("code", 14);
 		invoke("vcs_conflict_diff", { srv: svn.srv, kind: svn.kind, path: path, side: side }).then(function (d) {
 			if (key !== K() || svn.sel !== path || $("svnDiffBody") !== body || !box.querySelector('.seg [data-c="' + side + '"].on')) return;
 			body.innerHTML = '<div class="diff-note">' + esc(CF_SIDE[side]) + (d.added || d.removed ? " · +" + d.added + " −" + d.removed : "") + "</div>" + diffBody(d);
@@ -4408,7 +4443,7 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 	function svnRevDiff(rel, oldSpec, newSpec, title, into) {
 		var key = K(), box = into || $("svnDiff");
 		svn.blameFor = null;
-		box.innerHTML = '<div class="empty">' + (isGit() ? "내용을 꺼내 견주는 중..." : "저장소에서 내용을 받아 견주는 중...") + "</div>";
+		box.innerHTML = skel("diff", 0, isGit() ? "" : "저장소에서 내용을 받아 견주는 중입니다.");
 		invoke(svn.kind + "_rev_diff", { srv: svn.srv, rel: rel, old: oldSpec, new: newSpec }).then(function (d) {
 			if (key !== K() || (into && svn.selFile !== rel)) return;
 			// 새 쪽이 지금 내 파일일 때만 줄 번호가 편집기의 줄과 맞는다 (두 리비전 사이의 차이는 맞지 않는다)
@@ -5107,7 +5142,7 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 			return '<section class="rv-card" data-p="' + esc(it.path) + '"><div class="rv-ch">' + (it.dir ? ic("folder", "ft prop") : ftIcon(it.path)) + '<span class="p" title="' + esc(it.path) + '">' + nameHtml(pp[1] || it.path) + (pp[0] ? " <i>" + esc(pp[0]) + "</i>" : "") + "</span>" +
 				(o.marks[it.path] ? '<span class="crit">충돌 표시</span>' : o.changed[it.path] ? '<span class="warn">검토 뒤 바뀜</span>' : "") +
 				statHtml((svn.stats[K()] || {})[it.path]) + '<span class="code ' + esc(it.code) + '">' + esc(it.code) + "</span>" +
-				(impliedBy(st, ck, it.path) ? "" : '<button class="btn sm ghost" data-out="' + esc(it.path) + '">이번에서 빼기</button>') + '</div><div class="rv-body">' + (d ? diffBody(d) : '<div class="empty">Diff 를 읽는 중...</div>') + "</div></section>";
+				(impliedBy(st, ck, it.path) ? "" : '<button class="btn sm ghost" data-out="' + esc(it.path) + '">이번에서 빼기</button>') + '</div><div class="rv-body">' + (d ? diffBody(d) : skel("code", 6)) + "</div></section>";
 		}).join("");
 		rvShell(['<div class="side-head"><b>이번 Commit ' + n + "개</b></div>", tree],
 			'<div class="commit-box" id="rvMsg"></div>',
