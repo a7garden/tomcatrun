@@ -840,6 +840,44 @@ struct ServerEdit {
     parameters: bool,
 }
 
+/// 기동 옵션의 기본값 — 상태 표시줄이 「기본과 다른 것만」 칩으로 보이려고 견준다.
+/// 화면에 같은 값을 따로 적어 두면 여기를 바꿀 때 어긋나므로 Config::default 에서 꺼내 보낸다 (2026-11-18)
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OptDefaults {
+    mapper_hotswap: bool,
+    heap_mb: u32,
+    fast_jvm: bool,
+    skip_scan: bool,
+    stagger_start: bool,
+    profile_start: bool,
+    small_pool: bool,
+    no_schedule: bool,
+    lazy_init: bool,
+    keep_session: bool,
+}
+
+fn opt_defaults() -> OptDefaults {
+    // 상태를 그릴 때마다 부르므로 한 번만 만든다 (Config::default 는 경로를 짓는다)
+    static D: std::sync::OnceLock<OptDefaults> = std::sync::OnceLock::new();
+    D.get_or_init(|| {
+        let c = Config::default();
+        OptDefaults {
+            mapper_hotswap: c.mapper_hotswap,
+            heap_mb: c.heap_mb,
+            fast_jvm: c.fast_jvm,
+            skip_scan: c.skip_scan,
+            stagger_start: c.stagger_start,
+            profile_start: c.profile_start,
+            small_pool: c.small_pool,
+            no_schedule: c.no_schedule,
+            lazy_init: c.lazy_init,
+            keep_session: c.keep_session,
+        }
+    })
+    .clone()
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Snapshot {
@@ -857,6 +895,7 @@ struct Snapshot {
     mapper_hotswap: bool,
     keep_session: bool,
     profile_start: bool,
+    defaults: OptDefaults,
     ignore: Vec<String>,
     paths: Paths,
     update_check: bool,
@@ -1403,6 +1442,7 @@ fn snapshot_with(app: &AppHandle, full: bool) -> Snapshot {
         mapper_hotswap: c.mapper_hotswap,
         keep_session: c.keep_session,
         profile_start: c.profile_start,
+        defaults: opt_defaults(),
         ignore: c.ignore.clone(),
         paths: Paths {
             tomcat_home: c.tomcat_home.clone(),

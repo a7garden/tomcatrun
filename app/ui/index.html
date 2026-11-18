@@ -162,7 +162,7 @@ body.blur .tb-icon { opacity: .5; }
 .srv-state { color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
 .srv[data-st=running] .srv-state { color: var(--ok); }
 .srv[data-st=starting] .srv-state, .srv[data-st=stopping] .srv-state { color: var(--text); }
-.srv-meta { grid-column: 1; color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-left: 17px; }
+.srv-meta { grid-column: 1; min-height: 1.55em; color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-left: 17px; }   /* 비어도 한 줄 높이 — 켜고 끌 때 카드가 줄었다 늘었다 했다 */
 .srv-meta b { color: var(--text); font-weight: 600; }
 .srv-meta .sep { color: var(--faint); margin: 0 6px; }
 .srv-acts { grid-column: 2; grid-row: 1 / 3; display: flex; gap: 6px; }
@@ -180,6 +180,7 @@ body.blur .tb-icon { opacity: .5; }
 .alert.crit { background: var(--crit-weak); color: var(--crit); }
 /* 2026-10-29 : 제안 · 새 판은 상태 색 없이 판 색으로 — 문제가 아니므로 호박 · 초록이 「손볼 일」과 같은 말을 하지 않게 */
 .alert.hint { background: var(--panel); color: var(--muted); }
+.alert.more.has-warn > .ic { color: var(--warn); }
 /* 한 줄로 말줄임한다 — 줄이 두 줄로 늘면 알림이 여럿일 때 반영 기록이 밀린다. 전체 문장은 title 과 「자세히」에 있다 */
 .alert-text { min-width: 0; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .alert-text b { font-weight: 600; }
@@ -627,9 +628,11 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .svn-diff .empty { font-family: var(--ui); }
 /* 스켈레톤 (2026-11-18) — 버전 관리가 svn · git 을 읽는 동안 올 모양(파일 줄 · 커밋 줄 · Diff 줄)을 회색 막대로 먼저 그린다.
    「읽는 중...」 한 줄만 있으면 어디에 무엇이 올지 몰라 화면이 비어 보였다. 움직임은 투명도만 (화면 엔진 GPU 를 끈 채라 가볍게) */
-.sk { display: block; height: 10px; border-radius: 3px; background: var(--panel-2); animation: sk 1.4s ease-in-out infinite; }
-@keyframes sk { 50% { opacity: .45; } }
-@media (prefers-reduced-motion: reduce) { .sk { animation: none; } }
+.sk { display: block; height: 10px; border-radius: 3px; background: var(--panel-2); }
+/* 깜빡임은 막대를 감싼 덩어리 하나에만 — 이 화면 엔진은 GPU 합성을 꺼 두어(tauri.conf.json) 막대 40개가 따로 돌면 매 프레임 소프트웨어로 다시 그린다 */
+.sk-body { animation: sk 2.4s ease-in-out infinite; }
+@keyframes sk { 50% { opacity: .5; } }
+@media (prefers-reduced-motion: reduce) { .sk-body { animation: none; } }
 .sk-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .skel-note { padding: 10px 14px 4px; color: var(--muted); font: 12px var(--ui); }
 .sk-row.f { display: grid; grid-template-columns: 14px 15px minmax(0, 1fr) 30px; gap: 0 6px; align-items: center; min-height: 26px; padding: 2px 10px; }
@@ -834,7 +837,7 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 .statusbar .sb-item { display: inline-flex; align-items: center; gap: 4px; padding: 0 7px; color: var(--text); background: var(--panel-2); }
 .statusbar .sb-item:hover { background: var(--line-soft); }
 .sb-item .ic { width: 12px; height: 12px; color: var(--muted); stroke-width: 2.2; }
-.statusbar .sb-item.off { color: var(--faint); background: none; text-decoration: line-through; }
+.statusbar .sb-item.off { color: var(--muted); background: none; box-shadow: inset 0 0 0 1px var(--line); }   /* 꺼짐 — 지운 줄 대신 글로 말하고 테두리만 */
 .sb-item b { font-weight: 600; font-family: var(--mono); }
 #sbMem { display: inline-flex; align-items: center; gap: 4px; flex: none; }
 #sbMem b { color: var(--text); font-weight: 600; font-family: var(--mono); margin-right: 6px; }
@@ -1321,7 +1324,7 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 			for (k = 0; k < n; k++) out += '<div class="sk-line"><i class="sk no"></i><i class="sk" style="margin-left:' + SK_IND[k % SK_IND.length] * 16 + 'px;width:calc(' + w(k + 5) + ' - ' + SK_IND[k % SK_IND.length] * 16 + 'px)"></i></div>';
 			out += "</div>";
 		}
-		return '<div class="skel" role="status">' + (note ? '<div class="skel-note">' + esc(note) + "</div>" : '<span class="sk-sr">읽는 중</span>') + out + "</div>";
+		return '<div class="skel" role="status">' + (note ? '<div class="skel-note">' + esc(note) + "</div>" : '<span class="sk-sr">읽는 중</span>') + '<div class="sk-body">' + out + "</div></div>";
 	}
 	function fmtDur(ms) {
 		var s = Math.max(0, Math.floor(ms / 1000)), h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60);
@@ -1781,7 +1784,7 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 				text: "<b>" + who(g) + " · 같은 jar 다른 판 " + libs.length + "종</b>" +
 					'<span class="sub">' + esc(libs.slice(0, 3).join(" · ") + (libs.length > 3 ? " 외" : "")) + (how ? " · " + esc(how) : "") + "</span>",
 				lines: g.list[0].sv.dedup.lines,
-				acts: (movable.length ? [["겹친 판 치우기", "primary", !idle, function () { movable.forEach(function (x) { dedupCall(x.i, "dedup_deps"); }); }]] : [])
+				acts: (movable.length ? [["겹친 판 치우기 (" + movable.reduce(function (a, x) { return a + x.sv.dedup.movable; }, 0) + ")", "primary", !idle, function () { movable.forEach(function (x) { dedupCall(x.i, "dedup_deps"); }); }]] : [])
 					.concat([["상태 보기", "", false, function () { go("status"); }]]) });
 		});
 		// 이클립스와 다른 자바로 뜬다 — 「 — 」 앞이 요약, 뒤가 할 일. 핫리로드 모드면 끄는 단추를 붙인다 (끄면 이클립스와 같은 자바로 뜬다)
@@ -1995,7 +1998,8 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 		var main = rows.filter(function (r) { return !r.aside; }), side = rows.filter(function (r) { return r.aside; });
 		var keep = Math.max(ALERT_ROWS, main.filter(function (r) { return r.lv === "crit"; }).length);
 		var over = main.slice(keep), hidden = over.concat(side);
-		if (hidden.length === 1) hidden = [];
+		// 넘친 알림 하나만 남으면 펼친다 (요약 줄과 높이가 같다). 참고는 하나여도 접는다 — 개수에 따라 같은 경고가 노란 줄이 됐다 말았다 했다
+		if (hidden.length === 1 && !side.length) hidden = [];
 		var shown = hidden.length && !alertsAll ? main.slice(0, keep) : main.concat(side);
 
 		var box = $("alerts");
@@ -2004,7 +2008,8 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 		// 접어 둔 알림 — 무엇이 접혀 있는지 이름만 한 줄로
 		if (hidden.length) {
 			var more = document.createElement("div");
-			more.className = "alert more";
+			// 접힌 것 가운데 주의(warn) 가 있으면 아이콘만 호박색 — 바탕은 무채색으로 두어 참고가 지금 손볼 일처럼 보이지 않게
+			more.className = "alert more" + (hidden.some(function (r) { return r.lv !== "hint"; }) ? " has-warn" : "");
 			more.setAttribute("role", "status");
 			more.innerHTML = ic("more") + '<div class="alert-text"></div><div class="alert-acts"></div>';
 			more.querySelector(".alert-text").textContent = alertsAll ? "알림 " + rows.length + "개를 모두 펼쳤습니다"
@@ -2170,14 +2175,15 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 	function checkHtml(list, sv) {
 		var bad = list.filter(function (c) { return !c.ok || c.warn; }), good = list.filter(function (c) { return c.ok && !c.warn; });
 		var sum = good.length > 1 ? '<li class="ok-sum" role="button" tabindex="0" title="정상 항목 펼치기 · 접기">' + ic("check") + "<span>정상 " + good.length + "개</span><small>" + esc(good.map(function (c) { return c.label; }).join(" · ")) + "</small></li>" : "";
-		return checkLis(bad, sv) + sum + (sum ? checkLis(good, sv).replace(/<li class="/g, '<li class="okrow ') : checkLis(good, sv));
+		return checkLis(bad, sv) + sum + checkLis(good, sv, sum ? "okrow " : "");
 	}
-	function checkLis(list, sv) {
+	// pre : 줄 class 앞에 붙일 것 (접어 둔 정상 줄은 「okrow 」)
+	function checkLis(list, sv, pre) {
 		return list.map(function (c) {
 			// 값이 경로인 항목은 우클릭으로 탐색기 · 경로 복사
 			var path = /^[A-Za-z]:[\\\/]/.test(c.detail) ? ' data-path="' + esc(c.detail) + '"' : "";
 			var cls = (!c.ok ? "bad" : c.warn ? "warn" : "") + (c.detail.indexOf("\n") >= 0 ? " pre" : "");
-			return '<li class="' + cls + '"' + path + ">" + ic(!c.ok ? "error" : c.warn ? "warn" : "check") + "<span>" + esc(c.label) + "</span><small>" + esc(c.detail) + "</small>" +
+			return '<li class="' + (pre || "") + cls + '"' + path + ">" + ic(!c.ok ? "error" : c.warn ? "warn" : "check") + "<span>" + esc(c.label) + "</span><small>" + esc(c.detail) + "</small>" +
 				(sv ? checkAct(c, sv) : "") + "</li>";
 		}).join("");
 	}
@@ -2205,32 +2211,35 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 
 	/* ---------- 상태 표시줄 — 켜진 설정만 묶음별 칩으로 ---------- */
 
-	// 핫리로드 · 저장하면 컴파일은 이 도구의 핵심이라 꺼져 있어도 지운 줄로 남긴다. 나머지는 켜진 것만.
+	// 2026-11-18 : 켜진 옵션을 다 늘어놓아 거의 안 바꾸는 칩 7~9개가 늘 깔려 있었다. 핵심 둘(핫리로드 · 저장하면 컴파일)만 늘 두고,
+	//              나머지는 기본값과 다를 때만 보인다. 기본값은 실행기가 상태와 함께 보낸다(defaults · Config::default).
+	//              칩 이름은 설정 화면의 이름을 그대로 줄여 쓰고, 꺼진 것은 지운 줄 대신 「꺼짐」 · 실제 값으로 적는다 —
+	//              「DB 연결 1개」 에 줄을 그으면 「1개가 아니다」인지 「고장」인지 읽히지 않았다. 칩에 마우스를 올리면 설정의 설명이 보인다
+	function optTip(id) {
+		var el = $(id), lb = el && el.closest("label");
+		return lb ? lb.textContent.trim() + (lb.title ? "\n" + lb.title : "") + "\n누르면 설정의 그 칸으로 갑니다" : "";
+	}
 	function renderStatusbar() {
 		if (!state) return;
-		var s = state;
+		var s = state, def = s.defaults || {};
 		var chip = function (id, label, on) {
-			return '<button class="sb-item' + (on === false ? " off" : "") + '" data-opt="' + id + '">' + (on === true ? ic("check") : "") + label + "</button>";
+			return '<button class="sb-item' + (on === false ? " off" : "") + '" data-opt="' + id + '" title="' + esc(optTip(id)) + '">' + (on === true ? ic("check") : "") + label + "</button>";
 		};
-		// 2026-11-18 : 켜진 옵션을 다 늘어놓아 거의 안 바꾸는 칩 7~9개가 늘 깔려 있었다. 핵심 둘만 늘 두고, 나머지는 기본값과 다를 때만 보인다
-		//              (기본값은 실행기 Config::default 와 같다 · 그쪽을 바꾸면 여기도 고친다). 꺼서 기본과 달라진 것은 지운 줄로.
-		var DEF = { mapperHotswap: false, heapMb: 1536, fastJvm: true, skipScan: false, staggerStart: true, profileStart: false,
-			smallPool: true, noSchedule: false, lazyInit: false, keepSession: true };
-		var diff = function (k) { return s[k] !== DEF[k]; };
-		var core = chip("optHot", "핫리로드", s.hotReload) +
-			chip("optAuto", "저장하면 컴파일" + (s.autoCompile ? " <b>" + (s.compiler === "ecj" ? "ECJ" : "javac") + "</b>" : ""), s.autoCompile);
+		var diff = function (k) { return k in def && s[k] !== def[k]; };
+		var core = (s.hotReload ? chip("optHot", "핫리로드", true) : chip("optHot", "핫리로드 꺼짐", false)) +
+			(s.autoCompile ? chip("optAuto", "저장하면 컴파일 <b>" + (s.compiler === "ecj" ? "ECJ" : "javac") + "</b>", true) : chip("optAuto", "저장하면 컴파일 꺼짐", false));
 		var extra = [
-			diff("mapperHotswap") ? chip("optMapper", "매퍼 하나만") : "",
-			s.debug ? chip("optDebug", "디버거 <b>" + s.servers.map(function (sv) { return sv.debugPort; }).join(" · ") + "</b>") : "",
-			diff("heapMb") ? chip("selHeap", s.heapMb ? "힙 <b>" + fmtMb(s.heapMb) + "</b>" : "힙 상한 없음") : "",
-			diff("fastJvm") ? chip("optFast", "빠른 JVM", false) : "",
-			diff("skipScan") ? chip("optSkipScan", "클래스 탐색 건너뜀") : "",
-			diff("staggerStart") ? chip("optStagger", "차례 기동", false) : "",
-			diff("profileStart") ? chip("optProfile", "기동 표본") : "",
-			diff("smallPool") ? chip("optPool", "DB 연결 1개", false) : "",
-			diff("noSchedule") ? chip("optSchedule", "예약 작업 멈춤") : "",
-			diff("lazyInit") ? chip("optLazy", "지연 초기화") : "",
-			diff("keepSession") ? chip("optSession", "로그인 유지", false) : ""
+			diff("mapperHotswap") ? (s.mapperHotswap ? chip("optMapper", "매퍼 하나만 다시 읽기") : chip("optMapper", "매퍼 하나만 다시 읽기 꺼짐", false)) : "",
+			s.debug ? chip("optDebug", "디버거 연결 <b>" + s.servers.map(function (sv) { return sv.debugPort; }).join(" · ") + "</b>") : "",
+			diff("heapMb") ? chip("selHeap", s.heapMb ? "힙 상한 <b>" + fmtMb(s.heapMb) + "</b>" : "힙 상한 없음") : "",
+			diff("fastJvm") ? chip("optFast", "빠른 기동 JVM 옵션 " + (s.fastJvm ? "켜짐" : "꺼짐"), s.fastJvm ? undefined : false) : "",
+			diff("skipScan") ? chip("optSkipScan", (s.skipScan ? "클래스 전체 탐색 건너뜀" : "탐색 건너뛰기 꺼짐"), s.skipScan ? undefined : false) : "",
+			diff("staggerStart") ? chip("optStagger", "차례로 띄우기 " + (s.staggerStart ? "켜짐" : "꺼짐"), s.staggerStart ? undefined : false) : "",
+			diff("profileStart") ? chip("optProfile", "기동 표본 남기기 " + (s.profileStart ? "켜짐" : "꺼짐"), s.profileStart ? undefined : false) : "",
+			diff("smallPool") ? chip("optPool", "DB 연결 미리 열기 <b>" + (s.smallPool ? "1개" : "20개") + "</b>") : "",
+			diff("noSchedule") ? chip("optSchedule", s.noSchedule ? "예약 작업 멈춤" : "예약 작업 멈추기 꺼짐", s.noSchedule ? undefined : false) : "",
+			diff("lazyInit") ? chip("optLazy", "지연 초기화 " + (s.lazyInit ? "켜짐" : "꺼짐"), s.lazyInit ? undefined : false) : "",
+			diff("keepSession") ? chip("optSession", "로그인 유지 " + (s.keepSession ? "켜짐" : "꺼짐"), s.keepSession ? undefined : false) : ""
 		].join("");
 		var html = '<span class="sb-group">' + core + "</span>" + (extra ? '<span class="sb-group">' + extra + "</span>" : "");
 		// 메모리가 올 때마다 불리므로 바뀐 때만 다시 그린다 (누르는 중에 단추가 바뀌지 않게)
@@ -2885,7 +2894,8 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 		if (l.kind === "hot" || l.kind === "live") return l.src !== "tomcat";
 		// 톰캣의 「Server startup in」 은 실행기가 단계별로 다시 남기므로 한 번만 보인다
 		if (l.kind === "ok") return l.src !== "tomcat";
-		// 2026-11-18 : 실행기를 켤 때마다 쌓이는 준비 줄(설정 파일 · 저장 감시 시작)은 반영이 아니다 — 서버 로그에만 남는다
+		// 2026-11-18 : 실행기를 켤 때마다 쌓이는 준비 줄(설정 파일 · 저장 감시 시작)은 반영이 아니다.
+		//              저장 감시 줄은 그 서버 로그에 남고, 설정 파일 줄(서버 없음)은 어디에도 남지 않는다 — 경로는 상태 탭 「설정 파일」 단추가 연다
 		if (l.src === "app" && !l.kind && /^(설정 파일: |저장 감시 중: )/.test(l.text)) return false;
 		if (l.src === "app") return true;
 		if (l.src === "deps") return /^의존 jar/.test(l.text);
@@ -2967,6 +2977,8 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 			b.onclick = function (ev) { ev.stopPropagation(); closeMenu(); items[+b.getAttribute("data-k")].run(); };
 		});
 		menu._form = false;
+		menu.setAttribute("role", "menu");
+		menu.removeAttribute("aria-label");
 		placeMenu(at);
 		var first = menu.querySelector("button:not(:disabled)");
 		if (first) first.focus();
@@ -2990,7 +3002,7 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 		menu._for = btn;
 		menuAt = at;
 	}
-	function closeMenu() { menu.hidden = true; menu._for = null; menu._form = false; }
+	function closeMenu() { menu.hidden = true; menu._for = null; menu._form = false; menu.setAttribute("role", "menu"); menu.removeAttribute("aria-label"); }
 
 	// 바로가기 추가 — 메뉴 자리에서 이름 · 주소를 적어 바로 저장한다 (2026-11-18)
 	function addLinkItem(i) { return { label: "바로가기 추가", icon: "plus", run: function () { openLinkForm(menuAt, i); } }; }
@@ -3028,6 +3040,8 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 			});
 		};
 		menu._form = true;
+		menu.setAttribute("role", "dialog");
+		menu.setAttribute("aria-label", "바로가기 추가 · " + sv.name);
 		placeMenu(at);
 		menu._for = at.nodeType ? at : null;
 		url.focus();
@@ -4681,10 +4695,14 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 		$("svnDoCommit").querySelector("span").textContent = n ? "Commit " + n + "개 → " + where : "Commit";
 		$("svnDoCommit").disabled = !!why;
 		$("svnCopyCmd").disabled = !!why;   // 쓰기를 끈 서버는 잠금 · 판 검사를 거치지 않으므로 파일 · 메시지 · 충돌만 남는다
-		// 메시지가 비었다는 까닭은 띄우지 않는다 — 바로 위 칸의 안내 글이 같은 말이고, 파일을 고르자마자 떠 있었다 (2026-11-18)
-		$("svnWhy").textContent = why === MSG_WHY ? "" : why;
-		$("svnWhy").hidden = !why || why === MSG_WHY;
+		// 메시지가 비었다는 까닭은 칸을 비운 채 떠난 뒤에만 줄로 보인다 — 파일을 고르자마자 떠 있으면 아직 적지도 않았는데 꾸중처럼 보였다.
+		// 그 전에도 단추가 왜 잠겼는지는 단추에 마우스를 올리면 보인다 (2026-11-18)
+		var quiet = why === MSG_WHY && !svn.msgLeft;
+		$("svnDoCommit").title = why;
+		$("svnWhy").textContent = quiet ? "" : why;
+		$("svnWhy").hidden = !why || quiet;
 	}
+	$("svnMsg").addEventListener("blur", function () { svn.msgLeft = !commitMsg(); commitState(); });
 	$("svnMsg").addEventListener("input", function () { saveDraft(); commitState(); clearTimeout(msgCheck.t); msgCheck.t = setTimeout(function () { if (rv && rv.type === "commit") rvMsgCheck(rv); else msgCheck(); }, 250); });
 	$("svnDesc").addEventListener("input", function () {
 		saveDraft(); commitState(); $("svnDesc").classList.toggle("has", !!$("svnDesc").value);
