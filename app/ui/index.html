@@ -128,7 +128,7 @@ input[type=checkbox]:disabled { opacity: .5; cursor: default; }
 /* ---------- 제목 줄 ----------
    2026-10-28 : Windows 기본 제목 줄을 끄고(tauri.conf.json decorations:false) 화면과 같은 판으로 그린다.
    끌기 · 두 번 눌러 최대화는 Tauri 의 data-tauri-drag-region, 가장자리 크기 조절은 Tauri 가 창 쪽에서 맡는다.
-   지금 문제는 바로 아래 알림 줄에 있으므로 여기에는 이름만 둔다 (작업 표시줄 제목에는 그대로 붙는다). */
+   지금 문제는 바로 아래 알림 줄에 있으므로 제목 줄에 되풀이하지 않는다 (작업 표시줄 제목에는 붙는다). */
 /* 2026-10-28 : docket 제목 줄에 맞춘다 — 36px · 한 단 낮은 판(--side) · 이름 12.5px 600 · 창 단추 44px. */
 /* 2026-11-18 : 탭 줄을 제목 줄로 올렸다. 제목 줄에 아이콘 · 이름만 있어 36px 이 비어 있었고, 그 아래 38px 탭 줄이 따로 있었다.
    이름 · 판은 아이콘에 마우스를 올리면 보인다 (작업 표시줄 제목은 그대로). 창은 아이콘 칸과 탭 사이 빈 칸으로 끈다. */
@@ -203,12 +203,17 @@ body.blur .tb-icon { opacity: .5; }
 .alert-items .fix { color: var(--warn); }
 
 /* ---------- 탭 ---------- */
-/* 2026-11-18 : 제목 줄 안으로 옮겼다 (높이 · 바탕 · 밑선은 제목 줄 것). 탭은 줄지 않고, 창이 좁아 넘치면 빈 칸부터 줄어든다. */
+/* 2026-11-18 : 제목 줄 안으로 옮겼다 (높이 · 바탕 · 밑선은 제목 줄 것).
+   창이 좁거나 서버가 많아 넘치면 서버 로그 탭만 이름을 말줄임으로 줄인다. 「설정」은 탭 줄 밖 창 단추 옆에 두고,
+   빈 칸은 24px 아래로 줄지 않는다 — 그러지 않으면 서버 세 대 · 820px 에서 「설정」이 잘리고 창을 끌 자리가 사라졌다. */
 /* 밑으로 1px 내려 고른 탭 밑줄이 제목 줄 밑선 자리에 겹친다 (overflow:hidden 이 밑줄을 자르지 않게 줄째 내린다). */
 .tabs { flex: 1; min-width: 0; display: flex; align-items: stretch; overflow: hidden; margin-bottom: -1px; }
-.tabs .gap { flex: 1; min-width: 24px; }
+.tabs .gap { flex: 1 0 24px; }
 .tabs .tab { flex: none; margin-bottom: 0; }
-.tabs .tab:last-child { margin-right: 4px; }
+.tabs .tab.shrink { flex: 0 1 auto; min-width: 64px; }
+.tab .tl { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.tab .n, .tab .ic { flex: none; }
+.titlebar > .tab { flex: none; margin: 0 4px -1px 0; }   /* 탭과 같이 1px 내려 글자 높이를 맞춘다 */
 .tab {
 	display: inline-flex; align-items: center; gap: 6px; padding: 0 12px; margin-bottom: -1px;
 	border: 0; border-bottom: 2px solid transparent; background: none; cursor: pointer;
@@ -1357,9 +1362,8 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 		addTab("build", "빌드");
 		addTab("svn", "버전 관리");
 		addTab("status", "상태");
-		// 설정은 탭이 아니라 모달이다 — 탭 줄 오른쪽 끝에 여는 단추만 둔다
-		addTab("settings", "설정", true, "sliders");
-		var setBtn = $("tabs").lastChild;
+		// 설정은 탭이 아니라 모달이다 — 제목 줄 창 단추 옆에 여는 단추만 둔다 (탭이 넘쳐도 잘리지 않게 탭 줄 밖 · 2026-11-18)
+		var setBtn = addTab("settings", "설정", true, "sliders");
 		setBtn.setAttribute("role", "button");
 		setBtn.title = "설정 (Ctrl+,)";
 		setBtn.onclick = function () { openSettings(); };
@@ -1399,11 +1403,12 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 		["servers", "buildCtl", "evSrv", "folders", "svnSrv"].forEach(function (id) { $(id).textContent = ""; });
 		var ck = $("srvChecks");
 		while (ck.children.length > 1) ck.removeChild(ck.lastChild);   // 첫 칸은 「공통」
-		[].slice.call($("tabs").querySelectorAll(".tab")).forEach(function (b) { b.remove(); });
+		[].slice.call($("titlebar").querySelectorAll(".tab")).forEach(function (b) { b.remove(); });   // 설정 단추도 탭 줄 밖에 있다
 		build(s);
 	}
 
-	// right : 탭 줄 오른쪽 끝에 둔다 (설정 단추)
+	// right : 탭 줄 밖, 제목 줄의 창 단추 바로 앞에 둔다 (설정 단추)
+	// 서버 로그 탭은 이름이 사용자 것이라 길 수 있다 — 넘치면 이 탭만 말줄임으로 줄이고 전체 이름은 title 로 보인다
 	function addTab(name, label, right, icon) {
 		var isLog = name === "events" || name === "build" || /^srv/.test(name);
 		if (isLog && !store[name]) { store[name] = []; unread[name] = 0; unreadErr[name] = false; }
@@ -1411,10 +1416,12 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 		b.className = "tab";
 		b.setAttribute("role", "tab");
 		b.setAttribute("data-tab", name);
-		b.innerHTML = (icon ? ic(icon) : "") + esc(label) + '<span class="n"></span>';
+		if (/^srv/.test(name)) { b.classList.add("shrink"); b.title = label; }
+		b.innerHTML = (icon ? ic(icon) : "") + '<span class="tl">' + esc(label) + '</span><span class="n"></span>';
 		b.onclick = function () { go(name); };
-		var gap = $("tabs").querySelector(".gap");
-		if (right) $("tabs").appendChild(b); else $("tabs").insertBefore(b, gap);
+		if (right) $("titlebar").insertBefore(b, $("tbMin"));
+		else $("tabs").insertBefore(b, $("tabs").querySelector(".gap"));
+		return b;
 	}
 
 	function go(name) {
