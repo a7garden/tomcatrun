@@ -44,10 +44,19 @@ jobs:
           path: bin
           key: runtime-${{ hashFiles('installer/fetch.sh') }}
 
+      # 2026.11.18 : Chocolatey 저장소가 응답하지 않아도 choco 는 「0/0 packages」 를 찍고 0 으로 끝난다.
+      #              그래서 v0.30.0 이 NSIS 없이 Rust 빌드까지 4분을 돈 뒤 installer/build.sh 에서 멈췄다 — 세 번 다시 받고, 없으면 여기서 멈춘다
       - name: NSIS
         run: |
-          if [ ! -f "/c/Program Files (x86)/NSIS/makensis.exe" ]; then
-            choco install nsis -y --no-progress
+          exe="/c/Program Files (x86)/NSIS/makensis.exe"
+          for n in 1 2 3; do
+            [ -f "$exe" ] && break
+            choco install nsis -y --no-progress || true
+            [ -f "$exe" ] || sleep $((n * 20))
+          done
+          if [ ! -f "$exe" ]; then
+            echo "::error::NSIS 를 설치하지 못했습니다 (Chocolatey 저장소 응답 없음). 잠시 뒤 실패한 작업만 다시 돌리세요."
+            exit 1
           fi
           echo "MAKENSIS=C:/Program Files (x86)/NSIS/makensis.exe" >> "$GITHUB_ENV"
 
