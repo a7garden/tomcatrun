@@ -4232,6 +4232,33 @@ fn set_server(app: AppHandle, srv: usize, edit: ServerEdit) -> Result<bool, Stri
     Ok(c.1)
 }
 
+// 바로가기 하나를 끝에 더한다 — 서버 줄 「바로가기」 메뉴의 「바로가기 추가」가 부른다 (2026-11-18).
+// set_server 로 보내면 설정 칸 전체(포트 · 인코딩 …)를 함께 다시 써야 해서 따로 둔다.
+#[tauri::command]
+fn add_link(app: AppHandle, srv: usize, label: String, url: String) -> Result<(), String> {
+    check_srv(&app, srv)?;
+    let url = url.trim().to_string();
+    if url.is_empty() {
+        return Err("바로가기 주소를 적으세요.".into());
+    }
+    if !(url.starts_with('/') || url.starts_with("http://") || url.starts_with("https://")) {
+        return Err(format!("주소는 「/」 또는 http:// · https:// 로 시작해야 합니다: {url}"));
+    }
+    let c = {
+        let mut c = shared(&app).cfg.lock().unwrap();
+        let sv = &mut c.servers[srv];
+        if let Some(l) = sv.links.iter().find(|l| l.url == url) {
+            return Err(format!("이미 있는 바로가기입니다: {}", l.label));
+        }
+        let label = label.trim();
+        sv.links.push(Link { label: if label.is_empty() { url.clone() } else { label.to_string() }, url });
+        c.clone()
+    };
+    save_config(&c).map_err(|e| format!("설정을 저장하지 못했습니다: {e}"))?;
+    emit_state(&app);
+    Ok(())
+}
+
 // 서버를 더한다 — 실행 상태 · 컴파일 줄을 함께 늘려 바로 보인다. 저장 감시는 프로젝트 폴더를 정하면 걸린다.
 #[tauri::command]
 fn add_server(app: AppHandle) -> Result<(), String> {
@@ -6420,7 +6447,7 @@ fn main() {
             get_state, start, stop, restart, quit, compile, refresh_deps, set_option, set_heap, set_compiler, set_ignore, open, reveal, open_source,
             svn_status, svn_diff, svn_account, svn_login, svn_logout, svn_incoming, svn_log, svn_rev_diff,
             git_status, git_diff, git_incoming, git_log, git_rev_diff,
-            vcs_commit, vcs_update, vcs_cleanup, vcs_revert, vcs_resolve, vcs_revert_revision, vcs_blame, vcs_conflict, vcs_conflict_diff, svn_op, svn_props, svn_make_patch, vcs_pick_file, set_vcs, set_paths, set_server, add_server, pick_project,
+            vcs_commit, vcs_update, vcs_cleanup, vcs_revert, vcs_resolve, vcs_revert_revision, vcs_blame, vcs_conflict, vcs_conflict_diff, svn_op, svn_props, svn_make_patch, vcs_pick_file, set_vcs, set_paths, set_server, add_server, add_link, pick_project,
             vcs_fetch, vcs_push, git_outgoing, gen_commit_msg, check_commit_msg, vcs_backups, vcs_restore, vcs_stats, vcs_commit_check,
             update_check, update_install, svn_get, changelog, eclipse_scan, eclipse_import, quick_project, pick_dir, auto_deps, dedup_deps, undo_dedup, apply_scan_hint
         ])

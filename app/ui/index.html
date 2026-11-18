@@ -846,12 +846,22 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 	 min-width: 240px; max-width: 520px; max-height: calc(100vh - 16px); overflow: auto; padding: 4px; background: var(--panel);
 	border: 1px solid var(--line-strong); border-radius: 8px; box-shadow: var(--shadow-pop);
 }
-.menu button { display: block; width: 100%; text-align: left; border: 0; background: none; padding: 6px 10px; border-radius: 5px; font: 13px var(--ui); color: var(--text); cursor: pointer; }
-.menu button:hover, .menu button:focus-visible { background: var(--panel-2); outline: none; }
+.menu > button { display: block; width: 100%; text-align: left; border: 0; background: none; padding: 6px 10px; border-radius: 5px; font: 13px var(--ui); color: var(--text); cursor: pointer; }
+.menu > button:hover, .menu > button:focus-visible { background: var(--panel-2); outline: none; }
 /* 2026-10-28 : 우클릭 메뉴의 구분선 · 지금 할 수 없는 항목 (지운 파일의 「편집기로 열기」 등) */
-.menu button:disabled { color: var(--faint); background: none; cursor: default; }
+.menu > button:disabled { color: var(--faint); background: none; cursor: default; }
 .menu hr { border: 0; border-top: 1px solid var(--line-soft); margin: 4px 2px; }
 .menu small { display: block; color: var(--muted); font-family: var(--mono); font-size: 11.5px; overflow-wrap: anywhere; }
+/* 2026-11-18 : 메뉴 항목 앞 아이콘 (「바로가기 추가」) · 항목 단추 규칙을 바로 아래 자식으로 좁혀 안의 입력 판 단추는 .btn 그대로 그린다 */
+.menu > button .ic { width: 14px; height: 14px; vertical-align: -2px; margin-right: 6px; color: var(--muted); }
+/* 바로가기 추가 판 — 메뉴 자리에서 바로 적는다. 주소 아래에 실제로 열 주소를 미리 보인다 */
+.menu-form { display: grid; gap: 6px; width: 340px; padding: 6px; }
+.menu-form .mf-title { font-weight: 600; font-size: 12.5px; }
+.menu-form .mf-title span { color: var(--muted); font-weight: 400; }
+.menu-form input { width: 100%; }
+.menu-form .mf-to { min-height: 16px; }
+.menu-form .mf-err { color: var(--crit); font-family: var(--ui); }
+.menu-form .mf-acts { display: flex; justify-content: flex-end; gap: 6px; margin-top: 2px; }
 .toast {
 	position: fixed; right: 16px; bottom: 40px; z-index: 26; display: flex; align-items: center; gap: 8px;
 	padding: 8px 14px; background: var(--panel); color: var(--text); border-radius: 6px;
@@ -923,6 +933,7 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 	<symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 11v5"/><path d="M12 7.8v.2"/></symbol>
 	<symbol id="i-error" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M9.2 9.2l5.6 5.6M14.8 9.2l-5.6 5.6"/></symbol>
 	<symbol id="i-check" viewBox="0 0 24 24"><path d="M5.5 12.5l4 4 9-9"/></symbol>
+	<symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5.5v13M5.5 12h13"/></symbol>
 	<symbol id="i-x" viewBox="0 0 24 24"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></symbol>
 	<symbol id="i-folder" viewBox="0 0 24 24"><path d="M4 7a1.5 1.5 0 0 1 1.5-1.5h4l2 2h7A1.5 1.5 0 0 1 20 9v8.5a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 17.5z"/></symbol>
 	<symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="10.5" height="10.5" rx="1.5"/><path d="M15 9V6a1.5 1.5 0 0 0-1.5-1.5h-7.5A1.5 1.5 0 0 0 4.5 6v7.5A1.5 1.5 0 0 0 6 15h3"/></symbol>
@@ -1285,7 +1296,6 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 	// 서버 「바로가기」 메뉴 · 서버 칸 우클릭 메뉴가 같이 쓴다
 	function linkItems(i) {
 		var sv = state.servers[i];
-		if (!sv.links.length) return [{ label: "설정에서 바로가기 추가", sub: sv.name + " · 설정 › 서버", run: function () { openSrvForm(i); } }];
 		return sv.links.map(function (l) {
 			var url = linkUrl(sv, l.url);
 			return { label: l.label, sub: url, run: function () { invoke("open", { target: url }); } };
@@ -1316,9 +1326,11 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 			q("start").onclick = function () { hideError(); call("start", { srv: i }); };
 			q("restart").onclick = function () { hideError(); call("restart", { srv: i }); };
 			q("stop").onclick = function () { call("stop", { srv: i }); };
+			// 2026-11-18 : 메뉴 끝 「바로가기 추가」로 그 자리에서 더한다 (전에는 설정 › 서버로 데려갔다). 하나도 없으면 바로 입력 판을 연다
 			q("open").onclick = function (ev) {
 				ev.stopPropagation();
-				openMenu(this, linkItems(i));
+				if (!state.servers[i].links.length) { if (!menu.hidden && menu._for === this) closeMenu(); else openLinkForm(this, i); return; }
+				openMenu(this, linkItems(i).concat([{ sep: true }, addLinkItem(i)]));
 			};
 
 			// 빌드 탭의 서버별 단추 줄
@@ -2860,13 +2872,21 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 		if (btn && !menu.hidden && menu._for === btn) { closeMenu(); return; }
 		menu.innerHTML = items.map(function (it, k) {
 			if (it.sep) return "<hr>";
-			return '<button role="menuitem" data-k="' + k + '"' + (it.disabled ? " disabled" : "") + ">" + esc(it.label) +
+			return '<button role="menuitem" data-k="' + k + '"' + (it.disabled ? " disabled" : "") + ">" + (it.icon ? ic(it.icon) : "") + esc(it.label) +
 				(it.sub ? "<small>" + esc(it.sub) + "</small>" : "") + "</button>";
 		}).join("");
 		[].forEach.call(menu.querySelectorAll("button"), function (b) {
 			// 먼저 닫고 부른다 — 항목이 다음 메뉴를 열 수 있다. 바깥 누르기로 보면 새 메뉴까지 닫히므로 위로 올리지 않는다
 			b.onclick = function (ev) { ev.stopPropagation(); closeMenu(); items[+b.getAttribute("data-k")].run(); };
 		});
+		menu._form = false;
+		placeMenu(at);
+		var first = menu.querySelector("button:not(:disabled)");
+		if (first) first.focus();
+	}
+	// at 자리에 메뉴 판을 띄운다 — openMenu · openLinkForm 이 같이 쓴다
+	function placeMenu(at) {
+		var btn = at.nodeType ? at : null;
 		menu.hidden = false;
 		var w = menu.offsetWidth, h = menu.offsetHeight, top, left;
 		if (btn) {
@@ -2882,19 +2902,59 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 		menu.style.left = Math.max(8, Math.min(left, window.innerWidth - w - 8)) + "px";
 		menu._for = btn;
 		menuAt = at;
-		var first = menu.querySelector("button:not(:disabled)");
-		if (first) first.focus();
 	}
-	function closeMenu() { menu.hidden = true; menu._for = null; }
+	function closeMenu() { menu.hidden = true; menu._for = null; menu._form = false; }
+
+	// 바로가기 추가 — 메뉴 자리에서 이름 · 주소를 적어 바로 저장한다 (2026-11-18)
+	function addLinkItem(i) { return { label: "바로가기 추가", icon: "plus", run: function () { openLinkForm(menuAt, i); } }; }
+	function openLinkForm(at, i) {
+		var sv = state.servers[i];
+		menu.innerHTML =
+			'<form class="menu-form" autocomplete="off">' +
+				'<div class="mf-title">바로가기 추가 <span>· ' + esc(sv.name) + '</span></div>' +
+				'<input type="text" data-l="url" spellcheck="false" placeholder="/경로 또는 http://주소" aria-label="주소">' +
+				'<small class="mf-to"></small>' +
+				'<input type="text" data-l="label" spellcheck="false" placeholder="이름 (비우면 주소)" aria-label="이름">' +
+				'<div class="mf-acts"><button type="button" class="btn sm ghost" data-l="cancel">취소</button><button type="submit" class="btn sm primary">추가</button></div>' +
+			'</form>';
+		var form = menu.firstChild, url = form.querySelector('[data-l="url"]'), label = form.querySelector('[data-l="label"]'), to = form.querySelector(".mf-to");
+		// 「/」 로 적으면 이 서버 포트 · 접속 경로가 붙는다 — 실제로 열 주소를 바로 보인다
+		var preview = function () {
+			var v = url.value.trim();
+			to.className = "mf-to";
+			to.textContent = v ? "→ " + linkUrl(state.servers[i], v) : "「/」로 시작하면 " + linkUrl(state.servers[i], "/") + " 뒤에 붙습니다";
+		};
+		url.oninput = preview;
+		preview();
+		form.querySelector('[data-l="cancel"]').onclick = function () { closeMenu(); };
+		form.onsubmit = function (ev) {
+			ev.preventDefault();
+			var u = url.value.trim(), n = label.value.trim();
+			if (!u) { url.focus(); return; }
+			invoke("add_link", { srv: i, label: n, url: u }).then(function () {
+				closeMenu();
+				showToast("바로가기를 더했습니다 · " + (n || u));
+			}).catch(function (e) {
+				to.className = "mf-to mf-err";
+				to.textContent = String(e);
+				url.focus();
+			});
+		};
+		menu._form = true;
+		placeMenu(at);
+		menu._for = at.nodeType ? at : null;
+		url.focus();
+	}
 	document.addEventListener("click", function (e) { if (!menu.contains(e.target)) closeMenu(); });
-	window.addEventListener("blur", function () { closeMenu(); });
+	// 바로가기 추가 판은 남긴다 — 브라우저에서 주소를 복사해 오는 동안 닫히면 적던 것이 날아간다
+	window.addEventListener("blur", function () { if (!menu._form) closeMenu(); });
 	document.addEventListener("keydown", function (e) {
 		if (e.key === "Escape") {
 			// 판 안에서 연 메뉴가 먼저 닫힌다
 			if (menu.hidden && noticeOpen) { closeNotice(); $("sbBell").focus(); }
 			closeMenu();
 		}
-		if (!menu.hidden && (e.key === "ArrowDown" || e.key === "ArrowUp") && menu.querySelector("button:not(:disabled)")) {
+		if (!menu.hidden && !menu._form && (e.key === "ArrowDown" || e.key === "ArrowUp") && menu.querySelector("button:not(:disabled)")) {
 			var items = [].slice.call(menu.querySelectorAll("button:not(:disabled)")), k = items.indexOf(document.activeElement);
 			k = (k + (e.key === "ArrowDown" ? 1 : items.length - 1)) % items.length;
 			items[k].focus();
@@ -2946,8 +3006,8 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 		if (st === "stopped") out.push({ label: "시작", disabled: sv.depsBusy, run: function () { hideError(); call("start", { srv: i }); } });
 		else out.push({ label: "재시작", disabled: st === "stopping", run: function () { hideError(); call("restart", { srv: i }); } },
 			{ label: "중지", disabled: st === "stopping", run: function () { call("stop", { srv: i }); } });
-		// 바로가기가 없으면 아래 「설정에서 이 서버」 가 같은 곳으로 데려간다
-		if (sv.links.length) out = out.concat([{ sep: true }], linkItems(i).map(function (it) { return { label: "바로가기 · " + it.label, sub: it.sub, run: it.run }; }));
+		// 바로가기들 뒤에 「바로가기 추가」 — 서버 줄 메뉴와 같은 입력 판을 이 자리에 연다
+		out = out.concat([{ sep: true }], linkItems(i).map(function (it) { return { label: "바로가기 · " + it.label, sub: it.sub, run: it.run }; }), [addLinkItem(i)]);
 		return out.concat([{ sep: true },
 			{ label: sv.name + " 로그 보기", run: function () { go("srv" + i); } },
 			{ label: "톰캣 로그 폴더 열기", run: function () { invoke("open", { target: sv.catalinaBase + "/logs" }); } },
@@ -5761,14 +5821,14 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 			return url ? { label: label || url, url: url } : null;
 		}).filter(Boolean);
 	}
-	// 서버 줄 「바로가기」 메뉴가 비어 있을 때 → 설정의 그 서버 칸을 보여 주고 잠깐 테두리를 띄운다
+	// 우클릭 「설정에서 이 서버」 → 설정의 그 서버 칸을 보여 주고 잠깐 테두리를 띄운다
 	function openSrvForm(i) {
 		openSettings("setServers");
 		var box = $("srv" + i);
 		box.scrollIntoView({ block: "center" });
 		box.classList.add("flash");
 		setTimeout(function () { box.classList.remove("flash"); }, 1200);
-		box.querySelector('[data-k="linkAdd"]').focus();
+		box.querySelector('[data-k="name"]').focus();
 	}
 	function srvBuild(s) {
 		$("srvForms").innerHTML = s.servers.map(function (sv, i) {
