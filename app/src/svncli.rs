@@ -151,6 +151,13 @@ pub fn probe(cfg_exe: &str) -> Result<Probe, String> {
     r
 }
 
+/// 이미 알아 둔 결과만 — svn 을 띄우지 않는다. 아직 모르면 None (실행기를 켠 직후 첫 화면이 svn --version 을 기다리지 않게 · 2026-11-18)
+pub fn cached(cfg_exe: &str) -> Option<Result<Probe, String>> {
+    let g = PROBES.lock().unwrap();
+    let (at, r) = g.as_ref()?.get(cfg_exe.trim())?;
+    (r.is_ok() || at.elapsed() < Duration::from_secs(30)).then(|| r.clone())
+}
+
 /// 찾은 결과를 잊는다 — svn 을 받은 직후에 부른다. 잊지 않으면 30초 동안 「찾지 못했습니다」가 남는다
 pub fn forget() {
     *PROBES.lock().unwrap() = None;

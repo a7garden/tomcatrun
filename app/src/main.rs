@@ -617,6 +617,8 @@ struct Shared {
     quitting: AtomicBool, // 닫기를 확인해 톰캣을 끄는 중 — 그 사이 닫기를 또 눌러도 다시 묻지 않는다
     update: Mutex<UpdateState>,
     svn_get: Mutex<SvnGet>,
+    // 무거운 점검(소스 훑기 · jar 목록 · svn --version)을 한 번 끝냈다. 그 전의 상태는 가벼운 점검만 담는다 (warm_checks · 2026-11-18)
+    checks_warm: AtomicBool,
 }
 
 /// svn 받기 — 설정 › 버전 관리의 「svn 받기」 단추가 그린다
@@ -1228,7 +1230,8 @@ fn dedup_snap(s: &ServerCfg, dups: &[jarcheck::Dup]) -> DedupSnap {
     }
 }
 
-fn server_checks(c: &Config, s: &ServerCfg, r: &Rt, dups: &[jarcheck::Dup], aside: &[String]) -> Vec<Check> {
+// full 이 거짓이면 무거운 점검(svn.exe 판 · 기동 탐색)은 빼고 돌려준다 — 실행기를 켠 직후 첫 화면용 (snapshot_with)
+fn server_checks(c: &Config, s: &ServerCfg, r: &Rt, dups: &[jarcheck::Dup], aside: &[String], full: bool) -> Vec<Check> {
     let jars = fs::read_dir(&s.deps_dir)
         .map(|r| r.filter_map(Result::ok).filter(|e| e.path().extension().map_or(false, |x| x == "jar")).count())
         .unwrap_or(0);
@@ -1270,13 +1273,15 @@ fn server_checks(c: &Config, s: &ServerCfg, r: &Rt, dups: &[jarcheck::Dup], asid
         out.push(Check { key: "depsAside", label: "치운 jar", ok: true, detail: d.join("\n"), warn: false });
     }
     // SVN 쓰기를 켠 서버만 — 끈 서버는 svn.exe 가 없어도 된다
-    if s.vcs.write && vcs_kinds(s).contains(&"svn") {
+    if full && s.vcs.write && vcs_kinds(s).contains(&"svn") {
         let block = svn_block(s);
         let detail = block.clone().unwrap_or_else(|| svncli::probe(&s.vcs.svn_exe).map(|p| format!("svn {} · {}", p.version, p.exe)).unwrap_or_default());
         out.push(Check { key: "svn", label: "svn.exe (SVN 쓰기)", ok: block.is_none(), detail, warn: false });
     }
     out.extend(filter_check(s, r));
-    out.extend(scan_check(c, s, r));
+    if full {
+        out.extend(scan_check(c, s, r));
+    }
     // 이클립스와 다르게 도는 것 — 가져올 때 남긴 서버 설정 쪽 + 지금 프로젝트 폴더의 .settings (pom 리소스 필터링은 위 줄이 따로 센다)
     let mut diff = s.eclipse_warnings.clone();
     diff.extend(java_diff(c, s));
@@ -1309,6 +1314,14 @@ fn svn_unready(s: &ServerCfg) -> Option<String> {
 }
 
 fn snapshot(app: &AppHandle) -> Snapshot {
+    snapshot_with(app, shared(app).checks_warm.load(Ordering::Relaxed))
+}
+
+// 2026-11-18 : 실행기를 켤 때 첫 상태가 소스 .java 를 다 읽고(서버마다 0.28초 · 973개) jar 목록을 열고 svn --version 을 띄워
+//              mhms 두 서버에서 0.9초, 부팅 직후 디스크가 차가우면 몇 초 동안 화면이 빈 채 기다렸다.
+//              full 이 거짓이면 그 셋을 빼고 바로 돌려주고, warm_checks 가 뒤에서 채운 뒤 상태를 다시 보낸다.
+//              빼는 동안 svn 쓰기 · Cleanup 은 「확인 중」으로 잠근다 — 판을 모르는 채 열어 두면 옛 svn 으로 쓸 수 있다.
+fn snapshot_with(app: &AppHandle, full: bool) -> Snapshot {
     let c = app.state::<Shared>().cfg.lock().unwrap().clone();
     let servers = c
         .servers
@@ -1319,7 +1332,9 @@ fn snapshot(app: &AppHandle) -> Snapshot {
             // 2026.10.29 : 폴더 · 파일을 읽는 점검을 상태 잠금 밖에서 먼저 한다 — 쥔 채로 읽으면 그동안 로그 읽기 · 컴파일이 기다린다
             let dups = jarcheck::duplicates(&own_lib(&s.project), Path::new(&s.deps_dir));
             let dedup = dedup_snap(s, &dups);
-            let checks = server_checks(&c, s, r, &dups, &dedup.aside);
+            let checks = server_checks(&c, s, r, &dups, &dedup.aside, full);
+            let has_svn = vcs_kinds(s).contains(&"svn");
+            const PROBING: &str = "svn 을 확인하는 중입니다";
             let i = r.inner.lock().unwrap();
             ServerSnap {
                 id: s.id.clone(),
@@ -1357,13 +1372,14 @@ fn snapshot(app: &AppHandle) -> Snapshot {
                 vcs: s.vcs.clone(),
                 vcs_kinds: vcs_kinds(s),
                 vcs_root: vcs_root(s),
-                svn_cli: match svncli::probe(&s.vcs.svn_exe) {
-                    Ok(p) => format!("svn {} · {}", p.version, p.exe),
-                    Err(e) => e,
+                svn_cli: match if full { Some(svncli::probe(&s.vcs.svn_exe)) } else { svncli::cached(&s.vcs.svn_exe) } {
+                    Some(Ok(p)) => format!("svn {} · {}", p.version, p.exe),
+                    Some(Err(e)) => e,
+                    None => PROBING.into(),
                 },
-                svn_block: svn_block(s),
+                svn_block: if full { svn_block(s) } else if s.vcs.write && has_svn { Some(PROBING.into()) } else { None },
                 svn_missing: s.vcs.svn_exe.trim().is_empty() && svncli::locate("").is_none(),
-                cleanup_block: if vcs_kinds(s).contains(&"svn") { svn_unready(s) } else { None },
+                cleanup_block: if !has_svn { None } else if full { svn_unready(s) } else { Some(PROBING.into()) },
                 vcs_busy: r.vcs_busy.load(Ordering::SeqCst),
                 vcs_progress: r.vcs_prog.lock().unwrap().clone(),
                 vcs_log: Some(vcs_log_path(s)).filter(|p| p.is_file()).map(|p| p.to_string_lossy().replace('\\', "/")).unwrap_or_default(),
@@ -1410,6 +1426,13 @@ fn snapshot(app: &AppHandle) -> Snapshot {
         // 제목 줄에 보인다 — Cargo.toml 의 version 한 곳에서 온다
         version: env!("CARGO_PKG_VERSION"),
     }
+}
+
+// 실행기를 켤 때 한 번 — 무거운 점검을 뒤에서 끝내 두고(결과는 서버마다 담아 둔다) 다 갖춘 상태를 다시 보낸다
+fn warm_checks(app: &AppHandle) {
+    let full = snapshot_with(app, true);
+    shared(app).checks_warm.store(true, Ordering::Relaxed);
+    let _ = app.emit("state", full);
 }
 
 fn emit_state(app: &AppHandle) {
@@ -3882,8 +3905,9 @@ fn check_srv(app: &AppHandle, srv: usize) -> Result<(), String> {
     }
 }
 
+// async — 동기 명령은 메인 스레드에서 돌아 그동안 창이 멈춘다 (2026-11-18)
 #[tauri::command]
-fn get_state(app: AppHandle) -> Snapshot {
+async fn get_state(app: AppHandle) -> Snapshot {
     snapshot(&app)
 }
 
@@ -6319,6 +6343,7 @@ fn main() {
         quitting: AtomicBool::new(false),
         update: Mutex::new(UpdateState::default()),
         svn_get: Mutex::new(SvnGet { version: svnget::VERSION, ..Default::default() }),
+        checks_warm: AtomicBool::new(false),
     };
 
     tauri::Builder::default()
@@ -6342,6 +6367,8 @@ fn main() {
             }
             log(&h, None, "app", "", format!("설정 파일: {}", p(&config_path())));
             start_watchers(&h);
+            let h9 = h.clone();
+            thread::spawn(move || warm_checks(&h9));
             let h5 = h.clone();
             thread::spawn(move || warm_daemon(&h5));
             let h7 = h.clone();
