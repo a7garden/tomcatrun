@@ -268,6 +268,11 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .ev.err { background: var(--crit-weak); }
 .ev.warn { background: var(--warn-weak); }
 .ev .t { color: var(--muted); font-size: 12px; }
+/* 2026-11-18 : 앞 줄과 같은 분이면 시 · 분을 흐리게 — 저장은 대개 몇 분 안에 몰려 같은 「16:54」 가 줄마다 되풀이됐다 (markMinutes) */
+.ev.same-min .t .hm { opacity: .35; }
+/* 서버를 하나만 골라 보는 동안 서버 열을 숨긴다 (줄마다 같은 이름) */
+#paneLog.one-srv .ev, #paneLog.one-srv .ev-head { grid-template-columns: 64px 16px minmax(0, 1fr) 64px; }
+#paneLog.one-srv .ev .who, #paneLog.one-srv .ev-head > span:nth-child(2) { display: none; }
 .ev .who { font-size: 12px; color: var(--muted); }
 /* 끝 상태는 모양으로 — ✓ 들어감(무채색 · 정상은 조용히) · ◌ 넣는 중 · △ 재시작해야 · ⊗ 실패. 색은 뒤의 둘에만 */
 .ev .mk { align-self: center; display: inline-flex; width: 14px; height: 14px; }
@@ -422,6 +427,11 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .checks li.pre small { white-space: pre-line; word-break: normal; overflow-wrap: anywhere; }
 .checks li.pre .ic { align-self: start; margin-top: 2px; }
 .check-acts { grid-column: 3; margin-top: 6px; }
+.checks li.okrow { display: none; }
+.checks.ok-open li.okrow { display: grid; }
+.checks li.ok-sum { cursor: pointer; }
+.checks li.ok-sum small { font-family: var(--ui); }
+.checks li.ok-sum:hover span, .checks li.ok-sum:focus-visible span { text-decoration: underline; text-underline-offset: 3px; }
 .checks-sub { margin: 14px 0 4px; font-weight: 600; font-size: 12.5px; }
 .check-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 0 28px; }
 .check-cols .checks-sub { margin-top: 4px; }
@@ -820,7 +830,7 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 .sb-opts { flex: 1; min-width: 0; display: flex; align-items: center; overflow: hidden; }
 .sb-group { display: flex; align-items: center; gap: 4px; flex: none; }
 .sb-group + .sb-group { margin-left: 8px; padding-left: 8px; border-left: 1px solid var(--line); }
-.sb-label { color: var(--faint); font-size: 11px; margin-right: 2px; }
+.sb-label { color: var(--faint); font-size: 11px; margin-right: 2px; }   /* 메모리 칸 이름 (상주 컴파일러 · 실행기) */
 .statusbar .sb-item { display: inline-flex; align-items: center; gap: 4px; padding: 0 7px; color: var(--text); background: var(--panel-2); }
 .statusbar .sb-item:hover { background: var(--line-soft); }
 .sb-item .ic { width: 12px; height: 12px; color: var(--muted); stroke-width: 2.2; }
@@ -1483,6 +1493,8 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 
 	function renderEvSrv() {
 		[].forEach.call($("evSrv").children, function (b) { b.classList.toggle("on", +b.getAttribute("data-s") === evSrv); });
+		// 한 서버만 보거나 서버가 하나뿐이면 줄마다 같은 서버 이름이라 열을 숨긴다 (2026-11-18)
+		$("paneLog").classList.toggle("one-srv", evSrv >= 0 || (state && state.servers.length === 1));
 	}
 
 	/* ---------- 서버 줄 ---------- */
@@ -1499,8 +1511,10 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 			if (st === "starting") text += sv.waiting ? " · 차례 기다림" : sv.startedAtMs ? " · " + fmtDur(now - sv.startedAtMs) : "";
 			if (st === "running" && sv.startedAtMs) text += " · " + fmtDur(now - sv.startedAtMs);
 			card.querySelector('[data-k="state"]').textContent = text;
+			// 2026-11-18 : PID 는 마우스를 올리면 (거의 볼 일이 없다) · 꺼진 서버의 폴더 이름은 서버 이름과 같으면 되풀이하지 않는다
+			card.querySelector('[data-k="state"]').title = sv.pid ? "PID " + sv.pid : "";
 
-			if (st === "stopped") parts.push(esc(baseName(sv.project)));
+			if (st === "stopped" && baseName(sv.project) !== sv.name) parts.push(esc(baseName(sv.project)));
 			var m = memSnap && memSnap.servers[i];
 			if (m && m.privateMb && st !== "stopped") {
 				parts.push('<span title="작업 집합 ' + m.wsMb + "MB · 전용 " + m.privateMb + 'MB">메모리 <b class="num">' + fmtMb(m.privateMb) + "</b></span>");
@@ -1510,7 +1524,6 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 				var tip = (sv.phases || []).map(function (p) { return p.label + " " + (p.ms / 1000).toFixed(1) + "초"; }).join("\n");
 				parts.push('<span title="' + esc(tip) + '">기동 <b class="num">' + (sv.startupMs / 1000).toFixed(1) + "초</b></span>");
 			}
-			if (sv.pid) parts.push('<span class="num">PID ' + sv.pid + "</span>");
 			if (sv.compiling) parts.push("<b>컴파일 중</b>");
 			if (sv.depsBusy) parts.push("<b>의존 jar 받는 중</b>");
 			card.querySelector('[data-k="meta"]').innerHTML = parts.join('<span class="sep">·</span>');
@@ -1726,7 +1739,7 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 				rows.push({ key: "r" + sv.id, sig: pend.map(function (x) { return x.path; }).join("\n"), srv: i, lv: "warn", text: "<b>" + esc(sv.name) + " · 재시작해야 반영되는 변경 " + pend.length + "건</b>" +
 					'<span class="sub mono">' + esc(pend.slice(0, 3).map(function (x) { return baseName(x.path); }).join(", ")) + (pend.length > 3 ? " 외" : "") + "</span>",
 					items: pend,
-					acts: [[sv.name + " 재시작", "warn", sv.status !== "running", function () { hideError(); call("restart", { srv: i }); }]] });
+					acts: [["재시작", "warn", sv.status !== "running", function () { hideError(); call("restart", { srv: i }); }]] });
 			}
 			var deps = depsOf(sv);
 			if (deps && !deps.ok && !sv.depsBusy) {
@@ -1740,27 +1753,45 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 			}
 			// 같은 jar 다른 판 — 시작은 되지만 켜기 전에 눈에 띄게 (설명 첫 줄이 요약이다).
 			// 의존 jar 쪽은 단추로 치우고, 프로젝트 WEB-INF/lib 안의 겹침은 지울 파일을 「자세히」에 적는다
-			var dup = sv.checks.filter(function (c) { return c.key === "depsDup"; })[0], dd = sv.dedup;
-			if (dup) {
-				var dl = dup.detail.split("\n"), idle = sv.status === "stopped" && !sv.depsBusy;
-				var how = [];
-				if (dd.movable) how.push("의존 jar 쪽 " + dd.movable + "개를 치우면 한 판만 올라갑니다" + (idle ? "" : " (서버를 끈 뒤에)"));
-				if (dd.manual) how.push(dd.manual + "종은 프로젝트 WEB-INF/lib 에서 지워야 합니다");
-				rows.push({ key: "dd" + sv.id, sig: dup.detail, lv: "warn", text: "<b>" + esc(sv.name) + " · 같은 jar 다른 판 " + esc(dl[0].split(" · ")[0]) + "</b>" +
-					'<span class="sub">' + esc(dl[0].split(" · ").slice(1).join(" · ")) + " · " + esc(how.join(" · ")) + "</span>",
-					lines: dd.lines,
-					acts: (dd.movable ? [["겹친 판 치우기 (" + dd.movable + ")", "primary", !idle, function () { dedupCall(i, "dedup_deps"); }]] : [])
-						.concat([["상태 보기", "", false, function () { go("status"); }]]) });
-			}
-			// 이클립스와 다른 자바로 뜬다 — 「 — 」 앞이 요약, 뒤가 할 일. 핫리로드 모드면 끄는 단추를 붙인다 (끄면 이클립스와 같은 자바로 뜬다)
-			if (sv.javaDiff) {
-				var jd = sv.javaDiff.split(" — ");
-				rows.push({ key: "j" + sv.id, sig: sv.javaDiff, keep: true, lv: "warn",
-					text: "<b>" + esc(sv.name) + " · " + esc(jd[0]) + "</b>" + '<span class="sub">' + esc(noDash(jd.slice(1).join(" · "))) + "</span>",
-					acts: state.hotReload
-						? [["핫리로드 끄기", "", false, function () { hideError(); call("set_option", { key: "hotReload", value: false }); showToast("핫리로드를 껐습니다 · 다음 기동부터 이클립스와 같은 자바로 뜹니다"); }]]
-						: [["설정 › 서버", "", false, function () { openSettings("setServers"); }]] });
-			}
+		});
+		// 2026-11-18 : 아래 셋(같은 jar 다른 판 · 이클립스와 다른 자바 · 이클립스와 다른 설정)은 내용이 같으면 서버를 묶어 한 줄로 낸다.
+		//              mhms 두 서버가 같은 경고를 두 줄씩 띄워 반영 기록이 화면 가운데로 밀렸다.
+		//              셋 다 시작을 막지 않는 참고(aside)라 펼치지 않고 「알아 둘 것」 한 줄에 접는다 — 「모두 보기」 · 종으로 본다
+		var byText = function (pick) {
+			var out = [];
+			state.servers.forEach(function (sv, i) {
+				var v = sv.project ? pick(sv) : null;
+				if (!v) return;
+				var g = out.filter(function (x) { return x.sig === v; })[0];
+				if (g) g.list.push({ sv: sv, i: i }); else out.push({ sig: v, list: [{ sv: sv, i: i }] });
+			});
+			return out;
+		};
+		var who = function (g) { return esc(g.list.map(function (x) { return x.sv.name; }).join(" · ")); };
+		var ids = function (g) { return g.list.map(function (x) { return x.sv.id; }).join("+"); };
+		// 같은 jar 다른 판 — 줄에는 몇 종 · 어느 라이브러리인지만, 남김 · 치움은 「자세히」에 (설명 한 줄이 라이브러리 하나다)
+		byText(function (sv) { var c = sv.checks.filter(function (c) { return c.key === "depsDup"; })[0]; return c && c.detail; }).forEach(function (g) {
+			var libs = g.sig.split("\n").filter(Boolean).map(function (l) { return l.split(" — ")[0]; });
+			var movable = g.list.filter(function (x) { return x.sv.dedup.movable; });
+			var idle = movable.every(function (x) { return x.sv.status === "stopped" && !x.sv.depsBusy; });
+			var manual = g.list[0].sv.dedup.manual;
+			var how = (movable.length ? "의존 jar 쪽을 치우면 한 판만 올라갑니다" + (idle ? "" : " (서버를 끈 뒤에)") : "") +
+				(manual ? (movable.length ? " · " : "") + manual + "종은 프로젝트 WEB-INF/lib 에서 지워야 합니다" : "");
+			rows.push({ key: "dd" + ids(g), sig: g.sig, lv: "warn", aside: true, short: "같은 jar 다른 판 " + libs.length + "종",
+				text: "<b>" + who(g) + " · 같은 jar 다른 판 " + libs.length + "종</b>" +
+					'<span class="sub">' + esc(libs.slice(0, 3).join(" · ") + (libs.length > 3 ? " 외" : "")) + (how ? " · " + esc(how) : "") + "</span>",
+				lines: g.list[0].sv.dedup.lines,
+				acts: (movable.length ? [["겹친 판 치우기", "primary", !idle, function () { movable.forEach(function (x) { dedupCall(x.i, "dedup_deps"); }); }]] : [])
+					.concat([["상태 보기", "", false, function () { go("status"); }]]) });
+		});
+		// 이클립스와 다른 자바로 뜬다 — 「 — 」 앞이 요약, 뒤가 할 일. 핫리로드 모드면 끄는 단추를 붙인다 (끄면 이클립스와 같은 자바로 뜬다)
+		byText(function (sv) { return sv.javaDiff; }).forEach(function (g) {
+			var jd = g.sig.split(" — ");
+			rows.push({ key: "j" + ids(g), sig: g.sig, keep: true, lv: "warn", aside: true, short: "이클립스와 다른 자바",
+				text: "<b>" + who(g) + " · " + esc(jd[0]) + "</b>" + '<span class="sub">' + esc(noDash(jd.slice(1).join(" · "))) + "</span>",
+				acts: state.hotReload
+					? [["핫리로드 끄기", "", false, function () { hideError(); call("set_option", { key: "hotReload", value: false }); showToast("핫리로드를 껐습니다 · 다음 기동부터 이클립스와 같은 자바로 뜹니다"); }]]
+					: [["설정 › 서버", "", false, function () { openSettings("setServers"); }]] });
 		});
 		// 2026-10-29 : 상태 탭에만 있던 점검 넷을 먼저 알린다 — 상태 탭은 열어 보지 않는 한 모른다 (이 PC 두 서버가 그래서 탐색을 줄이지 않고 있었다).
 		// 저절로 고치지는 않는다. 점검이 못 보는 길(이름 바꾼 jar · 리플렉션 등록)이 있어 사람이 단추를 누른다.
@@ -1800,7 +1831,7 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 			}).filter(Boolean);
 			// 줄어드는 폭은 앱마다 달라 숫자를 약속하지 않는다 (2026-10-29 이 PC 의 같은 앱에서 17~36초 → 2초 안팎이었다)
 			var slow = took.length ? "지난 기동 웹앱 준비 " + took.join(" · ") + " · 줄이면 대개 몇 초로 줄어듭니다" : "웹앱 준비가 대개 몇 초로 줄어듭니다";
-			rows.push({ key: "scan", sig: scanSig, keep: true, lv: "hint", icon: "gauge", plain: true, lines: scanLines, short: "기동 탐색 줄이기",
+			rows.push({ key: "scan", sig: scanSig, keep: true, lv: "hint", aside: true, icon: "gauge", plain: true, lines: scanLines, short: "기동 탐색 줄이기",
 				text: "<b>" + names(hints) + " · 기동 탐색을 줄이면 빨리 뜹니다</b>" +
 					'<span class="sub">' + esc(slow) + " · 점검이 jar 와 소스를 보고 괜찮다고 봤습니다 · 다르게 돌면 설정에서 되돌립니다</span>",
 				acts: scanAct });
@@ -1818,16 +1849,16 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 						.catch(function (e) { showError(String(e)); });
 				}]] });
 		}
-		// ③ 이클립스와 다름 — 서버마다. 자바 판 차이는 위의 줄이 따로 맡으므로 뺀다. 알고 쓰는 차이일 수 있어 닫을 수 있다
-		checksOf("eclipse").forEach(function (x) {
-			var sv = x.sv;
-			var diffs = x.check.detail.split("\n").filter(function (s) {
-				return s && s !== sv.javaDiff && s.indexOf("이클립스 서버 설정을 고쳤다면") !== 0;
-			});
+		// ③ 이클립스와 다름 — 내용이 같은 서버는 묶는다. 자바 판 차이는 위의 줄이 따로 맡으므로 뺀다. 알고 쓰는 차이일 수 있어 닫을 수 있다
+		byText(function (sv) {
+			var c = sv.checks.filter(function (c) { return c.key === "eclipse"; })[0];
+			return c ? c.detail.split("\n").filter(function (s) { return s && s !== sv.javaDiff; }).join("\n") : null;
+		}).forEach(function (g) {
+			var all = g.sig.split("\n"), diffs = all.filter(function (s) { return s.indexOf("이클립스 서버 설정을 고쳤다면") !== 0; });
 			if (!diffs.length) return;
-			rows.push({ key: "e" + sv.id, sig: x.check.detail, keep: true, lv: "warn", plain: true, short: sv.name + " 이클립스와 다름",
-				lines: x.check.detail.split("\n").filter(function (s) { return s && s !== sv.javaDiff; }).map(noDash),
-				text: "<b>" + esc(sv.name) + " · 이클립스와 다르게 도는 곳 " + diffs.length + "가지</b>" + '<span class="sub">' + esc(noDash(diffs[0])) + "</span>",
+			rows.push({ key: "e" + ids(g), sig: g.sig, keep: true, lv: "warn", aside: true, plain: true, short: "이클립스와 다름 " + diffs.length + "가지",
+				lines: all.map(noDash),
+				text: "<b>" + who(g) + " · 이클립스와 다르게 도는 곳 " + diffs.length + "가지</b>" + '<span class="sub">' + esc(noDash(diffs[0])) + "</span>",
 				acts: [["설정 › 서버", "", false, function () { openSettings("setServers"); }]] });
 		});
 		// ④ 리소스 필터링 — 이클립스(Maven)는 값을 넣고 실행기는 「${key}」 글자를 그대로 넣는다. 오류 없이 설정값만 틀린다
@@ -1843,7 +1874,7 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 		if (rel) {
 			var mb = function (b) { return (b / 1048576).toFixed(0) + "MB"; };
 			var on = state.servers.filter(function (s) { return s.status !== "stopped"; }).length;
-			rows.push({ key: "upd", sig: rel.version, lv: "hint", icon: "download", short: "새 판 " + rel.version,
+			rows.push({ key: "upd", sig: rel.version, lv: "hint", aside: true, icon: "download", short: "새 판 " + rel.version,
 				text: "<b>새 판 " + esc(rel.version) + " 이 있습니다</b>" +
 					'<span class="sub">' + (up.downloading != null ? "받는 중 " + mb(up.downloading) + " / " + mb(rel.size)
 						: up.error ? esc(up.error) : "지금 " + esc(state.version) +
@@ -1959,10 +1990,13 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 		if (noticeOpen) renderNotice();
 		var rows = noticeRows.filter(function (r) { return !r.dismissed; });
 		// 세 줄까지만 펼친다 — 알림이 쌓이면 한가운데의 반영 기록이 밀린다. 오류는 늘 모두 보인다.
+		// 2026-11-18 : 시작을 막지 않는 참고(aside · 같은 jar 다른 판 · 이클립스와 다름 · 탐색 제안 · 새 판)는 처음부터 접는다.
 		// 하나만 남으면 접지 않는다 (요약 한 줄과 알림 한 줄의 높이가 같다)
-		var keep = Math.max(ALERT_ROWS, rows.filter(function (r) { return r.lv === "crit"; }).length);
-		var hidden = rows.length - keep > 1 ? rows.slice(keep) : [];
-		var shown = hidden.length && !alertsAll ? rows.slice(0, keep) : rows;
+		var main = rows.filter(function (r) { return !r.aside; }), side = rows.filter(function (r) { return r.aside; });
+		var keep = Math.max(ALERT_ROWS, main.filter(function (r) { return r.lv === "crit"; }).length);
+		var over = main.slice(keep), hidden = over.concat(side);
+		if (hidden.length === 1) hidden = [];
+		var shown = hidden.length && !alertsAll ? main.slice(0, keep) : main.concat(side);
 
 		var box = $("alerts");
 		box.innerHTML = "";
@@ -1974,7 +2008,7 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 			more.setAttribute("role", "status");
 			more.innerHTML = ic("more") + '<div class="alert-text"></div><div class="alert-acts"></div>';
 			more.querySelector(".alert-text").textContent = alertsAll ? "알림 " + rows.length + "개를 모두 펼쳤습니다"
-				: "알림 " + hidden.length + "개 더 · " + hidden.map(function (r) { return r.short || alertPlain(r); }).join(" · ");
+				: (over.length ? "알림 " + hidden.length + "개 더 · " : "알아 둘 것 " + hidden.length + "개 · ") + hidden.map(function (r) { return r.short || alertPlain(r); }).join(" · ");
 			var tg = document.createElement("button");
 			tg.className = "btn ghost sm";
 			tg.textContent = alertsAll ? "접기" : "모두 보기";
@@ -2132,7 +2166,13 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 	}
 
 	// sv 를 주면(서버 점검) 줄에 단추를 붙인다 — checkAct
+	// 2026-11-18 : 문제 · 알아 둘 줄을 먼저, 정상 줄은 「정상 n개」 한 줄로 접는다 (누르면 펼친다 · 목록 ul 의 ok-open)
 	function checkHtml(list, sv) {
+		var bad = list.filter(function (c) { return !c.ok || c.warn; }), good = list.filter(function (c) { return c.ok && !c.warn; });
+		var sum = good.length > 1 ? '<li class="ok-sum" role="button" tabindex="0" title="정상 항목 펼치기 · 접기">' + ic("check") + "<span>정상 " + good.length + "개</span><small>" + esc(good.map(function (c) { return c.label; }).join(" · ")) + "</small></li>" : "";
+		return checkLis(bad, sv) + sum + (sum ? checkLis(good, sv).replace(/<li class="/g, '<li class="okrow ') : checkLis(good, sv));
+	}
+	function checkLis(list, sv) {
 		return list.map(function (c) {
 			// 값이 경로인 항목은 우클릭으로 탐색기 · 경로 복사
 			var path = /^[A-Za-z]:[\\\/]/.test(c.detail) ? ' data-path="' + esc(c.detail) + '"' : "";
@@ -2141,6 +2181,15 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 				(sv ? checkAct(c, sv) : "") + "</li>";
 		}).join("");
 	}
+
+	// 「정상 n개」 — 누르면 그 목록의 정상 줄을 펼치고 접는다 (목록을 다시 그려도 ul 의 ok-open 이 남는다)
+	document.addEventListener("click", function (e) {
+		var sum = e.target.closest && e.target.closest(".ok-sum");
+		if (sum) sum.parentNode.classList.toggle("ok-open");
+	});
+	document.addEventListener("keydown", function (e) {
+		if ((e.key === "Enter" || e.key === " ") && e.target.classList && e.target.classList.contains("ok-sum")) { e.preventDefault(); e.target.parentNode.classList.toggle("ok-open"); }
+	});
 
 	// 같은 jar 다른 판은 치우고, 치운 jar 는 되돌린다. jar 를 옮기므로 톰캣을 끄고 받는 중이 아닐 때만 누를 수 있다.
 	// 탐색 줄이기는 설정만 바꾸고 다음 기동부터 들어가므로 켜진 서버에서도 누른다
@@ -2163,31 +2212,27 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 		var chip = function (id, label, on) {
 			return '<button class="sb-item' + (on === false ? " off" : "") + '" data-opt="' + id + '">' + (on === true ? ic("check") : "") + label + "</button>";
 		};
-		var groups = [
-			["반영", [
-				chip("optHot", "핫리로드", s.hotReload),
-				chip("optAuto", "저장하면 컴파일" + (s.autoCompile ? " <b>" + (s.compiler === "ecj" ? "ECJ" : "javac") + "</b>" : ""), s.autoCompile),
-				s.mapperHotswap ? chip("optMapper", "매퍼 하나만") : "",
-				s.debug ? chip("optDebug", "디버거 <b>" + s.servers.map(function (sv) { return sv.debugPort; }).join(" · ") + "</b>") : ""
-			]],
-			["기동", [
-				chip("selHeap", s.heapMb ? "힙 <b>" + fmtMb(s.heapMb) + "</b>" : "힙 상한 없음"),
-				s.fastJvm ? chip("optFast", "빠른 JVM") : "",
-				s.skipScan ? chip("optSkipScan", "클래스 탐색 건너뜀") : "",
-				s.staggerStart ? chip("optStagger", "차례 기동") : "",
-				s.profileStart ? chip("optProfile", "기동 표본") : ""
-			]],
-			["앱", [
-				s.smallPool ? chip("optPool", "DB 연결 1개") : "",
-				s.noSchedule ? chip("optSchedule", "예약 작업 멈춤") : "",
-				s.lazyInit ? chip("optLazy", "지연 초기화") : "",
-				s.keepSession ? chip("optSession", "로그인 유지") : ""
-			]]
-		];
-		var html = groups.map(function (g) {
-			var items = g[1].join("");
-			return items ? '<span class="sb-group"><span class="sb-label">' + g[0] + "</span>" + items + "</span>" : "";
-		}).join("");
+		// 2026-11-18 : 켜진 옵션을 다 늘어놓아 거의 안 바꾸는 칩 7~9개가 늘 깔려 있었다. 핵심 둘만 늘 두고, 나머지는 기본값과 다를 때만 보인다
+		//              (기본값은 실행기 Config::default 와 같다 · 그쪽을 바꾸면 여기도 고친다). 꺼서 기본과 달라진 것은 지운 줄로.
+		var DEF = { mapperHotswap: false, heapMb: 1536, fastJvm: true, skipScan: false, staggerStart: true, profileStart: false,
+			smallPool: true, noSchedule: false, lazyInit: false, keepSession: true };
+		var diff = function (k) { return s[k] !== DEF[k]; };
+		var core = chip("optHot", "핫리로드", s.hotReload) +
+			chip("optAuto", "저장하면 컴파일" + (s.autoCompile ? " <b>" + (s.compiler === "ecj" ? "ECJ" : "javac") + "</b>" : ""), s.autoCompile);
+		var extra = [
+			diff("mapperHotswap") ? chip("optMapper", "매퍼 하나만") : "",
+			s.debug ? chip("optDebug", "디버거 <b>" + s.servers.map(function (sv) { return sv.debugPort; }).join(" · ") + "</b>") : "",
+			diff("heapMb") ? chip("selHeap", s.heapMb ? "힙 <b>" + fmtMb(s.heapMb) + "</b>" : "힙 상한 없음") : "",
+			diff("fastJvm") ? chip("optFast", "빠른 JVM", false) : "",
+			diff("skipScan") ? chip("optSkipScan", "클래스 탐색 건너뜀") : "",
+			diff("staggerStart") ? chip("optStagger", "차례 기동", false) : "",
+			diff("profileStart") ? chip("optProfile", "기동 표본") : "",
+			diff("smallPool") ? chip("optPool", "DB 연결 1개", false) : "",
+			diff("noSchedule") ? chip("optSchedule", "예약 작업 멈춤") : "",
+			diff("lazyInit") ? chip("optLazy", "지연 초기화") : "",
+			diff("keepSession") ? chip("optSession", "로그인 유지", false) : ""
+		].join("");
+		var html = '<span class="sb-group">' + core + "</span>" + (extra ? '<span class="sb-group">' + extra + "</span>" : "");
 		// 메모리가 올 때마다 불리므로 바뀐 때만 다시 그린다 (누르는 중에 단추가 바뀌지 않게)
 		if ($("sbOpts").innerHTML !== html) $("sbOpts").innerHTML = html;
 		if (memSnap) {
@@ -2695,7 +2740,9 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 		// 사슬이 아닌 줄(실행기 기록 · 알림 · 오류)은 단계가 곧 내용이다 — 이름표 없이 글만
 		var body = it.type ? (subj ? '<span class="subj">' + pathify(subj) + "</span>" : "") + rail.join('<span class="arr" aria-hidden="true">›</span>')
 			: '<span class="subj plain">' + pathify(it.stages[0].detail) + "</span>";
-		d.innerHTML = '<span class="t num">' + fmtTime(it.at) + "</span>" +
+		var tm = fmtTime(it.at);
+		d.setAttribute("data-min", tm.slice(0, 5));
+		d.innerHTML = '<span class="t num"><span class="hm">' + tm.slice(0, 5) + "</span>" + tm.slice(5) + "</span>" +
 			'<span class="who">' + (it.srv != null && state ? esc(state.servers[it.srv].name) : "실행기") + "</span>" +
 			'<span class="mk" data-s="' + mark[0] + '" role="img" aria-label="' + esc(mark[2]) + '" title="' + esc(mark[2]) + '">' + (mark[1] ? ic(mark[1]) : "") + "</span>" +
 			'<span class="m">' + body + "</span>" +
@@ -2740,6 +2787,9 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 		[].forEach.call(els, function (d) {
 			var m = d.querySelector(".m");
 			d.classList.toggle("fold", d.classList.contains("open") || m.scrollWidth > m.clientWidth || !!d.querySelector(".raw"));
+			// 앞 줄과 같은 분이면 시 · 분을 흐리게 (2026-11-18)
+			var prev = d.previousElementSibling;
+			d.classList.toggle("same-min", !!prev && prev.getAttribute("data-min") === d.getAttribute("data-min"));
 		});
 	}
 	var foldW = 0;
@@ -2835,6 +2885,8 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 		if (l.kind === "hot" || l.kind === "live") return l.src !== "tomcat";
 		// 톰캣의 「Server startup in」 은 실행기가 단계별로 다시 남기므로 한 번만 보인다
 		if (l.kind === "ok") return l.src !== "tomcat";
+		// 2026-11-18 : 실행기를 켤 때마다 쌓이는 준비 줄(설정 파일 · 저장 감시 시작)은 반영이 아니다 — 서버 로그에만 남는다
+		if (l.src === "app" && !l.kind && /^(설정 파일: |저장 감시 중: )/.test(l.text)) return false;
 		if (l.src === "app") return true;
 		if (l.src === "deps") return /^의존 jar/.test(l.text);
 		return l.src === "compile" && /^(컴파일|전체 컴파일)/.test(l.text);
@@ -3927,7 +3979,7 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 				var count = nodeItems(d), picks = commitPicks(st, ck, d);
 				var bad = !d.self && c && count.some(function (it) { return it.conflict; });
 				return dirRowHtml(d, c, picks, function (it) { return !!ck[it.path]; },
-					(bad ? '<span class="flag">Conflicted</span>' : "") + (d.self ? "" : '<span class="cnt">' + count.filter(function (it) { return ck[it.path]; }).length + "/" + count.length + "</span>"),
+					(bad ? '<span class="flag">Conflicted</span>' : "") + (d.self ? "" : (function () { var on = count.filter(function (it) { return ck[it.path]; }).length; return on === count.length ? "" : '<span class="cnt">' + on + "/" + count.length + "</span>"; })()),
 					d.self ? d.self.path === svn.sel : d.path === svn.selDir);
 			},
 			function (it) { return fileRow(it, st, ck, false); });
@@ -4606,6 +4658,7 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 		$("svnDesc").classList.toggle("has", !!d[1]);
 	}
 	// Commit 단추를 누를 수 없는 까닭 — 단추 아래에 한 줄로 보인다 (제목 규칙은 막지 않으므로 여기 넣지 않는다)
+	var MSG_WHY = "Commit message 를 적으세요";
 	function commitBlock() {
 		var st = svn.data[K()], items = svnChecked();
 		if (svn.busy) return svn.busyText;
@@ -4615,7 +4668,7 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 		if (!items.length) return "올릴 파일을 고르세요";
 		var conf = items.filter(function (it) { return it.conflict || inConflict(st, it.path); });
 		if (conf.length) return "Conflicted " + conf.length + "개는 Resolve 하거나 빼야 합니다";
-		if (!commitMsg()) return "Commit message 를 적으세요";
+		if (!commitMsg()) return MSG_WHY;
 		if (canWrite() && writeBlock()) return writeBlock();
 		// 다른 프로그램이 쥔 잠금은 막지 않는다 — Commit 이 풀리기를 잠깐 기다렸다 한다. 쓰는 이 없이 남은 잠금 · 끝나지 않은 작업만 막는다
 		if (canWrite() && !isGit() && (st.lockKind === "stale" || st.lockKind === "queue")) return "Cleanup 해야 Commit 됩니다 (위 띠의 Cleanup)";
@@ -4628,8 +4681,9 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 		$("svnDoCommit").querySelector("span").textContent = n ? "Commit " + n + "개 → " + where : "Commit";
 		$("svnDoCommit").disabled = !!why;
 		$("svnCopyCmd").disabled = !!why;   // 쓰기를 끈 서버는 잠금 · 판 검사를 거치지 않으므로 파일 · 메시지 · 충돌만 남는다
-		$("svnWhy").textContent = why;
-		$("svnWhy").hidden = !why;
+		// 메시지가 비었다는 까닭은 띄우지 않는다 — 바로 위 칸의 안내 글이 같은 말이고, 파일을 고르자마자 떠 있었다 (2026-11-18)
+		$("svnWhy").textContent = why === MSG_WHY ? "" : why;
+		$("svnWhy").hidden = !why || why === MSG_WHY;
 	}
 	$("svnMsg").addEventListener("input", function () { saveDraft(); commitState(); clearTimeout(msgCheck.t); msgCheck.t = setTimeout(function () { if (rv && rv.type === "commit") rvMsgCheck(rv); else msgCheck(); }, 250); });
 	$("svnDesc").addEventListener("input", function () {
