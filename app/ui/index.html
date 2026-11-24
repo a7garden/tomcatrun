@@ -721,6 +721,11 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .rv-chip { height: 20px; padding: 0 8px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font: 500 11.5px/18px var(--ui); white-space: nowrap; }
 .rv-chip.warn { color: var(--warn); background: var(--warn-weak); border-color: var(--warn-line); }
 .rv-chip.crit { color: var(--crit); background: var(--crit-weak); border-color: var(--crit-line); }
+/* 고르지 않은 새 소스 — 칩 한 줄로는 어느 파일인지 몰라 목록과 단추를 함께 둔다 */
+.rv-fresh { margin-top: 8px; padding: 8px 10px; border: 1px solid var(--warn-line); border-radius: 6px; background: var(--warn-weak); color: var(--text); font: 12px/1.5 var(--ui); }
+.rv-fresh b { color: var(--warn); }
+.rv-fresh ul { margin: 4px 0 6px; padding-left: 18px; font-family: var(--mono); font-size: 11.5px; }
+.rv-fresh li { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rv-scroll { position: relative; flex: 1; min-height: 0; overflow: auto; }
 .rv-card { border-bottom: 1px solid var(--line); }
 .rv-ch { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 6px; min-height: 30px; padding: 3px 14px; background: var(--panel-2); border-bottom: 1px solid var(--line-soft); font: 600 12px var(--mono); }
@@ -3833,7 +3838,9 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 		} else {
 			if (conflicts.length) html += groupHtml("conflict", "Conflicted", conflicts, "crit", "Resolve 하기 전에는 Commit 되지 않습니다");
 			html += groupHtml("change", "Changes", changes, "", "");
-			if (unver.length) html += groupHtml("unver", untrackedName(), unver, "", "Commit 하면 먼저 더합니다");
+			// 소스 폴더 아래 새 파일이 있으면 접혀 있어도 머리를 경고색으로 — 고르지 않으면 Commit 에서 빠진다 (newSources)
+			var srcNew = newSources(st, null).length;
+			if (unver.length) html += groupHtml("unver", untrackedName(), unver, srcNew ? "warn" : "", srcNew ? "src 아래 새 파일 " + srcNew + "개 · 고르지 않으면 Commit 에서 빠집니다" : "Commit 하면 먼저 더합니다", srcNew ? "src 새 파일 " + srcNew : "");
 			if (ignored.length) html += groupHtml("ign", "Commit 에서 뺀 파일", ignored, "", "ignore-on-commit 목록 · TortoiseSVN 에서도 같은 파일이 빠집니다");
 		}
 		$("svnList").innerHTML = html;
@@ -3977,11 +3984,11 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 			'<span class="nm"><b>' + name + "</b>" + (flags === undefined ? incMark(it.path) : "") + (flat ? '<span class="dir"><bdi>' + esc(pp[0]) + "</bdi></span>" : "") + "</span>" +
 			statHtml((svn.stats[K()] || {})[it.path]) + '<span class="code ' + esc(it.code) + '">' + esc(it.code) + "</span>" + why + "</div>";
 	}
-	function groupHtml(id, title, items, cls, hint) {
+	function groupHtml(id, title, items, cls, hint, note) {
 		var vis = items.filter(function (it) { return matches(it.path); });
 		var fold = id === "unver" || id === "ign", closed = fold && (id in svn.fold ? svn.fold[id] : true);
 		var head = '<div class="f-group' + (cls ? " " + cls : "") + (fold ? " fold" + (closed ? " closed" : "") : "") + '" data-g="' + id + '"' + (fold ? ' tabindex="0" role="button" aria-expanded="' + !closed + '"' : "") + (hint ? ' title="' + esc(hint) + '"' : "") + ">" +
-			(fold ? ic("chev", "chev") : "") + esc(title) + " " + items.length + (svn.filter && vis.length !== items.length ? " 중 " + vis.length : "") + "</div>";
+			(fold ? ic("chev", "chev") : "") + esc(title) + " " + items.length + (svn.filter && vis.length !== items.length ? " 중 " + vis.length : "") + (note ? " · " + esc(note) : "") + "</div>";
 		if (closed) return '<section class="f-sec">' + head + "</section>";
 		if (!vis.length) return '<section class="f-sec">' + head + (svn.filter ? "" : '<div class="empty">바뀐 파일이 없습니다.</div>') + "</section>";
 		var st = svn.data[K()], ck = svn.checked[K()] || {}, total = st.items.length;
@@ -5185,6 +5192,12 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 		var ck = svn.checked[K()] || {};
 		return rv.items.filter(function (it) { return ck[it.path]; });
 	}
+	// 소스 폴더(src/) 아래의 Unversioned — 고친 파일만 올리고 이것을 빼면 저장소의 빌드가 깨진다.
+	// 2026.11.24 : 에이전트가 만든 새 클래스 5개가 git 에는 있고 SVN 에는 없어, 그것을 부르는 파일만 올라간 일이 있었다 (r3865 → r3867 에서 더함).
+	//   Unversioned 묶음이 접혀 있고 처음부터 고르지 않으므로 보이지 않은 채 빠진다 — 그래서 검토 화면이 따로 짚는다
+	function newSources(st, ck) {
+		return st.items.filter(function (it) { return it.code === "?" && !it.conflict && !(ck && ck[it.path]) && /(^|\/)src\//.test(it.path); });
+	}
 	function renderCommitReview() {
 		var o = rv, st = svn.data[K()], ck = svn.checked[K()] || (svn.checked[K()] = {}), sel = rvPicked(), why = commitBlock();
 		var count = function (m) { return sel.filter(function (it) { return m[it.path]; }).length; };
@@ -5201,7 +5214,9 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 				return dirRowHtml(d, c, commitPicks(st, ck, d), function (it) { return !!ck[it.path]; }, d.self ? "" : '<span class="cnt">' + all.filter(function (it) { return ck[it.path]; }).length + "/" + all.length + "</span>", false);
 			},
 			function (it) { return fileRow(it, st, ck, false, flags(it)); });
-		var stop = marks > 0 || o.broken.length > 0, n = sel.length;
+		// 고른 파일과 같은 갈래에서 고르지 않은 새 소스 — 하나라도 있으면 「그래도 Commit」 으로 바꿔 멈춰 세운다
+		var fresh = newSources(st, ck).filter(function (it) { return !impliedBy(st, ck, it.path); });
+		var stop = marks > 0 || o.broken.length > 0 || fresh.length > 0, n = sel.length;
 		var where = isGit() ? (st.branch || "HEAD") : String(st.url || "").replace(/\/+$/, "").split("/").pop();
 		var ignored = st.items.filter(function (it) { return it.changelist === IGN && !ck[it.path]; }).length;
 		var adds = sel.filter(function (it) { return it.code === "?"; }).length;
@@ -5216,10 +5231,23 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 				statHtml((svn.stats[K()] || {})[it.path]) + '<span class="code ' + esc(it.code) + '">' + esc(it.code) + "</span>" +
 				(impliedBy(st, ck, it.path) ? "" : '<button class="btn sm ghost" data-out="' + esc(it.path) + '">이번에서 빼기</button>') + '</div><div class="rv-body">' + (d ? diffBody(d) : skel("code", 6)) + "</div></section>";
 		}).join("");
+		var freshHtml = fresh.length ? '<div class="rv-fresh"><b>' + (isGit() ? "Git" : "SVN") + " 에 없는 새 소스 " + fresh.length + "개</b> — 이번 Commit 에 넣지 않으면 저장소에 올라가지 않습니다. 이 파일을 부르는 코드만 올라가면 다른 사람의 빌드가 깨집니다." +
+			'<ul>' + fresh.slice(0, 8).map(function (it) { return '<li title="' + esc(it.path) + '">' + esc(it.path) + (it.dir ? "/" : "") + "</li>"; }).join("") + (fresh.length > 8 ? "<li>… 외 " + (fresh.length - 8) + "개</li>" : "") + "</ul>" +
+			'<button class="btn sm" id="rvFreshAdd">' + fresh.length + "개 함께 올리기</button></div>" : "";
 		rvShell(['<div class="side-head"><b>이번 Commit ' + n + "개</b></div>", tree],
 			'<div class="commit-box" id="rvMsg"></div>',
-			rvTitle("Commit " + n + "개 → " + where, action) + (chips ? '<div class="rv-chips">' + chips + "</div>" : ""),
+			rvTitle("Commit " + n + "개 → " + where, action) + (chips ? '<div class="rv-chips">' + chips + "</div>" : "") + freshHtml,
 			cards || '<div class="empty">왼쪽에서 올릴 파일을 고르세요.</div>');
+		if ($("rvFreshAdd")) $("rvFreshAdd").onclick = function () {
+			fresh.forEach(function (it) {
+				setCheck(st, ck, it, true);
+				if (!o.items.some(function (x) { return x.path === it.path; })) o.items.push(it);
+				// 새 폴더면 그 안의 파일도 검토 목록에 보인다
+				if (it.dir) st.items.forEach(function (x) { if (x.path.indexOf(it.path + "/") === 0 && !o.items.some(function (y) { return y.path === x.path; })) o.items.push(x); });
+			});
+			checksChanged();
+			rvCheckMarks(o);
+		};
 		bindCommitReview(st, ck);
 	}
 	function bindCommitReview(st, ck) {
