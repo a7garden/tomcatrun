@@ -91,6 +91,8 @@ GitHub 연결은 Windows 인증서 저장소를 쓰고 `HTTPS_PROXY` 환경 변�
 | 자바 소스 지움 · 옮김 | 재시작 | 컴파일 결과의 클래스를 지우고 재시작 알림에 올린다 (켜진 앱에는 남아 있다) |
 | Spring 설정 · XML 로 정의한 빈 · web.xml · 그 밖의 매퍼 · 메시지 · pom 의존성 | 재시작 | 기동 때 한 번만 읽는다 |
 
+실행기를 끈 동안 고친 것도 들어간다. 기동할 때마다 지난 컴파일과 크기 · 수정 시각이 다른 자바 소스를 찾아 먼저 컴파일하고, 소스가 없어진 클래스를 컴파일 결과에서 지운다. 바뀐 것이 없으면 찾기만 하고 바로 띄운다.
+
 재시작이 필요한 것은 서버 줄 아래 노란 알림 줄에 서버별로 모이고 그 서버의 재시작 단추에 개수가 붙는다. HotswapAgent 가 교체에 실패해도 여기에 올라온다.
 HotswapAgent 의 원문 줄(`Reloading classes …` · `Registering Spring bean …`)은 서버 로그 탭에만 남는다. 반영 기록은 저장 한 번을 한 줄로 묶어 「FdrController 외 1개 · 컴파일 0.8초 › 교체 2.1초 › Spring 반영 8.4초」처럼 보인다. 줄 머리 모양이 끝 상태다 — ✓ 들어감 · 도는 원 넣는 중 · △ 재시작해야 반영 · ⊗ 실패. 교체 · Spring 반영의 초는 컴파일을 시작한 때부터 잰 값이라 오른쪽 걸린 시간은 그중 가장 큰 값이다. 줄을 누르면 묶인 원문 줄이 펼쳐진다.
 스스로 다시 읽는 매퍼 묶음은 프로젝트의 `src/main/resources/spring/context-datasource.xml` 에서 `RefreshableSqlSessionFactoryBean` 의 `mapperLocations` 를 읽어 정한다 (서버를 켤 때마다).

@@ -63,6 +63,7 @@ use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const STAMP_FILE: &str = ".tomcatrun-stamp";
 const COMPILE_OPTS_FILE: &str = ".tomcatrun-javac"; // 지난 컴파일의 인코딩 · -parameters (compile_opts)
+const SOURCES_FILE: &str = ".tomcatrun-sources"; // 지난 컴파일 때 본 소스의 크기 · 수정 시각 (collect_java)
 
 /* ---------- 설정 ---------- */
 
@@ -922,6 +923,25 @@ fn mtime_ms(path: &Path) -> Option<u64> {
 
 fn read_stamp(dir: &str) -> u64 {
     fs::read_to_string(Path::new(dir).join(STAMP_FILE)).ok().and_then(|t| t.trim().parse().ok()).unwrap_or(0)
+}
+
+// 줄마다 「크기 · 수정 시각 ns · 경로」 (탭으로 가른다) — 파일이 없으면 None (이 목록을 남기기 전 판이 만든 컴파일 결과)
+fn read_sources(dir: &str) -> Option<Sources> {
+    let text = fs::read_to_string(Path::new(dir).join(SOURCES_FILE)).ok()?;
+    Some(
+        text.lines()
+            .filter_map(|l| {
+                let mut it = l.splitn(3, '\t');
+                let (len, ns, rel) = (it.next()?.parse().ok()?, it.next()?.parse().ok()?, it.next()?);
+                Some((rel.to_string(), (len, ns)))
+            })
+            .collect(),
+    )
+}
+
+fn write_sources(dir: &Path, seen: &Sources) {
+    let text: String = seen.iter().map(|(rel, (len, ns))| format!("{len}\t{ns}\t{rel}\n")).collect();
+    let _ = fs::write(dir.join(SOURCES_FILE), text);
 }
 
 fn common_checks(c: &Config) -> Vec<Check> {
@@ -2625,17 +2645,29 @@ fn start_server(app: &AppHandle, i: usize) -> Result<(), String> {
         if opts_changed {
             let _ = fs::remove_dir_all(&sv.classes_dir);
         }
-        if !Path::new(&sv.classes_dir).join(STAMP_FILE).exists() {
+        let full = !Path::new(&sv.classes_dir).join(STAMP_FILE).exists();
+        if full {
             if opts_changed {
                 log(app, Some(i), "app", "", format!("컴파일 옵션이 바뀌어({}) 컴파일 결과를 비우고 전체 컴파일부터 합니다.", opts_label(&sv)));
             } else {
                 log(app, Some(i), "app", "", "컴파일한 클래스가 없어 전체 컴파일부터 합니다.");
             }
-            if !run_compile(app, i, true).map_or(false, |res| res.ok) {
-                log(app, Some(i), "app", "err", "컴파일에 실패해 톰캣을 띄우지 않았습니다. 빌드 탭을 보세요.");
-                set_status(app, i, Status::Stopped);
-                return;
+        } else {
+            // 2026.11.23 : 실행기가 꺼진 동안 지우거나 옮긴 소스의 클래스를 치운다 — 저장 감시가 못 봐 남은 클래스를 Spring 이 빈으로 읽었다.
+            //              아직 아무것도 클래스를 쥐고 있지 않을 때라 지워도 된다.
+            let gone = classapi::orphans(&Path::new(&sv.project).join("src/main/java"), Path::new(&sv.classes_dir));
+            let removed: Vec<String> = gone.iter().filter(|f| fs::remove_file(f).is_ok()).filter_map(|f| f.file_name().map(|n| n.to_string_lossy().into_owned())).collect();
+            if !removed.is_empty() {
+                log(app, Some(i), "app", "", format!("소스가 없어진 클래스 {}개를 컴파일 결과에서 지웠습니다 · {}", removed.len(), some_names(&removed)));
             }
+        }
+        // 2026.11.23 : 기동마다 바뀐 소스를 찾아 컴파일한다. 전에는 컴파일 결과가 없을 때만 컴파일해서,
+        //              실행기가 꺼진 동안 고친 소스(저장 감시가 못 본다)가 자바 파일을 다시 저장할 때까지 옛 클래스로 떴다 — 재시작해도 그대로였다.
+        //              바뀐 것이 없으면 찾기만 하고 끝난다 (소스 900여 개 20ms 남짓).
+        if run_compile(app, i, full).map_or(false, |res| !res.ok) || full && !Path::new(&sv.classes_dir).join(STAMP_FILE).exists() {
+            log(app, Some(i), "app", "err", "컴파일에 실패해 톰캣을 띄우지 않았습니다. 빌드 탭을 보세요.");
+            set_status(app, i, Status::Stopped);
+            return;
         }
         let base = &sv.catalina_base;
         let home = &cfg.tomcat_home;
@@ -2884,28 +2916,39 @@ fn stop_blocking(app: &AppHandle, i: usize) {
 
 /* ---------- 컴파일 ---------- */
 
-// 컴파일할 소스를 모은다. 스탬프보다 늦게 고친 소스 · 짝 클래스가 없거나 소스보다 오래된 소스.
+// 지난 컴파일 때 본 소스 — 「src/main/java 기준 경로 → (크기, 수정 시각 ns)」 (SOURCES_FILE)
+type Sources = HashMap<String, (u64, u64)>;
+
+// 컴파일할 소스를 모은다. 스탬프보다 늦게 고친 소스 · 지난 컴파일 때와 크기나 수정 시각이 다른 소스 · 짝 클래스가 없거나 소스보다 오래된 소스.
 // 2026.11.09 : 짝 클래스 비교를 더했다. 스탬프만 보면 원래 수정 시각을 둔 채 복사해 온 소스(copy2 · robocopy · cp -p · 압축 풀기)가
 //              스탬프보다 이르다는 이유로 영영 빠지고, 쓰는 쪽만 컴파일되어 옛 클래스와 맞춰 보다 「undefined」 로 실패했다.
-// classes 는 소스 폴더와 같은 자리의 컴파일 결과 폴더 — None 이면(전체 컴파일) 스탬프만 본다.
+// 2026.11.23 : 지난 컴파일의 소스 목록과 「같은지」를 더했다. 짝 클래스가 소스보다 새것이면 내용이 달라도 빠졌다 —
+//              되돌린 소스가 컴파일된 뒤 백업을 되살릴 때(fs::copy 가 옛 시각을 둔다) · 그사이 컴파일한 뒤 옛 시각 그대로 복사해 올 때.
+// classes 는 소스 폴더와 같은 자리의 컴파일 결과 폴더 — None 이면(전체 컴파일) 다 넣는다.
+// seen 에는 훑은 소스를 모두 적는다 — 컴파일에 성공하면 이것이 다음 비교의 기준이 된다.
 // 폴더마다 read_dir 한 번으로 클래스 시각을 읽는다 — Windows 는 목록에 시각이 함께 와서 파일마다 따로 묻지 않는다.
-fn collect_java(dir: &Path, classes: Option<&Path>, since_ms: u64, out: &mut Vec<PathBuf>) {
+fn collect_java(dir: &Path, rel: &str, classes: Option<&Path>, since_ms: u64, prev: Option<&Sources>, out: &mut Vec<PathBuf>, seen: &mut Sources) {
     let ms = |m: &fs::Metadata| m.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_millis() as u64);
+    let ns = |m: &fs::Metadata| m.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map_or(0, |d| d.as_nanos() as u64);
     let Ok(rd) = fs::read_dir(dir) else { return };
     let mut class_ms: Option<HashMap<std::ffi::OsString, u64>> = None;
     for e in rd.filter_map(Result::ok) {
         let path = e.path();
         let Ok(meta) = e.metadata() else { continue };
+        let key = format!("{rel}{}", e.file_name().to_string_lossy());
         if meta.is_dir() {
             let sub = classes.map(|c| c.join(e.file_name()));
-            collect_java(&path, sub.as_deref(), since_ms, out);
+            collect_java(&path, &format!("{key}/"), sub.as_deref(), since_ms, prev, out, seen);
             continue;
         }
         if !path.extension().map_or(false, |x| x == "java") {
             continue;
         }
+        let now = (meta.len(), ns(&meta));
+        let before = prev.and_then(|p| p.get(&key)).copied();
+        seen.insert(key, now);
         let m = ms(&meta).unwrap_or(u64::MAX);
-        if m > since_ms {
+        if m > since_ms || prev.is_some() && before != Some(now) {
             out.push(path);
             continue;
         }
@@ -2950,6 +2993,9 @@ fn run_compile(app: &AppHandle, i: usize, full: bool) -> Option<CompileResult> {
     if opts_changed {
         log(app, Some(i), "compile", "", format!("컴파일 옵션이 바뀌어({}) 전체를 다시 컴파일합니다.", opts_label(&sv)));
     }
+    // 소스 목록이 없으면(목록을 남기기 전 판이 만든 결과) 스탬프 · 짝 클래스로만 가리고, 이번 컴파일이 목록을 처음 남긴다.
+    // 전체를 다시 하지 않는 것은 켜진 앱에 클래스 천여 개를 한꺼번에 바꿔 넣게 되어서다 — 의심되면 「전체」 컴파일.
+    let prev = read_sources(&sv.classes_dir);
     let full = full || stamp == 0 || opts_changed;
     let begin_ms = now_ms();
     let began = Instant::now();
@@ -2958,7 +3004,8 @@ fn run_compile(app: &AppHandle, i: usize, full: bool) -> Option<CompileResult> {
     let mut files = Vec::new();
     // 2026.10.29 : 저장마다 소스 폴더 전체를 훑어 바뀐 파일을 찾는다 — 그 시간을 완료 줄에 따로 보인다 (크면 저장 감시가 준 경로를 먼저 쓰는 쪽으로)
     // 짝 클래스는 앱에 올라가 있는 classes 와 견준다 (임시 폴더는 컴파일 때마다 비운다)
-    collect_java(&src, (!full).then_some(classes.as_path()), if full { 0 } else { stamp }, &mut files);
+    let mut seen = Sources::new();
+    collect_java(&src, "", (!full).then_some(classes.as_path()), if full { 0 } else { stamp }, if full { None } else { prev.as_ref() }, &mut files, &mut seen);
     let find_ms = began.elapsed().as_millis();
     if files.is_empty() {
         log(app, Some(i), "compile", "", format!("바뀐 자바 파일이 없습니다 (찾기 {find_ms}ms)."));
@@ -3080,6 +3127,8 @@ fn run_compile(app: &AppHandle, i: usize, full: bool) -> Option<CompileResult> {
         // 시작 시각을 남긴다 — 컴파일하는 동안 고친 파일은 다음에 다시 잡힌다
         let _ = fs::write(classes.join(STAMP_FILE), begin_ms.to_string());
         let _ = fs::write(classes.join(COMPILE_OPTS_FILE), &opts);
+        // 컴파일 전에 훑은 모습을 남긴다 — 컴파일하는 동안 고친 파일은 크기 · 시각이 달라 다음에 다시 잡힌다
+        write_sources(&classes, &seen);
         // 켜진 채 옵션이 바뀌었으면(설정 파일을 손으로 고친 경우 — 화면에서는 끈 뒤에만 바꾼다) 옛 클래스가 앱에 올라가 있다
         if opts_changed && !stopped {
             add_pending(app, i, "자바 컴파일 옵션".into(), "인코딩 · -parameters 가 바뀜 · 재시작해야 모두 들어감");
@@ -6526,7 +6575,7 @@ mod tests {
     }
 
     #[test]
-    fn 옛_수정_시각으로_들어온_소스도_짝_클래스와_견줘_모은다() {
+    fn 옛_수정_시각으로_들어온_소스도_짝_클래스와_지난_목록으로_모은다() {
         let root = std::env::temp_dir().join(format!("tomcatrun-collect-{}", std::process::id()));
         let (src, cls) = (root.join("src/a/b"), root.join("classes/a/b"));
         fs::create_dir_all(&src).unwrap();
@@ -6551,13 +6600,14 @@ mod tests {
         at(&src.join("Fresh.java"), stamp - 900);
         at(&src.join("package-info.java"), stamp - 900);
         at(&src.join("Empty.java"), stamp - 900);
-        let names = |classes: Option<&Path>, since| {
-            let mut out = Vec::new();
-            collect_java(&root.join("src"), classes, since, &mut out);
+        let scan = |classes: Option<&Path>, since, prev: Option<&Sources>| {
+            let (mut out, mut seen) = (Vec::new(), Sources::new());
+            collect_java(&root.join("src"), "", classes, since, prev, &mut out, &mut seen);
             let mut v: Vec<_> = out.iter().map(|f| f.file_name().unwrap().to_string_lossy().into_owned()).collect();
             v.sort();
-            v
+            (v, seen)
         };
+        let names = |classes: Option<&Path>, since| scan(classes, since, None).0;
         let classes = root.join("classes");
         assert_eq!(names(Some(&classes), stamp), ["Fresh.java", "Mapper.java", "Service.java"]);
         // 전체 컴파일은 스탬프 0 · 클래스를 보지 않는다
@@ -6565,7 +6615,21 @@ mod tests {
         // 다 컴파일한 뒤 저장만 하면 0개 — package-info · 빈 파일은 짝이 없어도 다시 잡지 않는다
         at(&cls.join("Mapper.class"), stamp + 30);
         at(&cls.join("Fresh.class"), stamp + 30);
-        assert!(names(Some(&classes), stamp + 30).is_empty());
+        let (v, seen) = scan(Some(&classes), stamp + 30, None);
+        assert!(v.is_empty());
+        assert_eq!(seen.len(), 6);
+        assert!(seen.contains_key("a/b/Mapper.java"), "소스 폴더 기준 경로로 적는다");
+        // 지난 목록과 같으면 0개
+        assert!(scan(Some(&classes), stamp + 30, Some(&seen)).0.is_empty());
+        // 클래스보다 옛 시각으로 내용이 바뀐 소스 (백업 되살리기 · cp -p) — 짝 클래스로는 못 잡고 목록과 달라서 잡는다
+        fs::write(src.join("Plain.java"), "class X { int y; }").unwrap();
+        at(&src.join("Plain.java"), stamp - 900);
+        assert!(names(Some(&classes), stamp + 30).is_empty(), "목록 없이는 빠진다 — 고치기 전 모습");
+        assert_eq!(scan(Some(&classes), stamp + 30, Some(&seen)).0, ["Plain.java"]);
+        // 목록에 없는 새 소스도 넣는다 (짝 클래스가 있어도)
+        at(&src.join("Copied.java"), stamp - 900);
+        at(&cls.join("Copied.class"), stamp + 30);
+        assert_eq!(scan(Some(&classes), stamp + 30, Some(&seen)).0, ["Copied.java", "Plain.java"]);
         let _ = fs::remove_dir_all(&root);
     }
 

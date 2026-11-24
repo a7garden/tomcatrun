@@ -6,6 +6,8 @@
 // 2026.10.29 : 컴파일 앞뒤로 모양을 견주어, 바뀌었으면 쓰는 소스를 함께 컴파일한다 (main.rs 의 run_compile).
 //
 // 쓰는 곳은 소스에 클래스 이름이 낱말로 나오는지로 찾는다. 주석 속 이름도 걸리지만 더 컴파일할 뿐이라 해가 없다.
+//
+// 목차 : 클래스 파일 찾기(class_files · remove · orphans) · 모양 견주기(snapshot · changed · users · shape)
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -92,6 +94,54 @@ pub fn users(src: &Path, names: &[String], skip: &HashSet<PathBuf>) -> Vec<PathB
 /// 지운 소스가 남긴 클래스 파일을 지운다 (익명 클래스까지). 지운 개수.
 pub fn remove(classes: &Path, rel: &str) -> usize {
     class_files(classes, rel, true).iter().filter(|f| fs::remove_file(f).is_ok()).count()
+}
+
+/// 소스가 없어진 클래스 파일 — 「a/b/C$X.class」 는 「a/b/C.java」 가 없으면 고아다.
+/// 2026.11.23 : 실행기가 꺼진 동안 지우거나 옮긴 소스는 저장 감시가 못 봐 클래스가 남고, Spring 이 그것을 빈으로 다시 읽었다.
+/// 한 파일에 최상위 클래스를 여럿 두면(B.java 안의 class C) C.java 가 없어도 고아가 아니다 — 클래스 파일의 SourceFile 속성
+/// (컴파일러에 -g 를 준다)에 같은 폴더의 다른 소스 이름이 있으면 남긴다. 상수 풀의 길이 붙은 UTF-8 로 찾는다.
+pub fn orphans(src: &Path, classes: &Path) -> Vec<PathBuf> {
+    fn walk(src: &Path, dir: &Path, out: &mut Vec<PathBuf>) {
+        let Ok(rd) = fs::read_dir(dir) else { return };
+        // 같은 자리 소스 폴더의 .java 이름 — 클래스가 하나라도 고아 후보일 때만 읽는다
+        let mut sources: Option<Vec<Vec<u8>>> = None;
+        for e in rd.filter_map(Result::ok) {
+            let path = e.path();
+            if e.file_type().map_or(false, |t| t.is_dir()) {
+                walk(&src.join(e.file_name()), &path, out);
+                continue;
+            }
+            let name = e.file_name();
+            let Some(stem) = name.to_str().and_then(|n| n.strip_suffix(".class")) else { continue };
+            let top = stem.split('$').next().unwrap_or(stem);
+            if src.join(format!("{top}.java")).exists() {
+                continue;
+            }
+            let names = sources.get_or_insert_with(|| {
+                fs::read_dir(src)
+                    .map(|rd| {
+                        rd.filter_map(Result::ok)
+                            .filter_map(|s| s.file_name().to_str().filter(|n| n.ends_with(".java")).map(|n| n.as_bytes().to_vec()))
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            });
+            let bytes = if names.is_empty() { Vec::new() } else { fs::read(&path).unwrap_or_default() };
+            let from_sibling = names.iter().any(|n| {
+                let mut needle = vec![1u8];
+                needle.extend((n.len() as u16).to_be_bytes());
+                needle.extend(n);
+                bytes.windows(needle.len()).any(|w| w == needle.as_slice())
+            });
+            if !from_sibling {
+                out.push(path);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(src, classes, &mut out);
+    out.sort();
+    out
 }
 
 fn has_word(text: &[u8], word: &[u8]) -> bool {
@@ -332,5 +382,49 @@ mod tests {
         assert_eq!(remove(&classes, "a/Codes.java"), 3);
         assert!(classes.join("a/CodesUtil.class").exists(), "이름이 이어지는 다른 클래스는 남긴다");
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn 소스가_없어진_클래스만_고아로_잡는다() {
+        let root = std::env::temp_dir().join(format!("tomcatrun-orphans-{}", std::process::id()));
+        let (src, classes) = (root.join("src"), root.join("classes"));
+        for d in [src.join("a"), classes.join("a"), classes.join("gone")] {
+            fs::create_dir_all(d).unwrap();
+        }
+        // SourceFile 속성 자리 — 상수 풀의 길이 붙은 UTF-8
+        let with_source = |name: &str| {
+            let mut b = vec![0xCA, 0xFE, 0xBA, 0xBE, 1];
+            b.extend((name.len() as u16).to_be_bytes());
+            b.extend(name.as_bytes());
+            b
+        };
+        fs::write(src.join("a/Keep.java"), "class Keep {} class Extra {}").unwrap();
+        fs::write(classes.join("a/Keep.class"), with_source("Keep.java")).unwrap();
+        fs::write(classes.join("a/Keep$1.class"), with_source("Keep.java")).unwrap();
+        // Keep.java 안의 두 번째 최상위 클래스 — Extra.java 는 없지만 고아가 아니다
+        fs::write(classes.join("a/Extra.class"), with_source("Keep.java")).unwrap();
+        // 지운 소스의 클래스 · 안쪽 클래스 — 이름이 이어지는 「Keeper.java」 는 「Keep.java」 로 치지 않는다
+        fs::write(classes.join("a/Gone.class"), with_source("Gone.java")).unwrap();
+        fs::write(classes.join("a/Gone$Inner.class"), with_source("Gone.java")).unwrap();
+        fs::write(classes.join("a/Keeper.class"), with_source("Keeper.java")).unwrap();
+        // 소스 폴더째 지운 패키지
+        fs::write(classes.join("gone/Old.class"), with_source("Old.java")).unwrap();
+        fs::write(classes.join(".tomcatrun-stamp"), "1").unwrap();
+        let rel = |v: Vec<PathBuf>| v.iter().map(|p| p.strip_prefix(&classes).unwrap().to_string_lossy().replace('\\', "/")).collect::<Vec<_>>();
+        assert_eq!(rel(orphans(&src, &classes)), ["a/Gone$Inner.class", "a/Gone.class", "a/Keeper.class", "gone/Old.class"]);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    #[ignore] // 실제 서버로 (지우지 않고 보이기만) — TOMCATRUN_TEST_ORPHANS="<src/main/java>;<classes>" cargo test -- --ignored --nocapture
+    fn 실제_컴파일_결과의_고아를_센다() {
+        let Ok(v) = std::env::var("TOMCATRUN_TEST_ORPHANS") else { return };
+        let (src, classes) = v.split_once(';').unwrap();
+        let t = std::time::Instant::now();
+        let found = orphans(Path::new(src), Path::new(classes));
+        println!("고아 {}개 · {}ms", found.len(), t.elapsed().as_millis());
+        for f in found {
+            println!("  {}", f.display());
+        }
     }
 }
