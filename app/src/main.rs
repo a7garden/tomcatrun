@@ -42,7 +42,7 @@ mod tray;
 mod update;
 mod vcsbackup;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpStream};
@@ -64,6 +64,9 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const STAMP_FILE: &str = ".tomcatrun-stamp";
 const COMPILE_OPTS_FILE: &str = ".tomcatrun-javac"; // 지난 컴파일의 인코딩 · -parameters (compile_opts)
 const SOURCES_FILE: &str = ".tomcatrun-sources"; // 지난 컴파일 때 본 소스의 크기 · 수정 시각 (collect_java)
+const PENDING_FILE: &str = ".tomcatrun-pending"; // 쓰는 곳을 아직 다시 컴파일하지 못한 소스 (run_compile · 2026.11.24)
+const CP_FILE: &str = ".tomcatrun-cp";           // 지난 컴파일 때 클래스 경로의 jar 이름 · 크기 (cp_sig · 2026.11.24)
+const POM_FILE: &str = ".tomcatrun-pom";         // 의존 jar 를 받을 때의 pom.xml 해시 (mark_deps · 2026.11.24)
 
 /* ---------- 설정 ---------- */
 
@@ -566,6 +569,7 @@ struct Rt {
     last_reload: Mutex<String>, // 마지막 「Reloading classes [...]」 의 클래스 (교체 실패 알림에 이름을 붙인다)
     inner: Mutex<Inner>,
     compile_lock: Mutex<()>,
+    swept: AtomicBool, // 이번 실행에서 소스가 없어진 클래스를 한 번 치웠는가 (sweep_orphans)
     compile_tx: Sender<bool>, // true = 전체 컴파일
     // 2026.10.29 : 줄마다 파일에 쓰던 것을 버퍼로 — 기동 때 수천 줄이 줄마다 시스템 호출이 되었다. monitor 가 3초마다 비운다
     console: Mutex<Option<std::io::BufWriter<File>>>,
@@ -700,6 +704,7 @@ fn new_rt() -> (&'static Rt, Receiver<bool>) {
             restart_needed: Vec::new(),
         }),
         compile_lock: Mutex::new(()),
+        swept: AtomicBool::new(false),
         compile_tx: tx,
         console: Mutex::new(None),
         deps_busy: AtomicBool::new(false),
@@ -942,6 +947,68 @@ fn read_sources(dir: &str) -> Option<Sources> {
 fn write_sources(dir: &Path, seen: &Sources) {
     let text: String = seen.iter().map(|(rel, (len, ns))| format!("{len}\t{ns}\t{rel}\n")).collect();
     let _ = fs::write(dir.join(SOURCES_FILE), text);
+}
+
+// 쓰는 곳을 아직 다시 컴파일하지 못한 소스 (src/main/java 기준 「a/b/C.java」) — 줄마다 하나.
+// 2026.11.24 : 두 길에서 생긴다. ① 컴파일이 일부 실패해도 성공한 클래스는 내놓는데, 그 모양 바뀜을 쓰는 곳에 퍼뜨리기 전에 멈춘다.
+//   다음 컴파일은 이미 새 모양을 「앞 모양」 으로 읽어 쓰는 곳을 빠뜨렸다(실행 중 NoSuchMethodError). ② 지운 소스 — 쓰는 곳이 그대로라
+//   다시 컴파일되지 않아 저장소에서는 깨지는 빌드가 여기서는 보이지 않았다. 다음 컴파일이 이 이름을 쓰는 소스를 함께 넣고, 성공하면 지운다.
+fn read_pending(dir: &str) -> BTreeSet<String> {
+    fs::read_to_string(Path::new(dir).join(PENDING_FILE)).map(|t| t.lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from).collect()).unwrap_or_default()
+}
+
+fn write_pending(dir: &Path, set: &BTreeSet<String>) {
+    let f = dir.join(PENDING_FILE);
+    if set.is_empty() {
+        let _ = fs::remove_file(f);
+    } else {
+        let _ = fs::write(f, set.iter().map(|r| format!("{r}\n")).collect::<String>());
+    }
+}
+
+// 컴파일 결과 폴더 안의 클래스 파일 → 그것을 만든 소스 (「a/b/C$X.class」 → 「a/b/C.java」)
+fn class_source(classes: &Path, f: &Path) -> Option<String> {
+    let rel = f.strip_prefix(classes).ok()?.to_string_lossy().replace('\\', "/");
+    let stem = rel.strip_suffix(".class")?;
+    let (dir, name) = stem.rsplit_once('/').unwrap_or(("", stem));
+    let top = name.split('$').next()?;
+    Some(if dir.is_empty() { format!("{top}.java") } else { format!("{dir}/{top}.java") })
+}
+
+// 클래스 경로 jar 의 이름 · 크기 — 꺼진 동안 jar 가 바뀌면(업데이트로 받은 WEB-INF/lib · 다시 받은 의존 jar) 그대로인 소스는
+// 옛 jar 에 맞춰 컴파일된 채라 실행 중에야 깨진다. 수정 시각은 넣지 않는다 — 같은 jar 를 다시 복사만 해도 전체 컴파일이 되지 않게.
+fn cp_sig(cfg: &Config, sv: &ServerCfg) -> String {
+    let mut out = Vec::new();
+    for dir in [PathBuf::from(&sv.deps_dir), Path::new(&sv.project).join("src/main/webapp/WEB-INF/lib"), Path::new(&cfg.tomcat_home).join("lib")] {
+        let Ok(rd) = fs::read_dir(&dir) else { continue };
+        let mut jars: Vec<String> = rd
+            .filter_map(Result::ok)
+            .filter(|e| e.path().extension().map_or(false, |x| x.eq_ignore_ascii_case("jar")))
+            .map(|e| format!("{}\t{}", e.file_name().to_string_lossy(), e.metadata().map_or(0, |m| m.len())))
+            .collect();
+        jars.sort();
+        out.push(format!("[{}]", p(&dir)));
+        out.extend(jars);
+    }
+    out.join("\n")
+}
+
+// 파일이 없으면(이 기능 전에 만든 결과) 같다고 본다 — 업데이트하자마자 전체 컴파일하지 않게. 다음 성공한 컴파일이 남긴다
+fn cp_changed(cfg: &Config, sv: &ServerCfg) -> bool {
+    fs::read_to_string(Path::new(&sv.classes_dir).join(CP_FILE)).map_or(false, |t| t != cp_sig(cfg, sv))
+}
+
+fn pom_hash(project: &str) -> Option<String> {
+    fs::read(Path::new(project).join("pom.xml")).ok().map(|b| sha1_smol::Sha1::from(&b).digest().to_string())
+}
+
+// 의존 jar 를 받았다는 표지 — 받은 시각과 그때의 pom.xml 해시.
+// 2026.11.24 : 시각만 보면 원래 수정 시각을 둔 채 가져온 pom(cp -p · 압축 풀기)이 바뀌었어도 「최신」 으로 보였다
+fn mark_deps(deps: &Path, project: &str) {
+    let _ = fs::write(deps.join(STAMP_FILE), now_ms().to_string());
+    if let Some(h) = pom_hash(project) {
+        let _ = fs::write(deps.join(POM_FILE), h);
+    }
 }
 
 fn common_checks(c: &Config) -> Vec<Check> {
@@ -1295,8 +1362,11 @@ fn server_checks(c: &Config, s: &ServerCfg, r: &Rt, dups: &[jarcheck::Dup], asid
         .map(|r| r.filter_map(Result::ok).filter(|e| e.path().extension().map_or(false, |x| x == "jar")).count())
         .unwrap_or(0);
     // pom 을 고친 뒤 jar 를 다시 받지 않았으면 알린다
-    let pom = mtime_ms(&Path::new(&s.project).join("pom.xml")).unwrap_or(0);
-    let deps_fresh = read_stamp(&s.deps_dir) >= pom;
+    // 받을 때 남긴 pom 해시가 있으면 내용으로, 없으면(이 기능 전에 받은 것) 시각으로 견준다
+    let deps_fresh = match fs::read_to_string(Path::new(&s.deps_dir).join(POM_FILE)) {
+        Ok(h) => pom_hash(&s.project).map_or(true, |now| now == h.trim()),
+        Err(_) => read_stamp(&s.deps_dir) >= mtime_ms(&Path::new(&s.project).join("pom.xml")).unwrap_or(0),
+    };
     let compiled = Path::new(&s.classes_dir).join(STAMP_FILE).exists();
     let mut out = vec![
         Check { key: "project", label: "소스", ok: Path::new(&s.project).join("src/main/webapp").exists(), detail: s.project.clone(), warn: false },
@@ -2641,25 +2711,23 @@ fn start_server(app: &AppHandle, i: usize) -> Result<(), String> {
             }
         }
         // 끈 채 인코딩 · -parameters 를 바꿨으면 톰캣을 띄우기 전에 비우고 다시 만든다 — 아직 아무것도 클래스를 쥐고 있지 않다
-        let opts_changed = read_stamp(&sv.classes_dir) != 0 && read_compile_opts(&sv.classes_dir) != compile_opts(&sv);
-        if opts_changed {
-            let _ = fs::remove_dir_all(&sv.classes_dir);
-        }
-        let full = !Path::new(&sv.classes_dir).join(STAMP_FILE).exists();
+        let had = read_stamp(&sv.classes_dir) != 0;
+        let opts_changed = had && read_compile_opts(&sv.classes_dir) != compile_opts(&sv);
+        // 2026.11.24 : 꺼진 동안 클래스 경로의 jar 가 바뀌었으면 같은 길로 — 그대로인 소스도 옛 jar 에 맞춰 컴파일된 채다
+        let jars_changed = had && !opts_changed && cp_changed(&cfg, &sv);
+        let full = !Path::new(&sv.classes_dir).join(STAMP_FILE).exists() || opts_changed || jars_changed;
         if full {
+            // 2026.11.24 : 스탬프 없이 남은 결과(첫 전체 컴파일이 실패한 뒤 등)도 비운다 — 덮어쓰기만 하면 지운 소스의 클래스가 남아 Spring 이 빈으로 읽었다
+            let _ = fs::remove_dir_all(&sv.classes_dir);
             if opts_changed {
                 log(app, Some(i), "app", "", format!("컴파일 옵션이 바뀌어({}) 컴파일 결과를 비우고 전체 컴파일부터 합니다.", opts_label(&sv)));
+            } else if jars_changed {
+                log(app, Some(i), "app", "", "라이브러리 jar 가 바뀌어 컴파일 결과를 비우고 전체 컴파일부터 합니다.");
             } else {
                 log(app, Some(i), "app", "", "컴파일한 클래스가 없어 전체 컴파일부터 합니다.");
             }
         } else {
-            // 2026.11.23 : 실행기가 꺼진 동안 지우거나 옮긴 소스의 클래스를 치운다 — 저장 감시가 못 봐 남은 클래스를 Spring 이 빈으로 읽었다.
-            //              아직 아무것도 클래스를 쥐고 있지 않을 때라 지워도 된다.
-            let gone = classapi::orphans(&Path::new(&sv.project).join("src/main/java"), Path::new(&sv.classes_dir));
-            let removed: Vec<String> = gone.iter().filter(|f| fs::remove_file(f).is_ok()).filter_map(|f| f.file_name().map(|n| n.to_string_lossy().into_owned())).collect();
-            if !removed.is_empty() {
-                log(app, Some(i), "app", "", format!("소스가 없어진 클래스 {}개를 컴파일 결과에서 지웠습니다 · {}", removed.len(), some_names(&removed)));
-            }
+            sweep_orphans(app, i, &sv);
         }
         // 2026.11.23 : 기동마다 바뀐 소스를 찾아 컴파일한다. 전에는 컴파일 결과가 없을 때만 컴파일해서,
         //              실행기가 꺼진 동안 고친 소스(저장 감시가 못 본다)가 자바 파일을 다시 저장할 때까지 옛 클래스로 떴다 — 재시작해도 그대로였다.
@@ -2981,6 +3049,44 @@ fn collect_java(dir: &Path, rel: &str, classes: Option<&Path>, since_ms: u64, pr
     }
 }
 
+// 소스가 없어진 클래스를 컴파일 결과에서 지우고, 그 이름을 쓰던 소스를 다음 컴파일에 넣게 남긴다 (PENDING_FILE).
+// 2026.11.23 : 실행기가 꺼진 동안 지우거나 옮긴 소스는 저장 감시가 못 봐 클래스가 남고, Spring 이 그것을 빈으로 다시 읽었다.
+// 2026.11.24 : 톰캣 기동 때만 돌아, 톰캣 없이 저장 · 컴파일만 하면 옛 클래스를 읽고 컴파일이 통과했다 — 실행기를 켠 뒤 첫 컴파일에서도 한 번 돈다.
+//              그 뒤에 지운 소스는 저장 감시가 맡는다 (removed_java).
+fn sweep_orphans(app: &AppHandle, i: usize, sv: &ServerCfg) {
+    let r = rt(app, i);
+    r.swept.store(true, Ordering::Relaxed);
+    let classes = Path::new(&sv.classes_dir);
+    let gone = classapi::orphans(&Path::new(&sv.project).join("src/main/java"), classes);
+    let removed: Vec<&PathBuf> = gone.iter().filter(|f| fs::remove_file(f).is_ok()).collect();
+    if removed.is_empty() {
+        return;
+    }
+    let mut set = read_pending(&sv.classes_dir);
+    set.extend(removed.iter().filter_map(|f| class_source(classes, f)));
+    write_pending(classes, &set);
+    let names: Vec<String> = removed.iter().filter_map(|f| f.file_name().map(|n| n.to_string_lossy().into_owned())).collect();
+    log(app, Some(i), "app", "", format!("소스가 없어진 클래스 {}개를 컴파일 결과에서 지웠습니다 · {}", names.len(), some_names(&names)));
+}
+
+// 다시 컴파일한 소스의 안쪽 클래스(C$X.class) 가운데 이번에 만들어지지 않은 것 — 소스에서 지운 안쪽 클래스다.
+// 2026.11.24 : 덮어쓰기만 해서 남았고, @Component 가 붙은 안쪽 클래스면 지운 뒤에도 빈으로 읽혔다.
+//              바깥 클래스가 이번에 쓰였을 때(수정 시각 ≥ 컴파일 시작)만 본다 — 실패해 안 쓰인 소스의 클래스는 건드리지 않는다.
+fn stale_inner(classes: &Path, rels: &[String], since_ms: u64) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for rel in rels {
+        let files = classapi::class_files(classes, rel, true);
+        let Some(stem) = rel.rsplit('/').next().and_then(|f| f.strip_suffix(".java")) else { continue };
+        let top = format!("{stem}.class");
+        let fresh = |f: &PathBuf| mtime_ms(f).map_or(false, |m| m >= since_ms);
+        if !files.iter().any(|f| f.file_name().map_or(false, |n| n.to_string_lossy() == top) && fresh(f)) {
+            continue;
+        }
+        out.extend(files.into_iter().filter(|f| f.file_name().map_or(false, |n| n.to_string_lossy() != top) && !fresh(f)));
+    }
+    out
+}
+
 fn run_compile(app: &AppHandle, i: usize, full: bool) -> Option<CompileResult> {
     let (cfg, sv) = cfgs(app, i);
     let r = rt(app, i);
@@ -3006,6 +3112,23 @@ fn run_compile(app: &AppHandle, i: usize, full: bool) -> Option<CompileResult> {
     // 짝 클래스는 앱에 올라가 있는 classes 와 견준다 (임시 폴더는 컴파일 때마다 비운다)
     let mut seen = Sources::new();
     collect_java(&src, "", (!full).then_some(classes.as_path()), if full { 0 } else { stamp }, if full { None } else { prev.as_ref() }, &mut files, &mut seen);
+    if !full && !r.swept.load(Ordering::Relaxed) {
+        sweep_orphans(app, i, &sv);
+    }
+    // 지난번에 쓰는 곳까지 다시 컴파일하지 못한 소스 · 지운 소스 — 그 이름을 쓰는 소스를 이번에 함께 넣는다 (PENDING_FILE)
+    let mut pending = if full { BTreeSet::new() } else { read_pending(&sv.classes_dir) };
+    if !pending.is_empty() {
+        let left: Vec<String> = pending.iter().filter_map(|r| r.rsplit('/').next().and_then(|f| f.strip_suffix(".java")).map(str::to_string)).collect();
+        let skip: HashSet<PathBuf> = files.iter().cloned().collect();
+        let more = classapi::users(&src, &left, &skip);
+        if more.is_empty() {
+            pending.clear();
+            write_pending(&classes, &pending);
+        } else {
+            log(app, Some(i), "compile", "", format!("컴파일 더함 · 지난번에 쓰는 곳까지 다시 컴파일하지 못한 {} 를 쓰는 곳 {}개 · {}", some_names(&left), more.len(), names(&more)));
+            files.extend(more);
+        }
+    }
     let find_ms = began.elapsed().as_millis();
     if files.is_empty() {
         log(app, Some(i), "compile", "", format!("바뀐 자바 파일이 없습니다 (찾기 {find_ms}ms)."));
@@ -3074,6 +3197,8 @@ fn run_compile(app: &AppHandle, i: usize, full: bool) -> Option<CompileResult> {
     };
     let rels = |list: &[PathBuf]| list.iter().map(|f| f.strip_prefix(&src).unwrap_or(f).to_string_lossy().replace('\\', "/")).collect::<Vec<_>>();
     let mut before = if full { Default::default() } else { classapi::snapshot(&classes, &rels(&files)) };
+    // 소스마다 처음 본 앞 모양 — 실패하면 이것과 내놓은 뒤 모양을 견주어 바뀐 것을 PENDING_FILE 에 남긴다
+    let mut first: HashMap<String, String> = before.clone();
     let (mut ok, mut errors, via) = compile(&files);
     // 상수 값 · 메서드 시그니처가 바뀌었으면 쓰는 소스도 컴파일한다 (classapi.rs 머리말).
     // 그 소스가 가진 상수가 바뀐 상수로 셈한 것일 수 있어 몇 번 거듭한다. 전체 컴파일이면 이미 다 했다.
@@ -3093,6 +3218,9 @@ fn run_compile(app: &AppHandle, i: usize, full: bool) -> Option<CompileResult> {
         // 「컴파일」 로 시작해야 반영 기록에도 남는다 (ui 의 isEvent)
         log(app, Some(i), "compile", "", format!("컴파일 더함 · {} 의 상수 · 메서드 시그니처가 바뀌어 쓰는 곳 {}개 · {}", some_names(&shapes), users.len(), names(&users)));
         before = classapi::snapshot(&classes, &rels(&users));
+        for (k, v) in &before {
+            first.entry(k.clone()).or_insert_with(|| v.clone());
+        }
         let (o, e, _) = compile(&users);
         (ok, errors) = (o, errors + e);
         compiled.extend(users.iter().cloned());
@@ -3114,6 +3242,22 @@ fn run_compile(app: &AppHandle, i: usize, full: bool) -> Option<CompileResult> {
     }
     // 내놓지 못했으면 스탬프를 남기지 않는다 — 다음 저장 때 같은 파일이 다시 잡힌다
     let ok = ok && published;
+    // 실패했어도 성공한 소스의 새 클래스는 이미 classes 에 있다 — 모양이 바뀐 것을 남겨 다음 컴파일이 쓰는 곳을 넣게 한다.
+    // 성공하면 쓰는 곳까지 다 했으니 지운다
+    if ok {
+        pending.clear();
+    } else if !full {
+        let after = classapi::snapshot(&classes, &first.keys().cloned().collect::<Vec<_>>());
+        pending.extend(first.iter().filter(|(rel, old)| !old.is_empty() && after.get(*rel) != Some(*old)).map(|(rel, _)| rel.clone()));
+    }
+    write_pending(&classes, &pending);
+    if ok {
+        let gone = stale_inner(&classes, &rels(&files), begin_ms);
+        let n = gone.iter().filter(|f| fs::remove_file(f).is_ok()).count();
+        if n > 0 {
+            log(app, Some(i), "compile", "", format!("소스에서 없어진 안쪽 클래스 {n}개를 컴파일 결과에서 지웠습니다 · {}", some_names(&gone.iter().filter_map(|f| f.file_name().map(|x| x.to_string_lossy().into_owned())).collect::<Vec<_>>())));
+        }
+    }
     if let Some(id) = wait_id {
         let mut inner = r.inner.lock().unwrap();
         if !ok && inner.java_wait.as_ref().map_or(false, |w| w.id == id) {
@@ -3127,6 +3271,7 @@ fn run_compile(app: &AppHandle, i: usize, full: bool) -> Option<CompileResult> {
         // 시작 시각을 남긴다 — 컴파일하는 동안 고친 파일은 다음에 다시 잡힌다
         let _ = fs::write(classes.join(STAMP_FILE), begin_ms.to_string());
         let _ = fs::write(classes.join(COMPILE_OPTS_FILE), &opts);
+        let _ = fs::write(classes.join(CP_FILE), cp_sig(&cfg, &sv));
         // 컴파일 전에 훑은 모습을 남긴다 — 컴파일하는 동안 고친 파일은 크기 · 시각이 달라 다음에 다시 잡힌다
         write_sources(&classes, &seen);
         // 켜진 채 옵션이 바뀌었으면(설정 파일을 손으로 고친 경우 — 화면에서는 끈 뒤에만 바꾼다) 옛 클래스가 앱에 올라가 있다
@@ -3716,19 +3861,24 @@ fn change_worker(app: AppHandle, rx: Receiver<(usize, PathBuf)>) {
 // 자바 소스를 지웠거나 옮겼다 — 컴파일 결과의 클래스도 지운다.
 // 2026.10.29 : 바뀐 파일만 컴파일하므로 지운 소스의 .class 가 남아, 재시작해도 Spring 이 그 클래스를 빈으로 다시 읽었다.
 // 실행 중인 앱에는 이미 올라가 있어 빼지 못한다 — 재시작 알림에 올린다.
-fn removed_java(app: &AppHandle, i: usize, sv: &ServerCfg, path: &Path, running: bool) {
+// 돌려주는 값 : 지운 클래스가 있었는가 — 있으면 부르는 쪽이 컴파일을 건다 (그 이름을 쓰는 소스를 다시 컴파일해 오류로 드러낸다)
+fn removed_java(app: &AppHandle, i: usize, sv: &ServerCfg, path: &Path, running: bool) -> bool {
     let rel = rel_to(&sv.project, path);
-    let Some(in_src) = rel.get("src/main/java/".len()..) else { return };
+    let Some(in_src) = rel.get("src/main/java/".len()..) else { return false };
     let n = classapi::remove(Path::new(&sv.classes_dir), in_src);
     if n == 0 {
-        return;
+        return false;
     }
+    let mut set = read_pending(&sv.classes_dir);
+    set.insert(in_src.to_string());
+    write_pending(Path::new(&sv.classes_dir), &set);
     let name = in_src.rsplit('/').next().unwrap_or(in_src);
     if running {
         add_pending(app, i, rel.clone(), "자바 소스를 지움 · 실행 중인 앱에는 그 클래스가 남아 있음");
     }
     let (kind, tail) = if running { ("warn", " · 재시작해야 앱에서 빠집니다") } else { ("", "") };
     log(app, Some(i), "app", kind, format!("{name} 을 지워 컴파일 결과의 클래스 {n}개도 지웠습니다{tail}"));
+    true
 }
 
 fn apply_changes(app: &AppHandle, i: usize, paths: &[&PathBuf]) {
@@ -3755,7 +3905,7 @@ fn apply_changes(app: &AppHandle, i: usize, paths: &[&PathBuf]) {
     let mut restart: Vec<String> = Vec::new();
     for path in paths {
         match classify_path(&sv.project, &live_list, path) {
-            Some(Change::Java) if !path.exists() => removed_java(app, i, &sv, path, running),
+            Some(Change::Java) if !path.exists() => java |= removed_java(app, i, &sv, path, running),
             Some(Change::Java) => java = true,
             Some(Change::Pom) => pom = true,
             Some(Change::Live("매퍼", name)) => mappers.push(name),
@@ -3812,7 +3962,21 @@ fn start_watchers(app: &AppHandle) {
         }
         let project = PathBuf::from(&sv.project);
         let tx = s.change_tx.clone();
+        let app2 = app.clone();
         let watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+            // 2026.11.24 : 감시가 오류를 내거나 「다시 훑어라」 고 하면(한꺼번에 많이 바뀌어 버퍼가 넘침 — 큰 svn update) 놓친 변경이 있다.
+            //   자바는 다음 컴파일이 소스 전체를 훑어 찾지만, 지운 소스의 클래스는 남았다. 다시 치우게 하고 컴파일을 건다
+            let rescan = match &res {
+                Err(_) => true,
+                Ok(ev) => ev.need_rescan(),
+            };
+            if rescan {
+                let r = rt(&app2, i);
+                r.swept.store(false, Ordering::Relaxed);
+                log(&app2, Some(i), "app", "warn", "저장 감시가 변경을 놓쳤을 수 있어 소스를 다시 훑어 컴파일합니다.");
+                let _ = r.compile_tx.send(false);
+                return;
+            }
             let Ok(ev) = res else { return };
             if !matches!(ev.kind, EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)) {
                 return;
@@ -3913,7 +4077,7 @@ fn refresh_deps_blocking(app: &AppHandle, i: usize) -> bool {
         return false;
     }
     let _ = fs::remove_dir_all(&old);
-    let _ = fs::write(deps.join(STAMP_FILE), now_ms().to_string());
+    mark_deps(&deps, &sv.project);
     // 상주 컴파일러는 jar 목록을 들고 있다. 바뀐 jar 를 보도록 내려 두고 다음 저장 때 새로 띄운다.
     stop_daemon(app, "");
     log(app, Some(i), "deps", "ok", format!("의존 jar {jars}개로 바꿨습니다. 다음 시작부터 씁니다."));
@@ -4504,7 +4668,7 @@ fn import_servers(app: &AppHandle, picked: &[eclipse::EServer], naming: bool) ->
         let (name, deps) = (&sv.name, PathBuf::from(&sv.deps_dir));
         match eclipse::copy_deps(&lib, &sv.project, &deps) {
             Ok(n) => {
-                let _ = fs::write(deps.join(STAMP_FILE), now_ms().to_string());
+                mark_deps(&deps, &sv.project);
                 log(app, None, "app", "ok", format!("{name} 의존 jar {n}개를 이클립스 배포본에서 옮겼습니다."));
                 notes.push(format!("{name} jar {n}개"));
                 redo_dedup(app, None, &sv);
@@ -4574,7 +4738,7 @@ fn auto_deps_blocking(app: &AppHandle, i: usize) -> Result<String, String> {
         .find(|s| s.project.trim_end_matches('/').eq_ignore_ascii_case(sv.project.trim_end_matches('/')) && s.jars > 0);
     if let Some(es) = found {
         let n = eclipse::copy_deps(&es.lib_dir, &es.project, Path::new(&sv.deps_dir))?;
-        let _ = fs::write(Path::new(&sv.deps_dir).join(STAMP_FILE), now_ms().to_string());
+        mark_deps(Path::new(&sv.deps_dir), &sv.project);
         stop_daemon(app, "");
         let msg = format!("{} 의존 jar {n}개를 이클립스 배포본에서 옮겼습니다.", sv.name);
         log(app, Some(i), "deps", "ok", msg.clone());
@@ -6821,6 +6985,42 @@ mod tests {
         // 상주 컴파일러 요청 — 옛 네 칸 뒤에 인코딩 · -parameters
         let req = compile_request("C:/c", "C:/c;D:/d/*", Path::new("C:/t/args.txt"), &sv);
         assert_eq!(req, "COMPILE\tC:/c\tC:/c;D:/d/*\tC:/t/args.txt\tMS949\ttrue");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 쓰는_곳을_못_한_소스를_남기고_읽는다() {
+        let dir = std::env::temp_dir().join(format!("tomcatrun-pending-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("a/b")).unwrap();
+        let d = p(&dir);
+        assert!(read_pending(&d).is_empty());
+        write_pending(&dir, &["a/b/C.java".to_string(), "D.java".to_string()].into_iter().collect());
+        assert_eq!(read_pending(&d).into_iter().collect::<Vec<_>>(), vec!["D.java", "a/b/C.java"]);
+        // 비면 파일을 지운다 — 남아 있으면 다음 컴파일마다 빈 목록을 읽는다
+        write_pending(&dir, &BTreeSet::new());
+        assert!(!dir.join(PENDING_FILE).exists());
+        assert_eq!(class_source(&dir, &dir.join("a/b/C$Inner$2.class")).as_deref(), Some("a/b/C.java"));
+        assert_eq!(class_source(&dir, &dir.join("Top.class")).as_deref(), Some("Top.java"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 이번에_안_만든_안쪽_클래스만_지운다() {
+        let dir = std::env::temp_dir().join(format!("tomcatrun-inner-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("a")).unwrap();
+        for f in ["a/C$Gone.class", "a/F.class", "a/F$Old.class"] {
+            fs::write(dir.join(f), b"old").unwrap();
+        }
+        let since = now_ms() + 1;
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        // C 는 이번에 다시 만들어졌고 C$Keep 도 함께 나왔다. F 는 실패해 다시 쓰이지 않았다
+        for f in ["a/C.class", "a/C$Keep.class"] {
+            fs::write(dir.join(f), b"new").unwrap();
+        }
+        let gone = stale_inner(&dir, &["a/C.java".into(), "a/F.java".into()], since);
+        assert_eq!(gone, vec![dir.join("a").join("C$Gone.class")]);
         let _ = fs::remove_dir_all(&dir);
     }
 
