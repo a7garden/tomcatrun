@@ -23,11 +23,13 @@
 // 사용자가 누른 Commit · Update · Revert · Resolve (Git 은 Fetch · Push 도)를 svn.exe · git 으로 실행한다 (2026.10.29~ · svncli.rs · gitwrite.rs).
 // 덮거나 지우는 쓰기는 내 파일을 먼저 사용자 폴더에 복사해 둔다 (2026.10.30~ · vcsbackup.rs).
 // Commit message 자동 생성은 사용자가 정한 언어 모델 CLI 에 고른 파일의 Diff 를 넘긴다 — 명령 칸이 비면 하지 않는다 (commitmsg.rs).
+// 에이전트는 127.0.0.1 의 제어 창구로 상태 · 시작 · 중지 · 재시작 · 컴파일 · 로그 · 저장소 조회만 한다 — 버전 관리 쓰기는 열지 않는다 (2026.11.25~ · ctl.rs).
 // 개발에서만 바꾸는 앱 설정은 overlay/ 의 별도 파일로 덧붙이고(tomcatrun.DevTweaks), 쓰는 것은 모두 이 폴더 안이다.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod classapi;
 mod commitmsg;
+mod ctl;
 mod eclipse;
 mod filtering;
 mod git;
@@ -1727,7 +1729,10 @@ fn log_pump(app: AppHandle, rx: Receiver<LogLine>) {
     let mut last = Instant::now();
     loop {
         match rx.recv_timeout(Duration::from_millis(80)) {
-            Ok(l) => buf.push(l),
+            Ok(l) => {
+                ctl::remember(&l); // 에이전트가 /log?src=app 으로 읽는다 — 화면에만 가고 파일에 남지 않는 줄
+                buf.push(l)
+            }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return,
         }
@@ -6664,6 +6669,8 @@ fn main() {
             }
             let h6 = h.clone();
             thread::spawn(move || monitor(h6));
+            let h10 = h.clone();
+            thread::spawn(move || ctl::serve(h10));
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -6704,8 +6711,14 @@ fn main() {
             vcs_fetch, vcs_push, git_outgoing, gen_commit_msg, check_commit_msg, vcs_backups, vcs_restore, vcs_stats, vcs_commit_check,
             update_check, update_install, svn_get, changelog, eclipse_scan, eclipse_import, quick_project, pick_dir, auto_deps, dedup_deps, undo_dedup, apply_scan_hint
         ])
-        .run(tauri::generate_context!())
-        .expect("실행기를 띄우지 못했습니다");
+        .build(tauri::generate_context!())
+        .expect("실행기를 띄우지 못했습니다")
+        .run(|_, e| {
+            // 에이전트 제어 창구 정보를 지운다 — 남겨 두면 그 포트를 나중에 잡은 프로그램에 토큰이 간다 (ctl.rs)
+            if let tauri::RunEvent::Exit = e {
+                ctl::forget();
+            }
+        });
 }
 
 #[cfg(test)]

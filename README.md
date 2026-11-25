@@ -218,6 +218,21 @@ SVN 상태는 `.svn/wc.db` 를 읽기 전용(immutable)으로 열어 계산하�
 - 실행기는 하나만 뜬다. 다시 실행하면 떠 있는 창(트레이로 숨겨 두었어도)이 앞으로 온다.
 - **IDE 와 같은 서버를 동시에 켜지 않는다.** 실행기는 기동 전에 포트를 확인하고, 막혀 있으면 잡고 있는 프로그램 이름과 PID 를 보여 준다.
 
+## 에이전트가 부르기 (Claude Code 스킬)
+
+실행기가 켜지면 `127.0.0.1` 의 빈 포트에 제어 창구를 열고, 포트 · 토큰을 `%LOCALAPPDATA%\tomcatrun\ctl.json` 에 적는다.
+에이전트는 이것으로 상태 보기 · 시작 · 중지 · 재시작 · 컴파일 · 로그 · 저장소 조회를 한다. 부르는 명령줄과 스킬은 `skill/tomcatrun/` 에 있다.
+
+```bash
+cp -r skill/tomcatrun ~/.claude/skills/        # Claude Code 에 스킬 넣기 (Node 18 이상)
+node ~/.claude/skills/tomcatrun/tomcatrun.mjs status
+```
+
+- **버전 관리는 조회만 연다.** Commit · Update · Revert · Resolve · Cleanup · Push 와 설정 바꾸기는 창구에 없다 — 사람이 화면에서 누른다.
+- 에이전트가 시작 · 중지 · 재시작을 하면 실행기 로그와 알림에 「에이전트가 … 했습니다」가 남는다.
+- 토큰이 맞지 않거나 브라우저가 보낸 요청(`Origin` 머리)은 받지 않는다. 같은 PC 의 웹 페이지가 톰캣을 끄지 못하게 한다.
+- 컴파일 오류 · 「재시작해야 반영」 · 자바 교체 결과처럼 화면에만 가던 줄은 최근 2000줄을 들고 있다가 창구로 내준다. 톰캣 로그는 `logs/console.log` 를 읽는다.
+
 ## 한계
 
 - 클래스 상속 구조를 바꾸거나 AOP 가 걸린 클래스의 메서드 시그니처를 크게 바꾸면 교체에 실패할 수 있다. 반영 기록에 오류가 나오면 재시작한다.
@@ -240,6 +255,7 @@ SVN 상태는 `.svn/wc.db` 를 읽기 전용(immutable)으로 열어 계산하�
 | `overlay/` | 개발 전용 앱 설정. 모든 서버의 `/WEB-INF/classes` 에 덧붙는다 |
 | `app/` | 실행기 소스 (Rust · Tauri 2) |
 | `installer/` | 설치 파일 (`fetch.sh` · `build.sh` · `tomcatrun.nsi`) |
+| `skill/tomcatrun/` | 에이전트 스킬 — `SKILL.md` 와 제어 창구를 부르는 `tomcatrun.mjs` |
 | `tomcatrun.json` | 이 PC 의 설정 (git 에 넣지 않는다) |
 
 ## 소스에서 만들기
