@@ -1187,6 +1187,7 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 				<section class="set-sec" id="setUpdate">
 					<div class="opts">
 						<label class="opt" title="켤 때 · 1시간마다 · 창으로 돌아올 때 GitHub 릴리스에서 새 판을 확인합니다. 닿지 않거나 새 판을 만드는 중이면 몇 분 뒤 다시 확인합니다. 새 판이 있으면 위 알림 줄에 「업데이트」 단추가 뜹니다."><input type="checkbox" id="optUpdate"><span>새 판 자동 확인</span></label>
+						<label class="opt" id="rowUpdateAuto" title="새 판이 보이면 미리 받아 해시 · 서명을 대조해 둡니다. 톰캣이 모두 꺼져 있고 버전 관리 작업도 없으면 1분 예고 뒤 설치하고 실행기를 다시 엽니다. 예고 사이에 톰캣을 켜면 미룹니다."><input type="checkbox" id="optUpdateAuto"><span>새 판 자동 설치</span></label>
 					</div>
 					<div class="sec-acts"><button class="btn" id="updNow">지금 확인</button><button class="btn primary" id="updGo" hidden>업데이트</button><span id="updState"></span></div>
 					<div class="chlog" id="chlog"></div>
@@ -1557,6 +1558,8 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 		$("optMapper").checked = s.mapperHotswap;
 		$("optSession").checked = s.keepSession;
 		$("optUpdate").checked = s.updateCheck;
+		$("optUpdateAuto").checked = s.updateAuto;
+		$("rowUpdateAuto").classList.toggle("off", !s.updateCheck);
 		var u = s.update;
 		$("updNow").disabled = u.checking || u.downloading != null;
 		$("updGo").hidden = !(u.release && u.installable);
@@ -1565,7 +1568,7 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 		// 다음 자동 확인 시각 — 실패 · 빌드 중일 때 언제 다시 묻는지 보인다 (자동 확인을 껐으면 붙이지 않는다)
 		var next = s.updateCheck && u.nextAtMs ? " · " + new Date(u.nextAtMs).toLocaleTimeString() + " 에 다시 확인" : "";
 		$("updState").textContent = "지금 " + s.version + " · " + (u.checking ? "확인 중..."
-			: u.release ? "새 판 " + u.release.version + " 이 있습니다" + (u.installable ? "" : " (소스에서 띄운 실행기라 직접 받아 설치합니다)")
+			: u.release ? "새 판 " + u.release.version + " 이 있습니다" + (u.installable ? autoNote(s, " · ") : " (소스에서 띄운 실행기라 직접 받아 설치합니다)")
 			: u.error ? u.error + next
 			: u.building ? "새 판 " + u.building + " 의 설치 파일을 만드는 중입니다" + next
 			: u.checkedAtMs ? "최신입니다 (" + new Date(u.checkedAtMs).toLocaleTimeString() + " 확인)" : "아직 확인하지 않았습니다");
@@ -1879,6 +1882,7 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 					'<span class="sub">이클립스는 pom 의 값을 넣고 실행기는 글자를 그대로 읽습니다 · 값을 파일에 적거나 JVM 인자로 받게 하세요</span>' });
 		});
 		var up = state.update, rel = up.release;
+		var auto = up.installable && autoNote(state, "");
 		if (rel) {
 			var mb = function (b) { return (b / 1048576).toFixed(0) + "MB"; };
 			var on = state.servers.filter(function (s) { return s.status !== "stopped"; }).length;
@@ -1886,7 +1890,8 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 				text: "<b>새 판 " + esc(rel.version) + " 이 있습니다</b>" +
 					'<span class="sub">' + (up.downloading != null ? "받는 중 " + mb(up.downloading) + " / " + mb(rel.size)
 						: up.error ? esc(up.error) : "지금 " + esc(state.version) +
-							(up.installable ? (on ? " · 켜진 톰캣 " + on + "개를 끄고 설치한 뒤 다시 엽니다" : " · 설치한 뒤 다시 엽니다") : "")) + "</span>",
+							(auto ? " · " + esc(auto)
+								: up.installable ? (on ? " · 켜진 톰캣 " + on + "개를 끄고 설치한 뒤 다시 엽니다" : " · 설치한 뒤 다시 엽니다") : "")) + "</span>",
 				acts: [["변경 내용", "", false, function () { openChangelog(); }]].concat(up.installable
 					? [["업데이트", "primary", up.downloading != null, function () { updateAsk(); }]]
 					: [["받으러 가기", "primary", false, function () { invoke("open", { target: rel.page }); }]]) });
@@ -2298,6 +2303,14 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 		var p = splitItem(t);
 		return '<li class="it"><b>' + mdInline(p[0]) + "</b>" +
 			(p[1] ? '<button class="tog" type="button">자세히 ▸</button><div class="rest">' + mdInline(p[1]) + "</div>" : "") + "</li>";
+	}
+	// 자동 설치가 어디까지 왔는지 — 켜 두지 않았으면 빈 글자 (알림 줄과 설정 › 업데이트가 같은 말을 쓴다)
+	function autoNote(s, lead) {
+		var u = s.update;
+		if (!(s.updateCheck && s.updateAuto) || !u.release || u.downloading != null) return "";
+		if (u.autoAtMs) return lead + new Date(u.autoAtMs).toLocaleTimeString() + " 에 자동으로 설치하고 다시 엽니다 · 톰캣을 켜면 미룹니다";
+		if (u.prepared === u.release.version) return lead + "받아 두었습니다 · 톰캣을 모두 끄면 자동으로 설치합니다";
+		return lead + "곧 받아서 자동으로 설치합니다";
 	}
 	function renderChangelog(s) {
 		var box = $("chlog");
@@ -6210,6 +6223,7 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 	$("optMapper").onchange = function () { call("set_option", { key: "mapperHotswap", value: this.checked }); };
 	$("optSession").onchange = function () { call("set_option", { key: "keepSession", value: this.checked }); };
 	$("optUpdate").onchange = function () { call("set_option", { key: "updateCheck", value: this.checked }); };
+	$("optUpdateAuto").onchange = function () { call("set_option", { key: "updateAuto", value: this.checked }); };
 	$("updNow").onclick = function () { delete dismissedRun.upd; call("update_check"); };
 	$("updGo").onclick = function () { updateAsk(); };
 	$("selHeap").onchange = function () { call("set_heap", { mb: parseInt(this.value, 10) }); };

@@ -233,6 +233,7 @@ struct Config {
     keep_session: bool,   // 재시작해도 로그인 유지 (톰캣 기본값과 같다)
     profile_start: bool,  // 기동 표본 — 켜는 동안 2초마다 스레드를 떠서 어디서 시간을 쓰는지 남긴다 (start_sampler)
     update_check: bool,   // 켤 때 · 1시간마다 · 창으로 돌아올 때 GitHub 릴리스에서 새 판을 확인한다 (update_loop)
+    update_auto: bool,    // 새 판을 미리 받아 두고, 톰캣 · 버전 관리 작업이 모두 쉴 때 알아서 설치한다 (auto_update_tick)
     tld_scan: String,     // TLD 를 찾을 jar (쉼표로 · 비우면 모든 jar) — server.xml 의 JarScanFilter
     ignore: Vec<String>,  // 저장 감시에서 뺄 파일 · 폴더 · 모든 서버 공통 · 프로젝트 기준 (「폴더/」 · 「*.sql」 · 「src/**/tmp」 꼴 · ignored() 참고)
     servers: Vec<ServerCfg>,
@@ -339,6 +340,7 @@ impl Default for Config {
             // jstack 이 붙을 때마다 JVM 이 잠깐 멈춰 기동이 조금 늘어난다 — 잴 때만 켠다
             profile_start: false,
             update_check: true,
+            update_auto: true,
             tld_scan: String::new(),
             ignore: vec![],
             // 처음에는 빈 서버 하나 — 프로젝트 폴더 · 포트 · 접속 주소는 사용자가 「설정 › 서버」에서 정한다
@@ -649,6 +651,12 @@ struct UpdateState {
     next_at_ms: u64,                  // 다음 자동 확인 (0 이면 곧)
     downloading: Option<u64>,         // 받은 바이트
     error: Option<String>,
+    prepared: Option<String>,         // 받아서 해시 · 서명을 대조해 둔 설치 파일의 판 (setup)
+    auto_at_ms: Option<u64>,          // 자동 설치를 할 시각 — 그때까지 쉬는 상태가 이어지면 설치한다
+    #[serde(skip)]
+    setup: Option<PathBuf>,           // 받아 둔 설치 파일
+    #[serde(skip)]
+    auto_retry_at_ms: u64,            // 미리 받기에 실패했을 때 다시 받을 시각
     #[serde(skip)]
     fails: u32,                       // 연달아 실패 · 빌드 중이었던 횟수 — 다시 묻는 간격을 늘린다
     #[serde(skip)]
@@ -907,6 +915,7 @@ struct Snapshot {
     ignore: Vec<String>,
     paths: Paths,
     update_check: bool,
+    update_auto: bool,
     update: UpdateState,
     svn_get: SvnGet,
     daemon: bool,
@@ -1545,6 +1554,7 @@ fn snapshot_with(app: &AppHandle, full: bool) -> Snapshot {
             tld_scan: c.tld_scan.clone(),
         },
         update_check: c.update_check,
+        update_auto: c.update_auto,
         update: sh.update.lock().unwrap().clone(),
         svn_get: sh.svn_get.lock().unwrap().clone(),
         daemon:sh.daemon_alive.load(Ordering::Relaxed),
@@ -4320,6 +4330,7 @@ fn set_option(app: AppHandle, key: String, value: bool) -> Result<(), String> {
             "keepSession" => c.keep_session = value,
             "profileStart" => c.profile_start = value,
             "updateCheck" => c.update_check = value,
+            "updateAuto" => c.update_auto = value,
             _ => return Err(format!("모르는 옵션: {key}")),
         }
         save_config(&c).map_err(|e| format!("설정을 저장하지 못했습니다: {e}"))?;
@@ -4906,8 +4917,138 @@ fn update_loop(app: AppHandle) {
         if due && shared(&app).cfg.lock().unwrap().update_check {
             check_update(&app);
         }
+        auto_update_tick(&app);
         thread::sleep(Duration::from_secs(60));
     }
+}
+
+// 자동 설치를 알린 뒤 실제로 설치하기까지 — 그 사이 톰캣을 켜면 미룬다. update_loop 가 1분마다 깨므로 다음 깸에 설치한다
+const UPDATE_GRACE_MS: u64 = 60 * 1000;
+// 미리 받기에 실패하면 이만큼 뒤에 다시 받는다 — 1분마다 수십 MB 를 다시 받지 않게
+const UPDATE_REFETCH_MS: u64 = 30 * 60 * 1000;
+
+// 톰캣이 모두 꺼져 있고(켜는 중 · 차례 기다림 · 컴파일 포함) 버전 관리 작업도 없을 때만 자동 설치한다.
+// 설치는 실행기를 닫았다 다시 여니, 디버깅 · svn 쓰기 도중에 끼어들면 일이 끊긴다
+fn update_quiet(app: &AppHandle) -> bool {
+    if shared(app).quitting.load(Ordering::Relaxed) || any_vcs_busy(app) {
+        return false;
+    }
+    (0..rt_count(app)).all(|i| {
+        let x = rt(app, i).inner.lock().unwrap();
+        x.status == Status::Stopped && x.child.is_none() && !x.waiting && !x.compiling
+    })
+}
+
+// 2026.11.25 : 새 판을 「업데이트」 단추로만 깔던 것에 자동 설치를 더했다.
+// 새 판이 보이면 먼저 받아 대조해 두고(톰캣이 켜져 있어도 받는다), 쉬는 상태가 되면 1분 예고 뒤 설치한다.
+// 예고 사이에 톰캣을 켜면 그 예고는 거두고, 다시 쉬면 다시 예고한다
+fn auto_update_tick(app: &AppHandle) {
+    let on = {
+        let c = shared(app).cfg.lock().unwrap();
+        c.update_check && c.update_auto
+    };
+    let now = now_ms();
+    let (rel, ready) = {
+        let mut u = shared(app).update.lock().unwrap();
+        let Some(rel) = u.release.clone() else {
+            u.auto_at_ms = None;
+            return;
+        };
+        if !on || u.downloading.is_some() || !update::installable(&home_dir()) {
+            u.auto_at_ms = None;
+            return;
+        }
+        let ready = u.prepared.as_deref() == Some(rel.version.as_str()) && u.setup.as_ref().is_some_and(|f| f.is_file());
+        if !ready && now < u.auto_retry_at_ms {
+            return;
+        }
+        (rel, ready)
+    };
+    if !ready {
+        log(app, None, "app", "", format!("새 판 {} 을 미리 받아 둡니다 (자동 설치).", rel.version));
+        let a = app.clone();
+        thread::spawn(move || {
+            if prepare_update(&a, &rel).is_err() {
+                shared(&a).update.lock().unwrap().auto_retry_at_ms = now_ms() + UPDATE_REFETCH_MS;
+            }
+        });
+        return;
+    }
+    let quiet = update_quiet(app);
+    let go = {
+        let mut u = shared(app).update.lock().unwrap();
+        match (quiet, u.auto_at_ms) {
+            (false, Some(_)) => {
+                u.auto_at_ms = None;
+                drop(u);
+                log(app, None, "app", "", format!("톰캣이 켜져 있어 {} 자동 설치를 미룹니다. 모두 끄면 다시 예고합니다.", rel.version));
+                emit_state(app);
+                false
+            }
+            (true, None) => {
+                u.auto_at_ms = Some(now + UPDATE_GRACE_MS);
+                drop(u);
+                let msg = format!("새 판 {} 을 1분 뒤 자동으로 설치하고 실행기를 다시 엽니다 · 그 사이 톰캣을 켜면 미룹니다", rel.version);
+                log(app, None, "app", "", msg.clone());
+                let _ = app.emit("toast", msg);
+                emit_state(app);
+                false
+            }
+            (true, Some(t)) => t <= now,
+            (false, None) => false,
+        }
+    };
+    if go {
+        log(app, None, "app", "", format!("{} 을 자동으로 설치합니다.", rel.version));
+        install_now(app.clone(), rel.version);
+    }
+}
+
+// 설치 파일을 받아 해시 · 서명을 대조하고 받아 둔 것으로 적는다. 받는 동안 알림 줄 · 설정 › 업데이트에 받은 크기가 보인다
+fn prepare_update(app: &AppHandle, rel: &update::Release) -> Result<PathBuf, String> {
+    {
+        let mut u = shared(app).update.lock().unwrap();
+        if u.downloading.is_some() {
+            return Err("이미 받는 중입니다.".into());
+        }
+        u.downloading = Some(0);
+        u.error = None;
+    }
+    emit_state(app);
+    log(app, None, "app", "", format!("업데이트 {} 를 받습니다: {}", rel.version, rel.asset));
+    let a = app.clone();
+    let r = update::download(rel, move |got| {
+        shared(&a).update.lock().unwrap().downloading = Some(got);
+        emit_state(&a);
+    });
+    {
+        let mut u = shared(app).update.lock().unwrap();
+        u.downloading = None;
+        match &r {
+            Ok(f) => {
+                u.prepared = Some(rel.version.clone());
+                u.setup = Some(f.clone());
+            }
+            Err(e) => u.error = Some(e.clone()),
+        }
+    }
+    match &r {
+        Ok(_) => log(app, None, "app", "", format!("{} 설치 파일을 받았습니다 (해시 · 서명 일치).", rel.version)),
+        Err(e) => log(app, None, "app", "err", e.clone()),
+    }
+    emit_state(app);
+    r
+}
+
+// 받아 둔 설치 파일로 톰캣을 끄고 조용히 설치한 뒤 실행기를 닫는다. 설치 파일이 끝나면 실행기를 다시 띄운다.
+fn install_now(app: AppHandle, version: String) {
+    let Some(setup) = shared(&app).update.lock().unwrap().setup.clone() else { return };
+    log(&app, None, "app", "", format!("톰캣을 끄고 {version} 를 설치합니다."));
+    quit_then(app, move |app| {
+        if let Err(e) = update::run_installer(&setup, &home_dir()) {
+            log(app, None, "app", "err", e);
+        }
+    });
 }
 
 // 창으로 돌아오면 — 일하다 실행기를 다시 볼 때가 새 판 알림이 쓸모 있는 때다. 켠 직후(아직 확인 전)는 update_loop 에 맡긴다
@@ -4930,11 +5071,11 @@ fn update_check(app: AppHandle) {
     thread::spawn(move || check_update(&app));
 }
 
-// 받아서 해시를 대조한 뒤, 톰캣을 끄고 설치 파일을 조용히 돌리고 실행기를 닫는다. 설치 파일이 끝나면 실행기를 다시 띄운다.
+// 「업데이트」 단추 — 받아 둔 설치 파일이 있으면 바로, 없으면 받아서 대조한 뒤 설치한다 (install_now)
 #[tauri::command]
 fn update_install(app: AppHandle) -> Result<(), String> {
-    let rel = {
-        let mut u = shared(&app).update.lock().unwrap();
+    let (rel, ready) = {
+        let u = shared(&app).update.lock().unwrap();
         if u.downloading.is_some() {
             return Err("이미 받는 중입니다.".into());
         }
@@ -4942,35 +5083,16 @@ fn update_install(app: AppHandle) -> Result<(), String> {
         if !update::installable(&home_dir()) {
             return Err("설치본이 아니라 여기서 설치할 수 없습니다. 릴리스 페이지에서 받으세요.".into());
         }
-        u.downloading = Some(0);
-        u.error = None;
-        rel
+        let ready = u.prepared.as_deref() == Some(rel.version.as_str()) && u.setup.as_ref().is_some_and(|f| f.is_file());
+        (rel, ready)
     };
-    emit_state(&app);
+    if ready {
+        install_now(app, rel.version);
+        return Ok(());
+    }
     thread::spawn(move || {
-        log(&app, None, "app", "", format!("업데이트 {} 를 받습니다: {}", rel.version, rel.asset));
-        let a = app.clone();
-        let r = update::download(&rel, move |got| {
-            shared(&a).update.lock().unwrap().downloading = Some(got);
-            emit_state(&a);
-        });
-        match r {
-            Ok(setup) => {
-                log(&app, None, "app", "", format!("받았습니다 (해시 일치). 톰캣을 끄고 {} 를 설치합니다.", rel.version));
-                quit_then(app, move |app| {
-                    if let Err(e) = update::run_installer(&setup, &home_dir()) {
-                        log(app, None, "app", "err", e);
-                    }
-                });
-            }
-            Err(e) => {
-                log(&app, None, "app", "err", e.clone());
-                let mut u = shared(&app).update.lock().unwrap();
-                u.downloading = None;
-                u.error = Some(e);
-                drop(u);
-                emit_state(&app);
-            }
+        if prepare_update(&app, &rel).is_ok() {
+            install_now(app, rel.version);
         }
     });
     Ok(())
