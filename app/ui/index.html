@@ -826,6 +826,12 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 .chlog li.open .rest { display: block; }
 .chlog .more { display: block; width: 100%; padding: 7px; border: 0; border-top: 1px solid var(--line); background: none; color: var(--muted); cursor: pointer; font: inherit; }
 .set-sec .sec-acts { display: flex; align-items: center; gap: 8px; margin-top: 8px; color: var(--muted); font-size: 12px; }
+/* 설정 › 에이전트 스킬 (2026-11-26~) — 에이전트마다 한 줄 : 이름 · 상태 · 설치/제거 단추 */
+.skill-row .val.ok { color: var(--ok); }
+.skill-row .val.old { color: var(--warn); }
+.skill-row .btn { height: 26px; }
+.set-sec .hint { margin: 10px 0 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.set-sec .hint code { font: 12px var(--mono); }
 
 /* ---------- 상태 표시줄 · 메뉴 · 알림 ---------- */
 /* 2026-10-28 : 켜진 설정을 「·」 로 이은 한 줄 → 묶음(반영 · 기동 · 앱)별 칩. 칩을 누르면 설정의 그 칸으로 간다. */
@@ -1113,6 +1119,7 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 			<button data-sec="setApp"><svg class="ic"><use href="#i-sliders"/></svg>개발 전용 앱 설정</button>
 			<button data-sec="setIgnore"><svg class="ic"><use href="#i-eye-off"/></svg>저장 감시 제외</button>
 			<div class="grp">앱</div>
+			<button data-sec="setSkill"><svg class="ic"><use href="#i-bolt"/></svg>에이전트 스킬</button>
 			<button data-sec="setUpdate"><svg class="ic"><use href="#i-download"/></svg>업데이트</button>
 		</nav>
 		<div class="set-main">
@@ -1182,6 +1189,16 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 
 				<section class="set-sec" id="setVcs">
 					<div class="vcs-cols" id="vcsForms"></div>
+				</section>
+
+				<!-- 2026-11-26 : 에이전트가 제어 창구로 톰캣을 다루게 하는 스킬을 이 PC 에 깔린 에이전트마다 깐다 (app/src/skill.rs) -->
+				<section class="set-sec" id="setSkill">
+					<p class="hint" style="margin-top:0">Claude Code · Codex 같은 코딩 에이전트가 이 실행기로 서버 상태를 보고, 고친 자바 · 매퍼가 들어갔는지 확인하고, 필요하면 톰캣을 재시작하게 하는 안내서입니다. 버전 관리는 조회만 합니다.</p>
+					<div class="opts" id="skillList" style="margin-top:12px"></div>
+					<div class="sec-acts"><span id="skillMsg"></span></div>
+					<p class="hint" id="skillMissing" hidden></p>
+					<p class="hint" id="skillNode" hidden>Node.js 가 PATH 에 없습니다. 에이전트가 스킬의 명령줄(<code>tomcatrun.mjs</code>)을 돌리려면 Node 18 이상이 필요합니다.</p>
+					<p class="hint">설치한 스킬은 실행기를 켤 때마다 이 판에 맞춰 다시 씁니다. 설치한 뒤에는 그 에이전트를 다시 시작해야 스킬이 보입니다.</p>
 				</section>
 
 				<section class="set-sec" id="setUpdate">
@@ -2515,6 +2532,7 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 			if (on) $("setSecTitle").textContent = b.textContent;
 		});
 		$("setBody").scrollTop = 0;
+		if (id === "setSkill") loadSkill();
 	}
 	// 모달 뒤의 알림 줄은 가려지므로 저장 실패 같은 오류는 모달 안에도 띄운다
 	function renderSetErr() {
@@ -2534,6 +2552,53 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 		// 모달 안에서 연 메뉴가 떠 있으면 Esc 는 메뉴만 닫는다
 		if (e.key === "Escape" && menu.hidden) closeSettings();
 	});
+
+	/* ---------- 설정 › 에이전트 스킬 ---------- */
+	// 감지했거나 이미 깐 에이전트만 줄로 그리고, 나머지는 이름만 한 줄로 (filedesk 설정과 같은 꼴)
+	function loadSkill() {
+		$("skillMsg").textContent = "";
+		invoke("skill_status").then(renderSkill).catch(function (e) { $("skillMsg").textContent = String(e); });
+	}
+	function renderSkill(st) {
+		var shown = st.agents.filter(function (a) { return a.detected || a.installed; });
+		var missing = st.agents.filter(function (a) { return !a.detected && !a.installed; });
+		var box = $("skillList");
+		box.innerHTML = "";
+		box.hidden = !shown.length;
+		shown.forEach(function (a) {
+			var old = a.installed && a.version !== st.current;
+			var row = document.createElement("div");
+			row.className = "opt field skill-row";
+			row.title = a.dir;
+			row.innerHTML = "<span>" + esc(a.name) + "</span>" +
+				'<span class="val' + (a.installed ? (old ? " old" : " ok") : "") + '">' +
+				(a.installed ? (old ? "설치됨 · " + esc(a.version || "옛 판") + " (켤 때 갱신)" : "설치됨 · " + esc(a.version)) : "설치 안 됨") + "</span>";
+			var go = document.createElement("button");
+			go.className = "btn" + (a.installed ? "" : " primary");
+			go.textContent = a.installed ? "다시 설치" : "설치";
+			go.onclick = function () { skillAct(a, false); };
+			row.appendChild(go);
+			if (a.installed) {
+				var rm = document.createElement("button");
+				rm.className = "btn";
+				rm.textContent = "제거";
+				rm.onclick = function () { skillAct(a, true); };
+				row.appendChild(rm);
+			}
+			box.appendChild(row);
+		});
+		if (!shown.length) $("skillMsg").textContent = "이 PC 에서 코딩 에이전트를 찾지 못했습니다.";
+		$("skillMissing").hidden = !missing.length;
+		$("skillMissing").textContent = "이 PC 에 없는 에이전트: " + missing.map(function (a) { return a.name; }).join(" · ");
+		$("skillNode").hidden = st.hasNode;
+	}
+	function skillAct(a, remove) {
+		$("skillMsg").textContent = "";
+		invoke(remove ? "skill_remove" : "skill_install", { agent: a.id }).then(function (st) {
+			renderSkill(st);
+			$("skillMsg").textContent = remove ? a.name + " 에서 뺐습니다." : a.name + " 에 설치했습니다. " + a.name + " 을(를) 다시 시작하면 보입니다.";
+		}).catch(function (e) { $("skillMsg").textContent = String(e); });
+	}
 
 	function openOpt(id) {
 		var box = $(id).closest(".opt");

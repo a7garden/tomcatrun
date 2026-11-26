@@ -24,6 +24,7 @@
 // 덮거나 지우는 쓰기는 내 파일을 먼저 사용자 폴더에 복사해 둔다 (2026.10.30~ · vcsbackup.rs).
 // Commit message 자동 생성은 사용자가 정한 언어 모델 CLI 에 고른 파일의 Diff 를 넘긴다 — 명령 칸이 비면 하지 않는다 (commitmsg.rs).
 // 에이전트는 127.0.0.1 의 제어 창구로 상태 · 시작 · 중지 · 재시작 · 컴파일 · 로그 · 저장소 조회만 한다 — 버전 관리 쓰기는 열지 않는다 (2026.11.25~ · ctl.rs).
+// 그 창구를 부르는 스킬은 「설정 › 에이전트 스킬」에서 사용자가 고른 에이전트의 스킬 폴더에만 깐다 — 실행기 폴더 밖에 쓰는 유일한 곳 (2026.11.26~ · skill.rs).
 // 개발에서만 바꾸는 앱 설정은 overlay/ 의 별도 파일로 덧붙이고(tomcatrun.DevTweaks), 쓰는 것은 모두 이 폴더 안이다.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -36,6 +37,7 @@ mod git;
 mod gitwrite;
 mod jarcheck;
 mod scancheck;
+mod skill;
 mod svn;
 mod svncli;
 mod svnget;
@@ -5066,6 +5068,22 @@ fn changelog() -> &'static str {
     include_str!("../../CHANGELOG.md")
 }
 
+// 설정 › 에이전트 스킬 — 이 PC 에 깔린 코딩 에이전트마다 스킬을 깔고 뺀다 (skill.rs)
+#[tauri::command]
+fn skill_status() -> skill::Status {
+    skill::status()
+}
+
+#[tauri::command]
+fn skill_install(agent: String) -> Result<skill::Status, String> {
+    skill::install(&agent)
+}
+
+#[tauri::command]
+fn skill_remove(agent: String) -> Result<skill::Status, String> {
+    skill::uninstall(&agent)
+}
+
 #[tauri::command]
 fn update_check(app: AppHandle) {
     thread::spawn(move || check_update(&app));
@@ -6793,6 +6811,14 @@ fn main() {
             thread::spawn(move || monitor(h6));
             let h10 = h.clone();
             thread::spawn(move || ctl::serve(h10));
+            // 이미 깐 에이전트 스킬을 이 판의 명령 · 창구에 맞춘다 — 판을 올린 뒤 옛 안내서로 없는 명령을 부르지 않게
+            let h11 = h.clone();
+            thread::spawn(move || {
+                let done = skill::refresh();
+                if !done.is_empty() {
+                    log(&h11, None, "app", "info", format!("에이전트 스킬을 이 판으로 다시 깔았습니다: {}", done.join(" · ")));
+                }
+            });
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -6831,6 +6857,7 @@ fn main() {
             git_status, git_diff, git_incoming, git_log, git_rev_diff,
             vcs_commit, vcs_update, vcs_cleanup, vcs_revert, vcs_resolve, vcs_revert_revision, vcs_blame, vcs_conflict, vcs_conflict_diff, svn_op, svn_props, svn_make_patch, vcs_pick_file, set_vcs, set_paths, set_server, add_server, add_link, pick_project,
             vcs_fetch, vcs_push, git_outgoing, gen_commit_msg, check_commit_msg, vcs_backups, vcs_restore, vcs_stats, vcs_commit_check,
+            skill_status, skill_install, skill_remove,
             update_check, update_install, svn_get, changelog, eclipse_scan, eclipse_import, quick_project, pick_dir, auto_deps, dedup_deps, undo_dedup, apply_scan_hint
         ])
         .build(tauri::generate_context!())

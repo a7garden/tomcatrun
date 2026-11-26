@@ -220,14 +220,18 @@ SVN 상태는 `.svn/wc.db` 를 읽기 전용(immutable)으로 열어 계산하�
 - 실행기는 하나만 뜬다. 다시 실행하면 떠 있는 창(트레이로 숨겨 두었어도)이 앞으로 온다.
 - **IDE 와 같은 서버를 동시에 켜지 않는다.** 실행기는 기동 전에 포트를 확인하고, 막혀 있으면 잡고 있는 프로그램 이름과 PID 를 보여 준다.
 
-## 에이전트가 부르기 (Claude Code 스킬)
+## 에이전트가 부르기 (에이전트 스킬)
 
 실행기가 켜지면 `127.0.0.1` 의 빈 포트에 제어 창구를 열고, 포트 · 토큰을 `%LOCALAPPDATA%\tomcatrun\ctl.json` 에 적는다.
 에이전트는 이것으로 상태 보기 · 시작 · 중지 · 재시작 · 컴파일 · 로그 · 저장소 조회를 한다. 부르는 명령줄과 스킬은 `skill/tomcatrun/` 에 있다.
 
+스킬은 「설정 › 에이전트 스킬」에서 깐다. 이 PC 에 깔린 코딩 에이전트를 찾아 보이고, 고른 에이전트마다 「설치」 · 「제거」를 한다 (Node 18 이상).
+본문은 공용 스킬 꼴(`<자리>/tomcatrun/SKILL.md` + `tomcatrun.mjs`)이라 에이전트마다 자리만 다르다 — Claude Code `~/.claude/skills` · Codex `~/.agents/skills` ·
+GitHub Copilot `~/.copilot/skills` · Gemini CLI `~/.gemini/skills` · Cursor `~/.cursor/skills` · OpenCode `~/.config/opencode/skills` (표는 `app/src/skill.rs` 의 `AGENTS`).
+설치할 때 `SKILL.md` 의 `{{MJS}}` · `{{VERSION}}` 을 그 자리의 `tomcatrun.mjs` 경로와 실행기 판으로 바꾼다. 이미 깐 스킬은 실행기를 켤 때 이 판으로 다시 쓴다.
+
 ```bash
-cp -r skill/tomcatrun ~/.claude/skills/        # Claude Code 에 스킬 넣기 (Node 18 이상)
-node ~/.claude/skills/tomcatrun/tomcatrun.mjs status
+node ~/.claude/skills/tomcatrun/tomcatrun.mjs status   # 깐 뒤 손으로 불러 보기
 ```
 
 - **버전 관리는 조회만 연다.** Commit · Update · Revert · Resolve · Cleanup · Push 와 설정 바꾸기는 창구에 없다 — 사람이 화면에서 누른다.
