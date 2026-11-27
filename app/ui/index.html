@@ -646,6 +646,11 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .sk-code { padding: 6px 0; }
 .sk-line { display: grid; grid-template-columns: 26px minmax(0, 1fr); gap: 0 12px; align-items: center; height: 18px; padding: 0 8px; }
 .sk-line .no { justify-self: end; width: 16px; height: 8px; opacity: .7; }
+/* 2026.11.27 : 저장소 줄도 「읽는 중...」 글 대신 올 모양(아이콘 · 저장소 이름 · 리비전)으로 — 다 읽히면 같은 자리에 같은 폭으로 바뀐다 */
+.sk-where .sk-body { display: flex; align-items: center; gap: 6px; }
+.sk-where .ico { width: 14px; height: 14px; }
+.sk-where .nm { width: 140px; }
+.sk-where .rv { width: 56px; height: 8px; }
 .diff-note { padding: 6px 14px; border-bottom: 1px solid var(--line-soft); color: var(--warn); font: 600 12px var(--ui); }
 .prop-diff { border-bottom: 1px solid var(--line); }
 .prop-diff th { padding: 4px 8px; text-align: left; vertical-align: top; width: 1%; white-space: nowrap; font: 600 12px var(--mono); color: var(--text); }
@@ -3607,7 +3612,7 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 
 	function renderWhere() {
 		var el = $("svnWhere"), st = svn.data[K()], r = R();
-		if (!kindsOf(svn.srv).length || !st) { el.innerHTML = st === undefined && kindsOf(svn.srv).length ? '<span class="state">읽는 중...</span>' : ""; el.title = ""; return; }
+		if (!kindsOf(svn.srv).length || !st) { el.innerHTML = st === undefined && kindsOf(svn.srv).length ? '<span class="skel sk-where" role="status"><span class="sk-sr">읽는 중</span><span class="sk-body"><i class="sk ico"></i><i class="sk nm"></i><i class="sk rv"></i></span></span>' : ""; el.title = ""; return; }
 		// 2026.11.10 : 받을 커밋 수 · 겹침은 여기 적지 않는다 — 수는 Update 단추 배지, 겹침은 내 파일 줄의 ↓ 표시가 맡는다.
 		//   같은 수를 세 곳이 말하던 것을 줄였다. 여기는 묻지 못한 때만 글로 남기고, 확인 시각은 title 로 내린다
 		var inc = r.incoming, stateText = "", bad = false;
@@ -5566,7 +5571,7 @@ kbd { padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font: 
 		if (!f || !box) return;
 		box.innerHTML = '<div class="rv-card"><div class="rv-ch">' + (f.dir ? ic("folder", "ft prop") : ftIcon(f.path)) + '<span class="p">' + esc(f.path) + (f.dir ? "/" : "") + "</span></div>" +
 			f.commits.map(function (e) { return incomingCommitHtml(e, o.mine, f.path); }).join("") + "</div>" +
-			(f.dir ? "" : '<div class="rv-card"><div class="rv-ch"><span class="p">BASE → HEAD <i>저장소 최신 내용과의 차이</i></span></div><div class="rv-body" id="rvFileDiff">' + (o.diffs[f.path] ? diffBody(o.diffs[f.path]) : '<div class="empty">저장소에서 내용을 받는 중...</div>') + "</div></div>");
+			(f.dir ? "" : '<div class="rv-card"><div class="rv-ch"><span class="p">BASE → HEAD <i>저장소 최신 내용과의 차이</i></span></div><div class="rv-body" id="rvFileDiff">' + (o.diffs[f.path] ? diffBody(o.diffs[f.path]) : skel("code", 6, "저장소에서 내용을 받는 중입니다.")) + "</div></div>");
 		$("rvScroll").scrollTop = 0;
 		if (f.dir || o.diffs[f.path]) return;
 		// 저장소에 묻는 일이라 화살표로 지나가는 줄마다 묻지 않는다

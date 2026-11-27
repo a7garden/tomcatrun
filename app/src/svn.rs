@@ -278,6 +278,26 @@ fn mtime_us(meta: &fs::Metadata) -> Option<i64> {
     meta.modified().ok()?.duration_since(UNIX_EPOCH).ok().map(|d| d.as_micros() as i64)
 }
 
+/// 폴더 목록에서 얻은 한 항목 — status 의 판정에 필요한 것만 (링크는 따라가지 않는다 · symlink_metadata 와 같다)
+#[derive(Clone, Copy)]
+struct Listed {
+    is_dir: bool,
+    len: u64,
+    mtime: Option<i64>,
+}
+
+fn list_dir(dir: &Path) -> Option<HashMap<String, Listed>> {
+    let rd = fs::read_dir(dir).ok()?;
+    Some(
+        rd.filter_map(Result::ok)
+            .filter_map(|e| {
+                let m = e.metadata().ok()?;
+                Some((e.file_name().to_string_lossy().into_owned(), Listed { is_dir: m.is_dir(), len: m.len(), mtime: mtime_us(&m) }))
+            })
+            .collect(),
+    )
+}
+
 // 2026.10.29 : 한국어 → TortoiseSVN · svn status 의 영문 표준 용어. 도구를 오가도 같은 낱말로 찾는다 (DESIGN.md 「버전 관리 용어」)
 fn label(code: &str) -> &'static str {
     match code {
@@ -341,6 +361,23 @@ pub fn status(wc: &Path) -> Result<Status, String> {
         orig: None,
         changelist: lists.get(path).cloned(),
     };
+    // 2026.11.27 : 파일마다 stat 하던 것을 폴더 목록 한 번으로 바꿨다 — mhms_new 노드 2만 개에서 1.2초 → 0.3초 (stat 만 0.9초였다).
+    //   Windows 는 read_dir 이 이름과 함께 크기 · 수정 시각 · 종류를 주므로(DirEntry::metadata 는 시스템 호출을 더 하지 않는다)
+    //   버전 관리되는 폴더마다 한 번 읽어 두고, 파일 판정과 「추가 안 됨」 찾기가 함께 쓴다.
+    //   목록에 이름이 없으면(대소문자만 다른 이름 등) 예전처럼 그 경로를 직접 stat 해 판정을 바꾸지 않는다.
+    let listings: HashMap<&str, HashMap<String, Listed>> = nodes
+        .iter()
+        .filter(|(_, n)| n.kind == "dir" && n.presence == "normal")
+        .filter_map(|(rel, _)| Some((rel.as_str(), list_dir(&wc.join(rel))?)))
+        .collect();
+    let lookup = |rel: &str| -> Option<Listed> {
+        let (parent, name) = rel.rsplit_once('/').unwrap_or(("", rel));
+        if let Some(e) = listings.get(parent).and_then(|m| m.get(name)) {
+            return Some(*e);
+        }
+        let m = fs::symlink_metadata(wc.join(rel)).ok()?;
+        Some(Listed { is_dir: m.is_dir(), len: m.len(), mtime: mtime_us(&m) })
+    };
     let mut rels: Vec<&String> = nodes.keys().collect();
     rels.sort(); // 부모가 먼저 오게 — 없어진 폴더 아래는 하나하나 늘어놓지 않는다
     for rel in rels {
@@ -356,16 +393,14 @@ pub fn status(wc: &Path) -> Result<Status, String> {
         if n.presence != "normal" {
             continue; // not-present · excluded · server-excluded
         }
-        let full = wc.join(rel);
-        let meta = fs::symlink_metadata(&full);
-        let Ok(meta) = meta else {
+        let Some(meta) = lookup(rel) else {
             items.insert(rel.clone(), mk(rel, "!", dir, Some(n)));
             if dir {
                 missing_dirs.push(rel.clone());
             }
             continue;
         };
-        if meta.is_dir() != dir {
+        if meta.is_dir != dir {
             items.insert(rel.clone(), mk(rel, "~", dir, Some(n)));
             continue;
         }
@@ -377,11 +412,11 @@ pub fn status(wc: &Path) -> Result<Status, String> {
             continue;
         }
         // svn 과 같은 빠른 길 — 크기와 수정 시각이 기록과 같으면 열어 보지 않는다
-        if n.size == Some(meta.len() as i64) && n.mtime == mtime_us(&meta) {
+        if n.size == Some(meta.len as i64) && n.mtime == meta.mtime {
             continue;
         }
         hashed += 1;
-        let same = match (&n.checksum, sha1_file(&full)) {
+        let same = match (&n.checksum, sha1_file(&wc.join(rel))) {
             (Some(ck), Some(h)) => ck.strip_prefix("$sha1$") == Some(h.as_str()),
             _ => false,
         };
@@ -407,9 +442,8 @@ pub fn status(wc: &Path) -> Result<Status, String> {
             continue;
         }
         let ignores: Vec<String> = prop(&n.props, "svn:ignore").map(|v| v.split_whitespace().map(String::from).collect()).unwrap_or_default();
-        let Ok(rd) = fs::read_dir(wc.join(rel)) else { continue };
-        for e in rd.filter_map(Result::ok) {
-            let name = e.file_name().to_string_lossy().into_owned();
+        let Some(listed) = listings.get(rel.as_str()) else { continue };
+        for (name, e) in listed {
             if name == ".svn" {
                 continue;
             }
@@ -421,8 +455,7 @@ pub fn status(wc: &Path) -> Result<Status, String> {
             if ignored {
                 continue;
             }
-            let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
-            items.insert(child.clone(), mk(&child, "?", is_dir, None));
+            items.insert(child.clone(), mk(&child, "?", e.is_dir, None));
         }
     }
 
